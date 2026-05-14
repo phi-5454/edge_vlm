@@ -37,6 +37,9 @@ artifacts/*
 !artifacts/profiles/
 artifacts/profiles/*
 !artifacts/profiles/.gitkeep
+!artifacts/teacher_cache/
+artifacts/teacher_cache/*
+!artifacts/teacher_cache/.gitkeep
 outputs/
 multirun/
 wandb/
@@ -52,7 +55,7 @@ checkpoints/
 # Data and model caches
 data/
 datasets/
-models/
+/models/
 .cache/
 huggingface/
 

@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 import lightning as L
-from torch.utils.data import DataLoader
+import torch
+from torch.utils.data import DataLoader, Dataset
 
 from config import DataConfig
 
@@ -18,6 +19,7 @@ class CauldronDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.train_dataset = None
         self.val_dataset = None
+        self.teacher_embeddings = None
 
     def setup(self, stage: str | None = None) -> None:
         from datasets import load_dataset
@@ -42,8 +44,11 @@ class CauldronDataModule(L.LightningDataModule):
             )
 
     def train_dataloader(self) -> DataLoader:
+        dataset = self.train_dataset
+        if self.teacher_embeddings is not None:
+            dataset = TeacherCacheDataset(dataset, self.teacher_embeddings)
         return DataLoader(
-            self.train_dataset,
+            dataset,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.config.num_workers,
@@ -62,10 +67,15 @@ class CauldronDataModule(L.LightningDataModule):
         )
 
     def _collate(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
+        teacher_embeddings = [
+            example.pop("teacher_embedding") for example in examples if "teacher_embedding" in example
+        ]
         texts = [self._with_image_token(self._extract_text(example)) for example in examples]
         images = [self._extract_image(example) for example in examples]
         batch = self.processor(text=texts, images=images, return_tensors="pt", padding=True)
         batch["labels"] = batch["input_ids"].clone()
+        if teacher_embeddings:
+            batch["teacher_embedding"] = torch.stack(teacher_embeddings)
         return batch
 
     def _extract_text(self, example: dict[str, Any]) -> str:
@@ -90,3 +100,22 @@ class CauldronDataModule(L.LightningDataModule):
         if self.config.image_token in text:
             return text
         return f"{self.config.image_token}\n{text}"
+
+
+class TeacherCacheDataset(Dataset):
+    def __init__(self, dataset: Dataset, teacher_embeddings: torch.Tensor) -> None:
+        self.dataset = dataset
+        self.teacher_embeddings = teacher_embeddings
+        if len(dataset) > len(teacher_embeddings):
+            raise ValueError(
+                f"Dataset has {len(dataset)} samples but teacher cache has "
+                f"{len(teacher_embeddings)} embeddings."
+            )
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        item = dict(self.dataset[index])
+        item["teacher_embedding"] = self.teacher_embeddings[index]
+        return item

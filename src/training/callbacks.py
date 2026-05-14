@@ -43,13 +43,15 @@ def model_size_metrics(model: torch.nn.Module, target_quantized_bits: int | None
 class ModelSizeLogger(L.Callback):
     """Logs model size metrics once the model has been materialized."""
 
-    def __init__(self, config: SizeLoggingConfig) -> None:
+    def __init__(self, config: SizeLoggingConfig, model_attribute: str = "model") -> None:
         self.config = config
+        self.model_attribute = model_attribute
 
     def on_fit_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         if not self.config.enabled:
             return
-        metrics = model_size_metrics(pl_module.model, self.config.target_quantized_bits)
+        model = getattr(pl_module, self.model_attribute)
+        metrics = model_size_metrics(model, self.config.target_quantized_bits)
         trainer.logger.log_metrics(metrics, step=0)
         if hasattr(trainer.logger, "experiment") and hasattr(trainer.logger.experiment, "summary"):
             trainer.logger.experiment.summary.update(metrics)
