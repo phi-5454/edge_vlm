@@ -1,0 +1,65 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments and local tooling
+.venv/
+venv/
+env/
+.envrc
+.python-version.local
+
+# Packaging and build outputs
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Secrets
+.env
+.env.*
+*.env
+wandb_api_key.env
+*.key
+*.pem
+
+# Generated experiment and training outputs
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/profiles/
+artifacts/profiles/*
+!artifacts/profiles/.gitkeep
+outputs/
+multirun/
+wandb/
+lightning_logs/
+checkpoints/
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.tflite
+
+# Data and model caches
+data/
+datasets/
+models/
+.cache/
+huggingface/
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

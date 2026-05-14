@@ -1,0 +1,64 @@
+defaults:
+  - _self_
+
+command: train
+
+train:
+  seed: 42
+  output_dir: artifacts/runs/smolvlm-cauldron
+  batch_size: 1
+  max_epochs: 1
+  precision: bf16-mixed
+  accumulate_grad_batches: 8
+  log_every_n_steps: 10
+
+  data:
+    dataset_name: HuggingFaceM4/the_cauldron
+    dataset_config: rendered_text
+    train_split: train
+    val_split:
+    text_column: texts
+    image_column: images
+    image_token: <image>
+    max_samples: 128
+    num_workers: 4
+
+  model:
+    model_name: HuggingFaceTB/SmolVLM-256M-Instruct
+    trust_remote_code: true
+    learning_rate: 0.00002
+    weight_decay: 0.01
+
+  tracking:
+    project: edge-vlm
+    entity:
+    run_name: smolvlm-cauldron-smoke
+    env_file: ../wandb_api_key.env
+    tags:
+      - smolvlm
+      - cauldron
+      - microcontroller
+    offline: false
+
+  sample_logging:
+    enabled: true
+    every_n_train_steps: 50
+    num_samples: 1
+    max_new_tokens: 32
+
+  size_logging:
+    enabled: true
+    target_quantized_bits: 8
+
+profile:
+  model: HuggingFaceTB/SmolVLM-256M-Instruct
+  output: artifacts/profiles/local_profile.jsonl
+  steps: 20
+  warmup: 5
+
+decision:
+  slug: unnamed-decision
+
+hydra:
+  run:
+    dir: artifacts/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}
