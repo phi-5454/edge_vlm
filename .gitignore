@@ -5,64 +5,50 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-.pyre/
 .coverage
-coverage.xml
 htmlcov/
 
-# Virtual environments and local tooling
+# Local environments
 .venv/
 venv/
 env/
-.envrc
-.python-version.local
 
-# Packaging and build outputs
+# Build and packaging outputs
 build/
 dist/
 *.egg-info/
-*.whl
 
-# Secrets
+# Secrets and local machine config
 .env
 .env.*
-*.env
+!.env.example
 wandb_api_key.env
-*.key
-*.pem
 
-# Generated experiment and training outputs
-artifacts/*
-!artifacts/.gitkeep
-!artifacts/profiles/
-artifacts/profiles/*
-!artifacts/profiles/.gitkeep
-!artifacts/teacher_cache/
-artifacts/teacher_cache/*
-!artifacts/teacher_cache/.gitkeep
+# Experiment trackers and Hydra run directories
+wandb/
 outputs/
 multirun/
-wandb/
-lightning_logs/
-checkpoints/
-*.ckpt
-*.safetensors
-*.pt
-*.pth
-*.onnx
-*.tflite
 
-# Data and model caches
+# Generated datasets, checkpoints, and model exports
 data/
 datasets/
-/models/
-.cache/
-huggingface/
+artifacts/**
+!artifacts/
+!artifacts/**/
+!artifacts/**/.gitkeep
+*.ckpt
+*.h5
+*.keras
+*.onnx
+*.pt
+*.pth
+*.pth.tar
+*.tflite
 
-# Editor and OS noise
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
-*.swo
+# Embedded build products
+*.bin
+*.elf
+*.hex
+*.map
+*.uf2
+cmake-build-*/

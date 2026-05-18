@@ -1,38 +1,37 @@
 [project]
-name = "edge-vlm"
+name = "vlm-micro"
 version = "0.1.0"
-description = "SmolVLM training, profiling, and deployment scaffold for CNN-accelerated microcontrollers."
+description = "Training, deployment, profiling, and analysis pipeline for compact VLMs on Coral Micro and MAX78000."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11,<3.12"
 dependencies = [
-    "datasets>=2.20",
     "hydra-core>=1.3",
     "lightning>=2.4",
     "omegaconf>=2.3",
-    "pillow>=10.4",
     "python-dotenv>=1.0",
-    "torch>=2.4",
-    "torchvision>=0.19",
-    "tqdm>=4.66",
-    "transformers>=4.45",
+    "torch>=2.3",
+    "torchvision>=0.18",
     "wandb>=0.17",
 ]
 
 [project.optional-dependencies]
+coral = [
+    "tensorflow>=2.16",
+]
 dev = [
-    "pytest>=8.3",
+    "pytest>=8.2",
     "ruff>=0.6",
 ]
 
 [project.scripts]
-edge-vlm = "cli:main"
+vlm-micro = "vlm_micro.cli:main"
 
 [tool.uv]
 package = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

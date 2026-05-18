@@ -1,0 +1,25 @@
+seed: 42
+max_epochs: 1
+batch_size: 32
+precision: 32-true
+num_workers: 4
+
+optimizer:
+  name: adamw
+  learning_rate: 0.0003
+  weight_decay: 0.01
+
+tracking:
+  project: vlm-micro
+  entity:
+  run_name: smoke
+  env_file: ${paths.wandb_env_file}
+  offline: false
+  tags:
+    - vlm
+    - microcontroller
+
+logging:
+  log_architecture: true
+  log_size_estimates: true
+  log_precision_transitions: true

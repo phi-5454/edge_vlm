@@ -1,0 +1,26 @@
+coral_micro:
+  sdk_path: ${paths.coral_sdk}
+  app_name: vlm_micro
+  target_core: m7
+  use_edge_tpu: true
+
+  export:
+    keras_saved_model_dir: artifacts/exports/coral/saved_model
+    tflite_float: artifacts/exports/coral/model_float.tflite
+    tflite_int8: artifacts/exports/coral/model_int8.tflite
+    tflite_edgetpu: artifacts/exports/coral/model_int8_edgetpu.tflite
+    representative_samples: 256
+    force_integer_io: true
+
+  profiling:
+    compiler_log: artifacts/profiles/coral/edgetpu_compiler.log
+    serial_log: artifacts/profiles/coral/serial.log
+    report: artifacts/profiles/coral/report.json
+    metrics:
+      - accuracy
+      - flatbuffer_bytes
+      - compiler_tpu_ops
+      - compiler_cpu_ops
+      - tensor_arena_bytes
+      - invoke_us
+      - board_power_mw

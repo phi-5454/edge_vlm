@@ -1,0 +1,28 @@
+max78000:
+  training_path: ${paths.max78000_training}
+  synthesis_path: ${paths.max78000_synthesis}
+  device: MAX78000
+  board: FTHR_RevA
+
+  export:
+    checkpoint: artifacts/exports/max78000/checkpoint.pth.tar
+    quantized_checkpoint: artifacts/exports/max78000/checkpoint_qat.pth.tar
+    network_yaml: artifacts/exports/max78000/network.yaml
+    generated_project: artifacts/exports/max78000/generated
+    sample_input: artifacts/exports/max78000/sample.npy
+
+  profiling:
+    simulation_log: artifacts/profiles/max78000/sim.log
+    synthesis_log: artifacts/profiles/max78000/ai8xize.log
+    serial_log: artifacts/profiles/max78000/serial.log
+    report: artifacts/profiles/max78000/report.json
+    metrics:
+      - accuracy_fp32
+      - accuracy_int8_simulated
+      - checkpoint_bytes
+      - generated_flash_bytes
+      - cnn_weight_bytes
+      - cnn_data_memory_bytes
+      - latency_cycles
+      - latency_us
+      - energy_uj

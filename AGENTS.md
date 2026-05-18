@@ -1,61 +1,78 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Project Goal
 
-This is a Python 3.12 project for SmolVLM training, profiling, and deployment
-research on CNN-accelerated microcontrollers. Source modules live directly under
-`src/`, Hydra configuration lives in `conf/`, tests live in `tests/`, and design
-records live in `docs/decisions/`. Keep raw profiling artifacts under
-`artifacts/profiles/` and summarize meaningful results in `docs/performance/`.
+This repository is the central control plane for developing, training,
+deploying, profiling, and analyzing compact VLM-style models on two targets:
 
-## Build, Test, and Development Commands
+- Google Coral Dev Board Micro, using TensorFlow Lite Micro and, where possible,
+  a fully quantized Edge TPU compiled model.
+- MAX78000FTHR / MAX78000-class boards, using ADI's PyTorch-native
+  `ai8x-training` and `ai8x-synthesis` flow.
 
-- `uv sync --extra dev`: install runtime and development dependencies.
-- `uv run edge-vlm command=train`: run the Lightning/W&B training scaffold using
-  `conf/config.yaml`.
-- `uv run edge-vlm command=profile profile.steps=20`: run a local inference
-  profiling pass.
-- `uv run edge-vlm command=decision decision.slug=quantization-baseline`: create
-  a design decision note.
-- `uv run --extra dev python -m pytest`: run tests with the managed interpreter.
+The model may start from a shared PyTorch/Lightning implementation, but every
+deployment step must preserve enough metadata to answer: what changed, where was
+precision lost, how much did the model shrink, which ops moved to hardware, and
+what happened to accuracy, latency, memory, and energy.
+
+## Adjacent Toolchains
+
+Expected sibling directories:
+
+- `../coralmicro`: Coral Dev Board Micro SDK and examples.
+- `../MAX78000/ai8x-training`: ADI training flow.
+- `../MAX78000/ai8x-synthesis`: ADI synthesis / `ai8xize.py` flow.
+- `../ai8x-training`: alternate top-level clone; prefer the `../MAX78000/*`
+  pair unless the user says otherwise.
+
+Do not vendor these SDKs into this repository. Treat them as external toolchains
+and record the commit/version used in each experiment report.
+
+## Required Experiment Discipline
+
+Every non-trivial architecture, quantization, deployment, or profiling change
+must leave a trace in one of:
+
+- W&B run metadata.
+- A JSON/JSONL artifact under `artifacts/`.
+- A decision record under `docs/decisions/`.
+- A performance summary under `docs/performance/`.
+
+Do not make unsupported performance claims. Tie claims to a W&B run, a generated
+report, a serial log, compiler output, or a board measurement.
+
+## Development Commands
+
+- `uv sync --extra dev`: install Python dependencies.
+- `uv run vlm-micro record-decision decision.slug=<slug>`: create a decision
+  record.
+- `uv run vlm-micro artifact-report artifacts/models/model.pt`: summarize file
+  sizes and hashes for exported artifacts.
+- `uv run --extra dev pytest`: run tests.
 - `uv run --extra dev ruff check .`: run lint checks.
 
-W&B credentials are loaded from `../wandb_api_key.env` through
-`train.tracking.env_file`. Never copy API keys into tracked files or logs.
+W&B credentials should live outside the repo, for example in
+`../wandb_api_key.env`. Never commit API keys, board serial logs containing
+secrets, or large raw datasets.
 
-## Coding Style & Naming Conventions
+## Board-Specific Warnings
 
-Use Python 3.12 features where they simplify code without reducing clarity.
-Follow PEP 8, use 4-space indentation, and keep functions small and explicit.
-Name modules and packages with lowercase snake_case, functions and variables
-with snake_case, classes with PascalCase, and constants with UPPER_SNAKE_CASE.
+For Coral, keep the deployable graph Edge-TPU-friendly from the beginning:
+fully quantized 8-bit TFLite, static tensor shapes, constant parameters, and
+supported ops. Unsupported ops cause CPU fallback; on Dev Board Micro that
+fallback must also be supported by TensorFlow Lite Micro and fit memory.
 
-Prefer type hints for public functions and module boundaries. Keep side effects
-inside CLI or training entry points so modules remain easy to test.
+For MAX78000, design with hardware layout constraints in mind. The ADI flow is
+not a generic ONNX/TFLite backend. Prefer `ai8x.py` layer patterns, maintain the
+synthesis YAML alongside checkpoints, and verify with simulated `-8` evaluation
+before expecting generated C to work on hardware.
 
-## Testing Guidelines
+## Coding Style
 
-Use `pytest` for tests. Place test files under `tests/` and name them
-`test_<module>.py`. Test functions should describe behavior, for example
-`test_train_config_from_hydra`.
+Use Python 3.11 to stay close to the MAX78000 documented environment. Keep board
+integration code isolated under `src/vlm_micro/boards/`. Shared model/training
+code must not import board SDKs directly.
 
-When adding new behavior, include tests for the normal path and at least one
-relevant edge case. For code that interacts with files, models, or external
-services, prefer fixtures and mocks over network-dependent tests.
-
-## Commit & Pull Request Guidelines
-
-This repository has no commit history yet, so there is no established local
-commit convention. Use concise, imperative commit messages such as
-`Add profiling scaffold` or `Document Cauldron training config`.
-
-Pull requests should include a short summary, the commands used to verify the
-change, and any relevant issue links. For user-facing behavior, include sample
-output or screenshots when helpful. Keep PRs focused on one logical change.
-
-## Agent-Specific Instructions
-
-Before editing, inspect existing files and preserve user changes. Any design or
-performance claim should reference a W&B run, profiling JSONL, benchmark summary,
-or decision record. Update this guide when project structure, tooling, or
-commands change.
+Prefer structured config and structured reports over ad hoc shell output. If a
+script parses compiler or serial output, retain the raw log and emit a normalized
+JSON summary.

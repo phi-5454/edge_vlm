@@ -1,1 +1,1 @@
-"""Hydra configuration package."""
+"""Hydra configuration package for vlm-micro."""

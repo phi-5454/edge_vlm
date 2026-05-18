@@ -1,0 +1,19 @@
+name: tiny_vlm
+image_size: 96
+image_channels: 3
+text_vocab_size: 4096
+text_context_tokens: 32
+embedding_dim: 128
+vision_width: 64
+fusion_width: 128
+output_classes: 128
+
+constraints:
+  static_shapes: true
+  avoid_dynamic_control_flow: true
+  preferred_ops:
+    - conv2d
+    - depthwise_conv2d
+    - relu
+    - average_pool
+    - fully_connected

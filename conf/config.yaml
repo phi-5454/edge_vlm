@@ -1,152 +1,25 @@
 defaults:
+  - model: tiny_vlm
+  - train: lightning
+  - board/coral_micro
+  - board/max78000
   - _self_
 
-command: train
+command: artifact-report
 
-train:
-  seed: 42
-  output_dir: artifacts/runs/smolvlm-cauldron
-  batch_size: 1
-  max_epochs: 1
-  precision: bf16-mixed
-  accumulate_grad_batches: 8
-  log_every_n_steps: 10
-
-  data:
-    dataset_name: HuggingFaceM4/the_cauldron
-    dataset_config: rendered_text
-    train_split: train
-    val_split:
-    text_column: texts
-    image_column: images
-    image_token: <image>
-    max_samples: 128
-    num_workers: 4
-
-  model:
-    model_name: HuggingFaceTB/SmolVLM-256M-Instruct
-    trust_remote_code: true
-    learning_rate: 0.00002
-    weight_decay: 0.01
-
-  tracking:
-    project: edge-vlm
-    entity:
-    run_name: smolvlm-cauldron-smoke
-    env_file: ../wandb_api_key.env
-    tags:
-      - smolvlm
-      - cauldron
-      - microcontroller
-    offline: false
-
-  sample_logging:
-    enabled: true
-    every_n_train_steps: 50
-    num_samples: 1
-    max_new_tokens: 32
-
-  size_logging:
-    enabled: true
-    target_quantized_bits: 8
-
-distill:
-  seed: 42
-  output_dir: artifacts/runs/tiny-vlm-distill
-  batch_size: 1
-  max_epochs: 1
-  precision: bf16-mixed
-  accumulate_grad_batches: 8
-  log_every_n_steps: 10
-
-  data:
-    dataset_name: HuggingFaceM4/the_cauldron
-    dataset_config: rendered_text
-    train_split: train
-    val_split:
-    text_column: texts
-    image_column: images
-    image_token: <image>
-    max_samples: 128
-    num_workers: 4
-
-  teacher:
-    model_name: HuggingFaceTB/SmolVLM-256M-Instruct
-    trust_remote_code: true
-    learning_rate: 0.00002
-    weight_decay: 0.01
-
-  student:
-    vocab_size: 49152
-    max_text_tokens: 64
-    image_size: 224
-    text_width: 128
-    text_layers: 2
-    text_heads: 4
-    projection_dim: 128
-    fusion_hidden_dim: 256
-    teacher_dim: 576
-    num_answer_classes: 0
-    pretrained_vision: true
-    freeze_vision: false
-
-  distillation:
-    teacher_embedding_loss_weight: 1.0
-    image_text_contrastive_loss_weight: 0.1
-    temperature: 0.07
-    normalize_teacher_targets: true
-
-  teacher_cache:
-    enabled: false
-    path: artifacts/teacher_cache/cauldron_rendered_text.pt
-    batch_size: 1
-
-  tracking:
-    project: edge-vlm
-    entity:
-    run_name: tiny-vlm-distill-smoke
-    env_file: ../wandb_api_key.env
-    tags:
-      - tiny-vlm
-      - distillation
-      - cauldron
-      - microcontroller
-    offline: false
-
-  size_logging:
-    enabled: true
-    target_quantized_bits: 8
-
-cache_teacher:
-  seed: 42
-  output_path: artifacts/teacher_cache/cauldron_rendered_text.pt
-  device: auto
-
-  data:
-    dataset_name: HuggingFaceM4/the_cauldron
-    dataset_config: rendered_text
-    train_split: train
-    val_split:
-    text_column: texts
-    image_column: images
-    image_token: <image>
-    max_samples: 128
-    num_workers: 4
-
-  teacher:
-    model_name: HuggingFaceTB/SmolVLM-256M-Instruct
-    trust_remote_code: true
-    learning_rate: 0.00002
-    weight_decay: 0.01
-
-profile:
-  model: HuggingFaceTB/SmolVLM-256M-Instruct
-  output: artifacts/profiles/local_profile.jsonl
-  steps: 20
-  warmup: 5
+paths:
+  coral_sdk: ../coralmicro
+  max78000_training: ../MAX78000/ai8x-training
+  max78000_synthesis: ../MAX78000/ai8x-synthesis
+  artifacts: artifacts
+  wandb_env_file: ../wandb_api_key.env
 
 decision:
   slug: unnamed-decision
+
+artifact_report:
+  output: artifacts/reports/artifact_report.json
+  files: []
 
 hydra:
   run:
