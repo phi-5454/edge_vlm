@@ -1,0 +1,98 @@
+# Teacher Cache VM Runbook
+
+This runbook is for caching SmolVLM-256M teacher outputs on a VM with a CUDA GPU.
+
+## Inputs
+
+Default paths expected by the script:
+
+- 512x512 student image dataset:
+  `data/the_cauldron_yes_no_vsr_token1000_img512/dataset`
+- 512x512 student image sidecars:
+  `data/the_cauldron_yes_no_vsr_token1000_img512/images`
+- Cache output:
+  `artifacts/teacher_cache/smolvlm_yes_no_vsr_token1000_img512.jsonl`
+
+Caching uses the original `teacher_prompt` and the 512x512 padded student image.
+The script does not load full-resolution Cauldron source images.
+
+## Preflight
+
+Check dataset visibility and planned record count:
+
+```bash
+uv run python scripts/cache_smolvlm_yes_no_teacher.py \
+  --dry-run \
+  --shard-count 1 \
+  --shard-index 0
+```
+
+Check CUDA visibility on the VM:
+
+```bash
+uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"
+```
+
+If the model is already in the Hugging Face cache, set `LOCAL_FILES_ONLY=1`.
+Otherwise the default allows Hugging Face model download.
+
+## Run
+
+Single process over the whole dataset:
+
+```bash
+scripts/run_smolvlm_yes_no_teacher_cache_vm.sh
+```
+
+Manual equivalent:
+
+```bash
+uv run python scripts/cache_smolvlm_yes_no_teacher.py \
+  --dataset data/the_cauldron_yes_no_vsr_token1000_img512/dataset \
+  --student-image-root data/the_cauldron_yes_no_vsr_token1000_img512 \
+  --image-source student-512 \
+  --output artifacts/teacher_cache/smolvlm_yes_no_vsr_token1000_img512.jsonl \
+  --device cuda \
+  --torch-dtype float16 \
+  --top-k 10 \
+  --temperature 1.0 \
+  --variant-batch-size 10 \
+  --resume
+```
+
+To split work into resumable shards on the same VM:
+
+```bash
+SHARD_COUNT=4 SHARD_INDEX=0 scripts/run_smolvlm_yes_no_teacher_cache_vm.sh
+SHARD_COUNT=4 SHARD_INDEX=1 scripts/run_smolvlm_yes_no_teacher_cache_vm.sh
+SHARD_COUNT=4 SHARD_INDEX=2 scripts/run_smolvlm_yes_no_teacher_cache_vm.sh
+SHARD_COUNT=4 SHARD_INDEX=3 scripts/run_smolvlm_yes_no_teacher_cache_vm.sh
+```
+
+## Output Contents
+
+Each JSONL record includes:
+
+- hard yes/no label and exact dataset identity
+- 512x512 student image sidecar identity and resize metadata
+- teacher prompt, student prompt, prompt hashes, and cache image hash
+- teacher input token ids, token strings, and attention mask
+- image preprocessing tensor metadata and image-token count
+- top-k next-token logits
+- standalone yes/no logits, log-likelihoods, yes-minus-no logit, and entropy
+- sequence log-likelihoods for yes/no answer variants
+- per-record standalone yes/no metrics: prediction, correctness, NLL, L1/L2
+  distance to the hard one-hot label, and target probability
+
+The sidecar manifest is written next to the JSONL as `*.manifest.json`. It
+includes script arguments, versions, host, CUDA availability, CUDA device count,
+and aggregate standalone yes/no accuracy, mean NLL, mean L1, mean L2, mean
+squared L2, and mean target probability for records written by that invocation.
+
+## Notes
+
+- `--max-examples N` is only for smoke tests. Omitting it caches the selected
+  shard.
+- `--force` replaces an existing output. Use `--resume` for interrupted jobs.
+- The default `--variant-batch-size 10` batches all answer variants for one
+  example. Lower it if GPU memory is tight.
