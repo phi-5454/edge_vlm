@@ -1,0 +1,14 @@
+datasets:
+  - vqav2
+  - cocoqa
+  - visual7w
+  - tallyqa
+  - clevr
+  - vsr
+  - nlvr2
+
+optional_reasoning:
+  - aokvqa
+  - okvqa
+  - iconqa
+  - figureqa

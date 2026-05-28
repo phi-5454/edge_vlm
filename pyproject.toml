@@ -5,12 +5,16 @@ description = "Training, deployment, profiling, and analysis pipeline for compac
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "datasets>=2.20",
     "hydra-core>=1.3",
     "lightning>=2.4",
+    "matplotlib>=3.8",
     "omegaconf>=2.3",
+    "pillow>=10.4",
     "python-dotenv>=1.0",
     "torch>=2.3",
     "torchvision>=0.18",
+    "transformers>=4.49",
     "wandb>=0.17",
 ]
 

@@ -41,6 +41,12 @@ must leave a trace in one of:
 Do not make unsupported performance claims. Tie claims to a W&B run, a generated
 report, a serial log, compiler output, or a board measurement.
 
+Also record the reasoning behind dataset, model, quantization, and profiling
+choices. For exploratory work, write a compact summary artifact with the command,
+input configs, normalization assumptions, sample limits, and conclusions. For
+decisions that affect the pipeline, add or update a decision record rather than
+leaving the rationale only in chat.
+
 ## Development Commands
 
 - `uv sync --extra dev`: install Python dependencies.
@@ -48,6 +54,10 @@ report, a serial log, compiler output, or a board measurement.
   record.
 - `uv run vlm-micro artifact-report artifacts/models/model.pt`: summarize file
   sizes and hashes for exported artifacts.
+- `uv run vlm-micro cache-cauldron`: materialize the configured Cauldron subsets
+  from `datasets.yaml` under `data/the_cauldron/`.
+- `uv run vlm-micro eda-cauldron`: run local-only Cauldron text EDA and write
+  JSON plus figures under `artifacts/reports/cauldron_eda/`.
 - `uv run --extra dev pytest`: run tests.
 - `uv run --extra dev ruff check .`: run lint checks.
 

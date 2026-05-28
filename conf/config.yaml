@@ -21,6 +21,69 @@ artifact_report:
   output: artifacts/reports/artifact_report.json
   files: []
 
+smolvlm_smoke:
+  model_name: HuggingFaceTB/SmolVLM-256M-Instruct
+  dataset_name: HuggingFaceM4/the_cauldron
+  dataset_config: vqav2
+  split: train
+  output: artifacts/reports/smolvlm_cauldron_smoke.json
+  num_examples: 2
+  max_new_tokens: 32
+  device: auto
+  torch_dtype: auto
+  trust_remote_code: true
+  max_streamed_samples: 64
+
+cauldron:
+  spec: datasets.yaml
+  dataset_name: HuggingFaceM4/the_cauldron
+  split: train
+  local_root: data/the_cauldron
+  # hf: dataset script -> save_to_disk; parquet-hf: raw parquet -> save_to_disk;
+  # parquet: raw parquet only, useful when disk is tight.
+  cache_format: hf
+  subsets: []
+  include_optional_reasoning: true
+  force_download: false
+  streaming_max_examples:
+
+cauldron_eda:
+  local_root: ${cauldron.local_root}
+  output_dir: artifacts/reports/cauldron_eda
+  include_optional_reasoning: false
+  skip_missing: false
+  prompt_coverage_tokenizer_name: ${smolvlm_smoke.model_name}
+  prompt_coverage_tokenizer_local_files_only: true
+  prompt_coverage_tokenizer_trust_remote_code: true
+  accepted_cache_formats:
+    - hf
+    - parquet
+    - parquet-hf
+    - jsonl
+  max_examples_per_subset:
+  top_k_words: 50
+  coverage_points:
+    - 10
+    - 25
+    - 50
+    - 100
+    - 250
+    - 500
+    - 1000
+    - 2000
+    - 5000
+
+cauldron_yes_no:
+  spec: ${cauldron.spec}
+  source_root: ${cauldron.local_root}
+  output_root: data/the_cauldron_yes_no
+  report: artifacts/reports/cauldron_yes_no_summary.json
+  subsets: []
+  include_optional_reasoning: false
+  skip_missing: false
+  max_examples_per_subset:
+  force: false
+
 hydra:
   run:
     dir: artifacts/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}

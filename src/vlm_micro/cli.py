@@ -11,6 +11,13 @@ from typing import Iterable
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
+from vlm_micro.cauldron import (
+    build_cauldron_yes_no_dataset,
+    cache_cauldron_datasets,
+    run_cauldron_eda,
+)
+from vlm_micro.smolvlm_smoke import run_smolvlm_smoke
+
 
 @dataclass(frozen=True)
 class ArtifactSummary:
@@ -114,6 +121,19 @@ def run(cfg: DictConfig, positional: list[str] | None = None) -> None:
     elif command == "record-decision":
         output = record_decision(cfg)
         print(f"Wrote {output}")
+    elif command == "smolvlm-smoke":
+        output = run_smolvlm_smoke(cfg.smolvlm_smoke)
+        print(f"Wrote {output}")
+    elif command == "cache-cauldron":
+        outputs = cache_cauldron_datasets(cfg.cauldron)
+        for output in outputs:
+            print(f"Cached {output}")
+    elif command == "eda-cauldron":
+        output = run_cauldron_eda(cfg.cauldron, cfg.cauldron_eda)
+        print(f"Wrote {output}")
+    elif command == "build-cauldron-yes-no":
+        output = build_cauldron_yes_no_dataset(cfg.cauldron, cfg.cauldron_yes_no)
+        print(f"Wrote {output}")
     else:
         raise ValueError(f"Unknown command: {command}")
 
@@ -121,7 +141,14 @@ def run(cfg: DictConfig, positional: list[str] | None = None) -> None:
 def main() -> None:
     config_dir = Path.cwd() / "conf"
     args = sys.argv[1:]
-    command_names = {"artifact-report", "record-decision"}
+    command_names = {
+        "artifact-report",
+        "record-decision",
+        "smolvlm-smoke",
+        "cache-cauldron",
+        "eda-cauldron",
+        "build-cauldron-yes-no",
+    }
     command_override: list[str] = []
     if args and args[0] in command_names:
         command_override = [f"command={args.pop(0)}"]
