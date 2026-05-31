@@ -72,6 +72,8 @@ uv run python scripts/cache_smolvlm_yes_no_teacher.py \
   --torch-dtype float16 \
   --batch-size 8 \
   --decode-workers 8 \
+  --cpu-threads 8 \
+  --image-processor-backend torchvision \
   --top-k 10 \
   --temperature 1.0 \
   --resume
@@ -115,6 +117,12 @@ squared L2, and mean target probability for records written by that invocation.
   Increase it while GPU memory permits; lower it if CUDA runs out of memory.
 - `--decode-workers 8` parallelizes JPEG decoding. CPU preparation for the next
   batch is prefetched while the GPU handles the current batch.
+- `--cpu-threads 8` configures PyTorch CPU worker threads for tensor-based image
+  preprocessing. Set it no higher than the VM's available CPU count.
+- `--image-processor-backend torchvision` uses the faster tensor-based
+  Idefics3 image processor instead of the single-threaded PIL backend.
+  Transformers currently substitutes bicubic for one unsupported LANCZOS
+  operation, so record this choice and use one backend consistently per cache.
 - Answer-variant scoring uses the first next-token logits from the prompt
   forward pass. It does not run continuation steps or rerun the multimodal
   prompt.

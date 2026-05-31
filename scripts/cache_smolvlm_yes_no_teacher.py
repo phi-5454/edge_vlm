@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="combined")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--image-processor-backend", choices=["torchvision", "pil"], default="torchvision")
+    parser.add_argument("--image-processor-backend", choices=["torchvision", "pil"], default="pil")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-examples", type=int, default=None)
@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--decode-workers", type=int, default=min(8, os.cpu_count() or 1))
+    parser.add_argument("--cpu-threads", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--variant-batch-size", type=int, default=10, help=argparse.SUPPRESS)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--torch-dtype", default="auto")
@@ -192,6 +193,8 @@ def planned_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
         raise ValueError("--batch-size must be positive")
     if args.decode_workers <= 0:
         raise ValueError("--decode-workers must be positive")
+    if args.cpu_threads <= 0:
+        raise ValueError("--cpu-threads must be positive")
     if args.shard_count <= 0:
         raise ValueError("--shard-count must be positive")
     if not 0 <= args.shard_index < args.shard_count:
@@ -408,6 +411,7 @@ def main() -> None:
 
     device = device_from_arg(args.device)
     dtype = dtype_from_arg(args.torch_dtype, device)
+    torch.set_num_threads(args.cpu_threads)
     processor = AutoProcessor.from_pretrained(
         args.model,
         local_files_only=args.local_files_only,
