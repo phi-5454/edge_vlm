@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-index", type=int, default=None)
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
-    parser.add_argument("--variant-batch-size", type=int, default=10)
+    parser.add_argument("--variant-batch-size", type=int, default=10, help=argparse.SUPPRESS)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--torch-dtype", default="auto")
     parser.add_argument("--local-files-only", action=argparse.BooleanOptionalAction, default=False)
@@ -163,8 +163,6 @@ def planned_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
         raise ValueError("--temperature must be positive")
     if args.top_k <= 0:
         raise ValueError("--top-k must be positive")
-    if args.variant_batch_size <= 0:
-        raise ValueError("--variant-batch-size must be positive")
     if args.shard_count <= 0:
         raise ValueError("--shard-count must be positive")
     if not 0 <= args.shard_index < args.shard_count:
@@ -295,58 +293,98 @@ def aggregate_metric_sums(sums: dict[str, float], count: int) -> dict[str, Any]:
     }
 
 
+def entropy_from_log_probs(log_probs: torch.Tensor) -> float:
+    probs = torch.exp(log_probs)
+    return float((-(probs * log_probs).sum()).detach().cpu())
+
+
+def repeat_past_key_values(past_key_values: Any, repeats: int) -> Any:
+    if hasattr(past_key_values, "batch_repeat_interleave"):
+        past_key_values.batch_repeat_interleave(repeats)
+        return past_key_values
+    return tuple(
+        tuple(tensor.repeat_interleave(repeats, dim=0) for tensor in layer)
+        for layer in past_key_values
+    )
+
+
 def sequence_log_likelihoods(
     model: Any,
     processor: Any,
-    chat_text: str,
-    image: Image.Image,
     answer_texts: list[str],
-    prompt_len: int,
+    prompt_attention_mask: torch.Tensor,
+    prompt_next_logits: torch.Tensor,
+    past_key_values: Any,
     device: str,
     temperature: float,
-    batch_size: int,
 ) -> list[dict[str, Any]]:
-    scores: list[dict[str, Any]] = []
-    for batch_start in range(0, len(answer_texts), batch_size):
-        batch_answers = answer_texts[batch_start : batch_start + batch_size]
-        full_inputs = processor(
-            text=[chat_text + answer_text for answer_text in batch_answers],
-            images=[image] * len(batch_answers),
-            return_tensors="pt",
-            padding=True,
+    token_ids = [
+        processor.tokenizer(answer_text, add_special_tokens=False)["input_ids"]
+        for answer_text in answer_texts
+    ]
+    if any(not ids or len(ids) > 2 for ids in token_ids):
+        raise ValueError("Answer variants must tokenize to one or two tokens")
+
+    first_log_probs = torch.log_softmax(prompt_next_logits.float() / temperature, dim=-1)
+    first_entropy = entropy_from_log_probs(first_log_probs)
+    step_logprobs = [
+        [float(first_log_probs[ids[0]].detach().cpu())]
+        for ids in token_ids
+    ]
+    step_entropies = [[first_entropy] for _ in token_ids]
+
+    continuation_indices = [index for index, ids in enumerate(token_ids) if len(ids) == 2]
+    if continuation_indices:
+        continuation_first_ids = torch.tensor(
+            [[token_ids[index][0]] for index in continuation_indices],
+            dtype=torch.long,
+            device=device,
         )
-        full_inputs = {key: value.to(device) for key, value in full_inputs.items()}
+        continuation_attention_mask = torch.cat(
+            [
+                prompt_attention_mask.repeat(len(continuation_indices), 1),
+                torch.ones((len(continuation_indices), 1), dtype=prompt_attention_mask.dtype, device=device),
+            ],
+            dim=1,
+        )
+        repeated_past = repeat_past_key_values(past_key_values, len(continuation_indices))
         with torch.inference_mode():
-            outputs = model(**full_inputs, use_cache=False)
-
-        for batch_offset, answer_text in enumerate(batch_answers):
-            input_ids = full_inputs["input_ids"][batch_offset]
-            seq_len = int(full_inputs["attention_mask"][batch_offset].sum().item())
-            answer_token_ids = input_ids[prompt_len:seq_len].detach().cpu().tolist()
-            step_logprobs: list[float] = []
-            step_entropies: list[float] = []
-            for position in range(prompt_len, seq_len):
-                logits = outputs.logits[batch_offset, position - 1].float() / temperature
-                log_probs = torch.log_softmax(logits, dim=-1)
-                probs = torch.softmax(logits, dim=-1)
-                token_id = int(input_ids[position].item())
-                step_logprobs.append(float(log_probs[token_id].detach().cpu()))
-                step_entropies.append(float((-(probs * log_probs).sum()).detach().cpu()))
-
-            scores.append(
-                {
-                    "text": answer_text,
-                    "normalized": "yes" if "yes" in answer_text.lower() else "no",
-                    "token_ids": answer_token_ids,
-                    "tokens": processor.tokenizer.convert_ids_to_tokens(answer_token_ids),
-                    "log_likelihood": sum(step_logprobs),
-                    "mean_log_likelihood": (
-                        sum(step_logprobs) / len(step_logprobs) if step_logprobs else None
-                    ),
-                    "step_logprobs": step_logprobs,
-                    "step_entropies": step_entropies,
-                }
+            continuation_outputs = model(
+                input_ids=continuation_first_ids,
+                attention_mask=continuation_attention_mask,
+                past_key_values=repeated_past,
+                use_cache=False,
             )
+        for batch_index, answer_index in enumerate(continuation_indices):
+            log_probs = torch.log_softmax(
+                continuation_outputs.logits[batch_index, -1].float() / temperature,
+                dim=-1,
+            )
+            step_logprobs[answer_index].append(
+                float(log_probs[token_ids[answer_index][1]].detach().cpu())
+            )
+            step_entropies[answer_index].append(entropy_from_log_probs(log_probs))
+
+    scores: list[dict[str, Any]] = []
+    for answer_text, ids, logprobs, entropies in zip(
+        answer_texts,
+        token_ids,
+        step_logprobs,
+        step_entropies,
+        strict=True,
+    ):
+        scores.append(
+            {
+                "text": answer_text,
+                "normalized": "yes" if "yes" in answer_text.lower() else "no",
+                "token_ids": ids,
+                "tokens": processor.tokenizer.convert_ids_to_tokens(ids),
+                "log_likelihood": sum(logprobs),
+                "mean_log_likelihood": sum(logprobs) / len(logprobs),
+                "step_logprobs": logprobs,
+                "step_entropies": entropies,
+            }
+        )
     return scores
 
 
@@ -429,7 +467,7 @@ def main() -> None:
             inputs = {key: value.to(device) for key, value in inputs.items()}
 
             with torch.inference_mode():
-                outputs = model(**inputs, use_cache=False)
+                outputs = model(**inputs, use_cache=True)
 
             next_logits = outputs.logits[0, -1].float()
             scaled_logits = next_logits / args.temperature
@@ -445,20 +483,18 @@ def main() -> None:
                 temperature=args.temperature,
             )
 
-            prompt_len = int(inputs["input_ids"].shape[1])
             answer_variants = [
                 variant for variants in ANSWER_VARIANTS.values() for variant in variants
             ]
             answer_variant_scores = sequence_log_likelihoods(
                 model=model,
                 processor=processor,
-                chat_text=chat_text,
-                image=image,
                 answer_texts=answer_variants,
-                prompt_len=prompt_len,
+                prompt_attention_mask=inputs["attention_mask"],
+                prompt_next_logits=next_logits,
+                past_key_values=outputs.past_key_values,
                 device=device,
                 temperature=args.temperature,
-                batch_size=args.variant_batch_size,
             )
 
             input_ids = inputs["input_ids"][0].detach().cpu().tolist()

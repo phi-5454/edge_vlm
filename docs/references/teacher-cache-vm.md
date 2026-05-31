@@ -72,7 +72,6 @@ uv run python scripts/cache_smolvlm_yes_no_teacher.py \
   --torch-dtype float16 \
   --top-k 10 \
   --temperature 1.0 \
-  --variant-batch-size 10 \
   --resume
 ```
 
@@ -110,5 +109,5 @@ squared L2, and mean target probability for records written by that invocation.
 - `--max-examples N` is only for smoke tests. Omitting it caches the selected
   shard.
 - `--force` replaces an existing output. Use `--resume` for interrupted jobs.
-- The default `--variant-batch-size 10` batches all answer variants for one
-  example. Lower it if GPU memory is tight.
+- Answer-variant scoring reuses the prompt KV cache. It does not rerun the
+  multimodal prompt for each variant.
