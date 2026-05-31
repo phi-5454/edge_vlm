@@ -71,6 +71,7 @@ uv run python scripts/cache_smolvlm_yes_no_teacher.py \
   --device cuda \
   --torch-dtype float16 \
   --batch-size 8 \
+  --decode-workers 8 \
   --top-k 10 \
   --temperature 1.0 \
   --resume
@@ -112,6 +113,8 @@ squared L2, and mean target probability for records written by that invocation.
 - `--force` replaces an existing output. Use `--resume` for interrupted jobs.
 - `--batch-size 8` batches different prompts and images in one forward pass.
   Increase it while GPU memory permits; lower it if CUDA runs out of memory.
+- `--decode-workers 8` parallelizes JPEG decoding. CPU preparation for the next
+  batch is prefetched while the GPU handles the current batch.
 - Answer-variant scoring uses the first next-token logits from the prompt
   forward pass. It does not run continuation steps or rerun the multimodal
   prompt.

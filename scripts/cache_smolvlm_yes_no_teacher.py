@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -49,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--decode-workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--variant-batch-size", type=int, default=10, help=argparse.SUPPRESS)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--torch-dtype", default="auto")
@@ -124,17 +126,15 @@ class ParquetImageStore:
         return self.cached_rows[local_index]
 
 
-def load_cache_image(
+def decode_cache_image(
     row: dict[str, Any],
-    args: argparse.Namespace,
-    image_store: ParquetImageStore,
+    image_row: dict[str, Any],
 ) -> tuple[Image.Image, dict[str, Any]]:
     if "student_image_id" not in row:
         raise KeyError(
             "Dataset rows do not contain student_image_id. Use the parquet dataset "
             "built by scripts/build_student_img512_parquet_dataset.py."
         )
-    image_row = image_store.get(str(row["student_image_id"]))
     with Image.open(BytesIO(image_row["image_bytes"])) as loaded:
         image = loaded.convert("RGB")
     return image, {
@@ -153,6 +153,35 @@ def load_cache_image(
     }
 
 
+def prepare_batch(
+    batch_indices: list[int],
+    dataset: Any,
+    image_store: ParquetImageStore,
+    processor: Any,
+    decode_executor: ThreadPoolExecutor,
+) -> dict[str, Any]:
+    rows = [dataset[dataset_index] for dataset_index in batch_indices]
+    image_rows = [image_store.get(str(row["student_image_id"])) for row in rows]
+    images_and_identities = list(
+        decode_executor.map(
+            lambda pair: decode_cache_image(*pair),
+            zip(rows, image_rows, strict=True),
+        )
+    )
+    images = [image for image, _ in images_and_identities]
+    teacher_prompts = [str(row["teacher_prompt"]) for row in rows]
+    chat_texts = [chat_prompt(processor, teacher_prompt) for teacher_prompt in teacher_prompts]
+    return {
+        "batch_indices": batch_indices,
+        "rows": rows,
+        "images": images,
+        "image_identities": [identity for _, identity in images_and_identities],
+        "teacher_prompts": teacher_prompts,
+        "chat_texts": chat_texts,
+        "inputs": processor(text=chat_texts, images=images, return_tensors="pt", padding=True),
+    }
+
+
 def planned_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
     if args.temperature <= 0:
         raise ValueError("--temperature must be positive")
@@ -160,6 +189,8 @@ def planned_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
         raise ValueError("--top-k must be positive")
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
+    if args.decode_workers <= 0:
+        raise ValueError("--decode-workers must be positive")
     if args.shard_count <= 0:
         raise ValueError("--shard-count must be positive")
     if not 0 <= args.shard_index < args.shard_count:
@@ -404,21 +435,48 @@ def main() -> None:
 
     total_examples = len(indices)
     output_mode = "a" if args.resume else "w"
+    decode_executor = ThreadPoolExecutor(max_workers=args.decode_workers)
+    prefetch_executor = ThreadPoolExecutor(max_workers=1)
     with args.output.open(output_mode, encoding="utf-8") as handle:
         progress = tqdm(
             total=total_examples,
             desc="Caching teacher logits",
             unit="example",
         )
-        for batch_start in range(0, total_examples, args.batch_size):
-            batch_indices = indices[batch_start : batch_start + args.batch_size]
-            rows = [dataset[dataset_index] for dataset_index in batch_indices]
-            images_and_identities = [load_cache_image(row, args, image_store) for row in rows]
-            images = [image for image, _ in images_and_identities]
-            image_identities = [identity for _, identity in images_and_identities]
-            teacher_prompts = [str(row["teacher_prompt"]) for row in rows]
-            chat_texts = [chat_prompt(processor, teacher_prompt) for teacher_prompt in teacher_prompts]
-            inputs = processor(text=chat_texts, images=images, return_tensors="pt", padding=True)
+        batch_starts = list(range(0, total_examples, args.batch_size))
+        future = None
+        if batch_starts:
+            future = prefetch_executor.submit(
+                prepare_batch,
+                indices[: args.batch_size],
+                dataset,
+                image_store,
+                processor,
+                decode_executor,
+            )
+        for batch_number, batch_start in enumerate(batch_starts):
+            assert future is not None
+            prepared = future.result()
+            next_start = batch_start + args.batch_size
+            future = (
+                prefetch_executor.submit(
+                    prepare_batch,
+                    indices[next_start : next_start + args.batch_size],
+                    dataset,
+                    image_store,
+                    processor,
+                    decode_executor,
+                )
+                if batch_number + 1 < len(batch_starts)
+                else None
+            )
+            batch_indices = prepared["batch_indices"]
+            rows = prepared["rows"]
+            images = prepared["images"]
+            image_identities = prepared["image_identities"]
+            teacher_prompts = prepared["teacher_prompts"]
+            chat_texts = prepared["chat_texts"]
+            inputs = prepared["inputs"]
             inputs = {key: value.to(device) for key, value in inputs.items()}
 
             with torch.inference_mode():
@@ -545,6 +603,8 @@ def main() -> None:
                     handle.flush()
             progress.update(len(batch_indices))
         progress.close()
+    prefetch_executor.shutdown()
+    decode_executor.shutdown()
 
     manifest = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
