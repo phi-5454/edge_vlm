@@ -21,11 +21,17 @@ if [[ "${LOCAL_FILES_ONLY}" == "1" ]]; then
   local_files_args+=(--local-files-only)
 fi
 
+if [[ "${SHARD_COUNT}" == "1" && "${SHARD_INDEX}" == "0" ]]; then
+  OUTPUT="${OUTPUT_DIR}/smolvlm_yes_no_vsr_token1000_img512.jsonl"
+else
+  OUTPUT="${OUTPUT_DIR}/smolvlm_yes_no_vsr_token1000_img512.shard$(printf '%03d' "${SHARD_INDEX}").jsonl"
+fi
+
 uv run python scripts/cache_smolvlm_yes_no_teacher.py \
   --dataset "${DATASET}" \
   --image-source student-512 \
   --model "${MODEL}" \
-  --output "${OUTPUT_DIR}/smolvlm_yes_no_vsr_token1000_img512.shard$(printf '%03d' "${SHARD_INDEX}").jsonl" \
+  --output "${OUTPUT}" \
   --shard-count "${SHARD_COUNT}" \
   --shard-index "${SHARD_INDEX}" \
   --device "${DEVICE}" \

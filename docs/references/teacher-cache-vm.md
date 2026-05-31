@@ -62,6 +62,9 @@ Single process over the whole dataset:
 scripts/run_smolvlm_yes_no_teacher_cache_vm.sh
 ```
 
+The launcher and the manual single-process command both write
+`artifacts/teacher_cache/smolvlm_yes_no_vsr_token1000_img512.jsonl`.
+
 Manual equivalent:
 
 ```bash
@@ -113,6 +116,8 @@ squared L2, and mean target probability for records written by that invocation.
 - `--max-examples N` is only for smoke tests. Omitting it caches the selected
   shard.
 - `--force` replaces an existing output. Use `--resume` for interrupted jobs.
+- On resume, the script prints `selected`, `completed`, and `remaining` counts.
+  The progress bar starts at the completed count.
 - `--batch-size 8` batches different prompts and images in one forward pass.
   Increase it while GPU memory permits; lower it if CUDA runs out of memory.
 - `--decode-workers 8` parallelizes JPEG decoding. CPU preparation for the next

@@ -384,9 +384,15 @@ def main() -> None:
     manifest_path = args.output.with_suffix(".manifest.json")
 
     dataset = load_examples_dataset(args.dataset, args.split)
-    indices = planned_indices(len(dataset), args)
+    selected_indices = planned_indices(len(dataset), args)
     already_done = completed_indices(args.output) if args.resume else set()
-    indices = [index for index in indices if index not in already_done]
+    resumed_indices = set(selected_indices) & already_done
+    indices = [index for index in selected_indices if index not in already_done]
+    if args.resume:
+        print(
+            f"Resume scan: output={args.output} selected={len(selected_indices)} "
+            f"completed={len(resumed_indices)} remaining={len(indices)}"
+        )
     if args.dry_run:
         print(
             json.dumps(
@@ -395,8 +401,9 @@ def main() -> None:
                     "image_source": args.image_source,
                     "split": args.split,
                     "dataset_rows": len(dataset),
-                    "planned_records": len(indices),
-                    "skipped_existing_records": len(already_done),
+                    "selected_records": len(selected_indices),
+                    "planned_records_this_invocation": len(indices),
+                    "skipped_existing_records": len(resumed_indices),
                     "first_index": indices[0] if indices else None,
                     "last_index": indices[-1] if indices else None,
                     "shard_count": args.shard_count,
@@ -440,12 +447,14 @@ def main() -> None:
     image_store = ParquetImageStore(args.dataset)
 
     total_examples = len(indices)
+    selected_examples = len(selected_indices)
     output_mode = "a" if args.resume else "w"
     decode_executor = ThreadPoolExecutor(max_workers=args.decode_workers)
     prefetch_executor = ThreadPoolExecutor(max_workers=1)
     with args.output.open(output_mode, encoding="utf-8") as handle:
         progress = tqdm(
-            total=total_examples,
+            total=selected_examples,
+            initial=len(resumed_indices),
             desc="Caching teacher logits",
             unit="example",
         )
@@ -616,7 +625,8 @@ def main() -> None:
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "output": str(args.output),
         "records": records_written,
-        "records_already_done": len(already_done),
+        "records_already_done": len(resumed_indices),
+        "selected_records": selected_examples,
         "planned_records_this_invocation": total_examples,
         "image_source": args.image_source,
         "teacher_metrics": {
