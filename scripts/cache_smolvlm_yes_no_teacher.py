@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-index", type=int, default=None)
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--variant-batch-size", type=int, default=10, help=argparse.SUPPRESS)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--torch-dtype", default="auto")
@@ -163,6 +164,8 @@ def planned_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
         raise ValueError("--temperature must be positive")
     if args.top_k <= 0:
         raise ValueError("--top-k must be positive")
+    if args.batch_size <= 0:
+        raise ValueError("--batch-size must be positive")
     if args.shard_count <= 0:
         raise ValueError("--shard-count must be positive")
     if not 0 <= args.shard_index < args.shard_count:
@@ -369,6 +372,7 @@ def main() -> None:
                     "last_index": indices[-1] if indices else None,
                     "shard_count": args.shard_count,
                     "shard_index": args.shard_index,
+                    "batch_size": args.batch_size,
                     "output": str(args.output),
                 },
                 indent=2,
@@ -407,131 +411,146 @@ def main() -> None:
     total_examples = len(indices)
     output_mode = "a" if args.resume else "w"
     with args.output.open(output_mode, encoding="utf-8") as handle:
-        for dataset_index in tqdm(
-            indices,
+        progress = tqdm(
             total=total_examples,
             desc="Caching teacher logits",
             unit="example",
-        ):
-            row = dataset[dataset_index]
-            image, image_identity = load_cache_image(row, args, image_store)
-            teacher_prompt = str(row["teacher_prompt"])
-            chat_text = chat_prompt(processor, teacher_prompt)
-            inputs = processor(text=chat_text, images=[image], return_tensors="pt")
+        )
+        for batch_start in range(0, total_examples, args.batch_size):
+            batch_indices = indices[batch_start : batch_start + args.batch_size]
+            rows = [dataset[dataset_index] for dataset_index in batch_indices]
+            images_and_identities = [load_cache_image(row, args, image_store) for row in rows]
+            images = [image for image, _ in images_and_identities]
+            image_identities = [identity for _, identity in images_and_identities]
+            teacher_prompts = [str(row["teacher_prompt"]) for row in rows]
+            chat_texts = [chat_prompt(processor, teacher_prompt) for teacher_prompt in teacher_prompts]
+            inputs = processor(text=chat_texts, images=images, return_tensors="pt", padding=True)
             inputs = {key: value.to(device) for key, value in inputs.items()}
 
             with torch.inference_mode():
                 outputs = model(**inputs, use_cache=False)
 
-            next_logits = outputs.logits[0, -1].float()
-            scaled_logits = next_logits / args.temperature
-            log_probs = torch.log_softmax(scaled_logits, dim=-1)
-            probs = torch.softmax(scaled_logits, dim=-1)
-            entropy = float((-(probs * log_probs).sum()).detach().cpu())
-            yes_logit = float(next_logits[yes_token_id].detach().cpu())
-            no_logit = float(next_logits[no_token_id].detach().cpu())
-            standalone_metrics = yes_no_metrics(
-                yes_logit=yes_logit,
-                no_logit=no_logit,
-                hard_label=str(row["answer"]),
-                temperature=args.temperature,
-            )
-
-            answer_variants = [
-                variant for variants in ANSWER_VARIANTS.values() for variant in variants
-            ]
-            answer_variant_scores = sequence_log_likelihoods(
-                processor=processor,
-                answer_texts=answer_variants,
-                prompt_next_logits=next_logits,
-                temperature=args.temperature,
-            )
-
-            input_ids = inputs["input_ids"][0].detach().cpu().tolist()
-            record = {
-                "cache_schema_version": 1,
-                "dataset_index": dataset_index,
-                "source_subset": row["source_subset"],
-                "source": row["source"],
-                "original_index": int(row["original_index"]),
-                "qa_index": int(row["qa_index"]),
-                "hard_label": row["answer"],
-                "teacher_prompt": teacher_prompt,
-                "student_prompt": row["student_prompt"],
-                "removed_last_line": row["removed_last_line"],
-                "input_identity": {
-                    "filtered_dataset": str(args.dataset),
-                    "image_source": args.image_source,
-                    "split": args.split,
-                    "model": args.model,
-                    "model_revision": model_revision,
-                    "teacher_prompt_sha256": hashlib.sha256(
-                        teacher_prompt.encode("utf-8")
-                    ).hexdigest(),
-                    "student_prompt_sha256": hashlib.sha256(
-                        str(row["student_prompt"]).encode("utf-8")
-                    ).hexdigest(),
-                    "image_sha256_png": image_sha256(image),
-                    "image_identity": image_identity,
-                },
-                "teacher_input": {
-                    "input_ids": input_ids,
-                    "tokens": processor.tokenizer.convert_ids_to_tokens(input_ids),
-                    "attention_mask": inputs["attention_mask"][0].detach().cpu().tolist(),
-                    "chat_template_text": chat_text,
-                },
-                "image_preprocessing": {
-                    "original_image_size": list(image.size),
-                    "original_image_mode": image.mode,
-                    "image_source": args.image_source,
-                    "image_identity": image_identity,
-                    "pixel_values": tensor_metadata(inputs["pixel_values"]),
-                    "pixel_attention_mask": tensor_metadata(inputs["pixel_attention_mask"]),
-                    "image_token_id": int(model.config.image_token_id),
-                    "image_token_count": int(
-                        (inputs["input_ids"] == int(model.config.image_token_id)).sum().item()
-                    ),
-                },
-                "teacher_logits": {
-                    "temperature": args.temperature,
-                    "top_k": topk_payload(next_logits, processor, args.top_k),
-                    "standalone": {
-                        "yes": {
-                            "token_id": int(yes_token_id),
-                            "token": processor.tokenizer.convert_ids_to_tokens([yes_token_id])[0],
-                            "logit": yes_logit,
-                            "log_likelihood": float(log_probs[yes_token_id].detach().cpu()),
-                        },
-                        "no": {
-                            "token_id": int(no_token_id),
-                            "token": processor.tokenizer.convert_ids_to_tokens([no_token_id])[0],
-                            "logit": no_logit,
-                            "log_likelihood": float(log_probs[no_token_id].detach().cpu()),
-                        },
-                        "yes_minus_no_logit": yes_logit - no_logit,
-                        "entropy": entropy,
+            sequence_lengths = inputs["attention_mask"].sum(dim=1)
+            for batch_offset, dataset_index in enumerate(batch_indices):
+                row = rows[batch_offset]
+                image = images[batch_offset]
+                image_identity = image_identities[batch_offset]
+                teacher_prompt = teacher_prompts[batch_offset]
+                chat_text = chat_texts[batch_offset]
+                sequence_length = int(sequence_lengths[batch_offset].item())
+                next_logits = outputs.logits[batch_offset, sequence_length - 1].float()
+                scaled_logits = next_logits / args.temperature
+                log_probs = torch.log_softmax(scaled_logits, dim=-1)
+                probs = torch.softmax(scaled_logits, dim=-1)
+                entropy = float((-(probs * log_probs).sum()).detach().cpu())
+                yes_logit = float(next_logits[yes_token_id].detach().cpu())
+                no_logit = float(next_logits[no_token_id].detach().cpu())
+                standalone_metrics = yes_no_metrics(
+                    yes_logit=yes_logit,
+                    no_logit=no_logit,
+                    hard_label=str(row["answer"]),
+                    temperature=args.temperature,
+                )
+                answer_variants = [
+                    variant for variants in ANSWER_VARIANTS.values() for variant in variants
+                ]
+                answer_variant_scores = sequence_log_likelihoods(
+                    processor=processor,
+                    answer_texts=answer_variants,
+                    prompt_next_logits=next_logits,
+                    temperature=args.temperature,
+                )
+                input_ids = inputs["input_ids"][batch_offset, :sequence_length].detach().cpu().tolist()
+                attention_mask = (
+                    inputs["attention_mask"][batch_offset, :sequence_length].detach().cpu().tolist()
+                )
+                record = {
+                    "cache_schema_version": 1,
+                    "dataset_index": dataset_index,
+                    "source_subset": row["source_subset"],
+                    "source": row["source"],
+                    "original_index": int(row["original_index"]),
+                    "qa_index": int(row["qa_index"]),
+                    "hard_label": row["answer"],
+                    "teacher_prompt": teacher_prompt,
+                    "student_prompt": row["student_prompt"],
+                    "removed_last_line": row["removed_last_line"],
+                    "input_identity": {
+                        "filtered_dataset": str(args.dataset),
+                        "image_source": args.image_source,
+                        "split": args.split,
+                        "model": args.model,
+                        "model_revision": model_revision,
+                        "teacher_prompt_sha256": hashlib.sha256(
+                            teacher_prompt.encode("utf-8")
+                        ).hexdigest(),
+                        "student_prompt_sha256": hashlib.sha256(
+                            str(row["student_prompt"]).encode("utf-8")
+                        ).hexdigest(),
+                        "image_sha256_png": image_sha256(image),
+                        "image_identity": image_identity,
                     },
-                    "answer_variant_sequences": answer_variant_scores,
-                },
-                "teacher_metrics": {
-                    "standalone_yes_no": standalone_metrics,
-                    "metric_definitions": {
-                        "accuracy": "argmax over standalone yes/no logits equals hard label",
-                        "l1_one_hot": "L1 distance between standalone yes/no softmax and one-hot hard label",
-                        "l2_one_hot": "L2 distance between standalone yes/no softmax and one-hot hard label",
-                        "nll": "negative log-likelihood of hard label under standalone yes/no softmax",
+                    "teacher_input": {
+                        "input_ids": input_ids,
+                        "tokens": processor.tokenizer.convert_ids_to_tokens(input_ids),
+                        "attention_mask": attention_mask,
+                        "chat_template_text": chat_text,
                     },
-                },
-            }
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-            records_written += 1
-            update_metric_sums(metric_sums, standalone_metrics)
-            if args.flush_every > 0 and records_written % args.flush_every == 0:
-                handle.flush()
-            tqdm.write(
-                f"cached {records_written}/{total_examples}: "
-                f"{row['source_subset']}#{row['original_index']} qa={row['qa_index']}"
-            )
+                    "image_preprocessing": {
+                        "original_image_size": list(image.size),
+                        "original_image_mode": image.mode,
+                        "image_source": args.image_source,
+                        "image_identity": image_identity,
+                        "pixel_values": tensor_metadata(inputs["pixel_values"][batch_offset : batch_offset + 1]),
+                        "pixel_attention_mask": tensor_metadata(
+                            inputs["pixel_attention_mask"][batch_offset : batch_offset + 1]
+                        ),
+                        "image_token_id": int(model.config.image_token_id),
+                        "image_token_count": int(
+                            (
+                                inputs["input_ids"][batch_offset, :sequence_length]
+                                == int(model.config.image_token_id)
+                            ).sum().item()
+                        ),
+                    },
+                    "teacher_logits": {
+                        "temperature": args.temperature,
+                        "top_k": topk_payload(next_logits, processor, args.top_k),
+                        "standalone": {
+                            "yes": {
+                                "token_id": int(yes_token_id),
+                                "token": processor.tokenizer.convert_ids_to_tokens([yes_token_id])[0],
+                                "logit": yes_logit,
+                                "log_likelihood": float(log_probs[yes_token_id].detach().cpu()),
+                            },
+                            "no": {
+                                "token_id": int(no_token_id),
+                                "token": processor.tokenizer.convert_ids_to_tokens([no_token_id])[0],
+                                "logit": no_logit,
+                                "log_likelihood": float(log_probs[no_token_id].detach().cpu()),
+                            },
+                            "yes_minus_no_logit": yes_logit - no_logit,
+                            "entropy": entropy,
+                        },
+                        "answer_variant_sequences": answer_variant_scores,
+                    },
+                    "teacher_metrics": {
+                        "standalone_yes_no": standalone_metrics,
+                        "metric_definitions": {
+                            "accuracy": "argmax over standalone yes/no logits equals hard label",
+                            "l1_one_hot": "L1 distance between standalone yes/no softmax and one-hot hard label",
+                            "l2_one_hot": "L2 distance between standalone yes/no softmax and one-hot hard label",
+                            "nll": "negative log-likelihood of hard label under standalone yes/no softmax",
+                        },
+                    },
+                }
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                records_written += 1
+                update_metric_sums(metric_sums, standalone_metrics)
+                if args.flush_every > 0 and records_written % args.flush_every == 0:
+                    handle.flush()
+            progress.update(len(batch_indices))
+        progress.close()
 
     manifest = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
