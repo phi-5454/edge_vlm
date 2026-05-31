@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 import hashlib
 import json
 import os
@@ -12,15 +13,15 @@ from typing import Any
 
 import torch
 import transformers
-from datasets import load_from_disk
+import pyarrow.parquet as pq
+from datasets import load_dataset, load_from_disk
 from PIL import Image
 from tqdm.auto import tqdm
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolVLM-256M-Instruct"
-DEFAULT_DATASET = Path("data/the_cauldron_yes_no_vsr_token1000_img512/dataset")
-DEFAULT_STUDENT_IMAGE_ROOT = Path("data/the_cauldron_yes_no_vsr_token1000_img512")
+DEFAULT_DATASET = Path("data/the_cauldron_yes_no_vsr_token1000_img512_parquet")
 DEFAULT_OUTPUT = Path("artifacts/teacher_cache/smolvlm_yes_no_vsr_token1000_img512.jsonl")
 ANSWER_VARIANTS = {
     "yes": ["yes", "Yes", " yes", "Yes.", "yes."],
@@ -31,12 +32,11 @@ ANSWER_VARIANTS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Cache SmolVLM yes/no teacher logits.")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--student-image-root", type=Path, default=DEFAULT_STUDENT_IMAGE_ROOT)
     parser.add_argument(
         "--image-source",
         choices=["student-512"],
         default="student-512",
-        help="Use the 512x512 padded student sidecar images.",
+        help="Use the 512x512 padded student images stored in parquet.",
     )
     parser.add_argument("--split", default="combined")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -91,31 +91,70 @@ def chat_prompt(processor: Any, question: str) -> str:
     return processor.apply_chat_template(messages, add_generation_prompt=True)
 
 
+def load_examples_dataset(dataset_path: Path, split: str) -> Any:
+    parquet_file = dataset_path / f"{split}.parquet"
+    if parquet_file.exists():
+        return load_dataset("parquet", data_files=str(parquet_file), split="train")
+    if dataset_path.suffix == ".parquet":
+        return load_dataset("parquet", data_files=str(dataset_path), split="train")
+    return load_from_disk(dataset_path)[split]
+
+
+class ParquetImageStore:
+    def __init__(self, dataset_path: Path) -> None:
+        images_parquet = dataset_path / "images.parquet"
+        if not images_parquet.exists():
+            raise FileNotFoundError(
+                f"{images_parquet} not found. Build it with "
+                "scripts/build_student_img512_parquet_dataset.py."
+            )
+        self.parquet = pq.ParquetFile(images_parquet)
+        self.row_group_starts: list[int] = []
+        offset = 0
+        for row_group in range(self.parquet.num_row_groups):
+            self.row_group_starts.append(offset)
+            offset += self.parquet.metadata.row_group(row_group).num_rows
+        ids = pq.read_table(images_parquet, columns=["student_image_id"]).column(0).to_pylist()
+        self.image_index = {str(image_id): index for index, image_id in enumerate(ids)}
+        self.cached_row_group: int | None = None
+        self.cached_rows: list[dict[str, Any]] = []
+
+    def get(self, image_id: str) -> dict[str, Any]:
+        row_index = self.image_index[image_id]
+        row_group = bisect_right(self.row_group_starts, row_index) - 1
+        if row_group != self.cached_row_group:
+            self.cached_rows = self.parquet.read_row_group(row_group).to_pylist()
+            self.cached_row_group = row_group
+        local_index = row_index - self.row_group_starts[row_group]
+        return self.cached_rows[local_index]
+
+
 def load_cache_image(
     row: dict[str, Any],
     args: argparse.Namespace,
+    image_store: ParquetImageStore,
 ) -> tuple[Image.Image, dict[str, Any]]:
-    if "student_image_path" not in row:
+    if "student_image_id" not in row:
         raise KeyError(
-            "Dataset rows do not contain student_image_path. Use "
-            "data/the_cauldron_yes_no_vsr_token1000_img512/dataset or rebuild the "
-            "512x512 student image dataset."
+            "Dataset rows do not contain student_image_id. Use the parquet dataset "
+            "built by scripts/build_student_img512_parquet_dataset.py."
         )
-    image_path = args.student_image_root / str(row["student_image_path"])
-    with Image.open(image_path) as loaded:
+    image_row = image_store.get(str(row["student_image_id"]))
+    with Image.open(BytesIO(image_row["image_bytes"])) as loaded:
         image = loaded.convert("RGB")
     return image, {
         "image_source": "student-512",
-        "student_image_root": str(args.student_image_root),
-        "student_image_path": str(row["student_image_path"]),
-        "student_image_sha256": row.get("student_image_sha256"),
-        "student_image_format": row.get("student_image_format"),
-        "original_size": row.get("original_size"),
-        "resized_content_size": row.get("resized_content_size"),
-        "canvas_size": row.get("canvas_size"),
-        "scale": row.get("scale"),
-        "padding": row.get("padding"),
-        "background_rgb": row.get("background_rgb"),
+        "student_image_id": str(row["student_image_id"]),
+        "student_image_path": image_row.get("student_image_path"),
+        "student_image_sha256": image_row.get("student_image_sha256"),
+        "student_image_format": image_row.get("student_image_format"),
+        "original_size": image_row.get("original_size"),
+        "resized_content_size": image_row.get("resized_content_size"),
+        "canvas_size": image_row.get("canvas_size"),
+        "scale": image_row.get("scale"),
+        "padding": image_row.get("padding"),
+        "background_rgb": image_row.get("background_rgb"),
+        "image_bytes_source": "images.parquet",
     }
 
 
@@ -320,8 +359,7 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     manifest_path = args.output.with_suffix(".manifest.json")
 
-    dataset_dict = load_from_disk(args.dataset)
-    dataset = dataset_dict[args.split]
+    dataset = load_examples_dataset(args.dataset, args.split)
     indices = planned_indices(len(dataset), args)
     already_done = completed_indices(args.output) if args.resume else set()
     indices = [index for index in indices if index not in already_done]
@@ -330,7 +368,6 @@ def main() -> None:
             json.dumps(
                 {
                     "dataset": str(args.dataset),
-                    "student_image_root": str(args.student_image_root),
                     "image_source": args.image_source,
                     "split": args.split,
                     "dataset_rows": len(dataset),
@@ -373,6 +410,7 @@ def main() -> None:
     no_token_id = processor.tokenizer("no", add_special_tokens=False)["input_ids"][0]
     records_written = 0
     metric_sums = empty_metric_sums()
+    image_store = ParquetImageStore(args.dataset)
 
     total_examples = len(indices)
     output_mode = "a" if args.resume else "w"
@@ -384,7 +422,7 @@ def main() -> None:
             unit="example",
         ):
             row = dataset[dataset_index]
-            image, image_identity = load_cache_image(row, args)
+            image, image_identity = load_cache_image(row, args, image_store)
             teacher_prompt = str(row["teacher_prompt"])
             chat_text = chat_prompt(processor, teacher_prompt)
             inputs = processor(text=chat_text, images=[image], return_tensors="pt")
@@ -437,7 +475,6 @@ def main() -> None:
                 "removed_last_line": row["removed_last_line"],
                 "input_identity": {
                     "filtered_dataset": str(args.dataset),
-                    "student_image_root": str(args.student_image_root),
                     "image_source": args.image_source,
                     "split": args.split,
                     "model": args.model,
@@ -517,7 +554,6 @@ def main() -> None:
         "records_already_done": len(already_done),
         "planned_records_this_invocation": total_examples,
         "image_source": args.image_source,
-        "student_image_root": str(args.student_image_root),
         "teacher_metrics": {
             "standalone_yes_no": aggregate_metric_sums(metric_sums, records_written),
             "metric_definitions": {

@@ -2,21 +2,39 @@
 
 This runbook is for caching SmolVLM-256M teacher outputs on a VM with a CUDA GPU.
 
-## Inputs
+## Required Data
 
-Default paths expected by the script:
+For caching on the VM, copy this directory:
 
-- 512x512 student image dataset:
-  `data/the_cauldron_yes_no_vsr_token1000_img512/dataset`
-- 512x512 student image sidecars:
-  `data/the_cauldron_yes_no_vsr_token1000_img512/images`
-- Cache output:
-  `artifacts/teacher_cache/smolvlm_yes_no_vsr_token1000_img512.jsonl`
+- `data/the_cauldron_yes_no_vsr_token1000_img512_parquet/`
+
+It must contain:
+
+- `combined.parquet`
+- `clevr.parquet`
+- `vqav2.parquet`
+- `vsr.parquet`
+- `images.parquet`
+
+`images.parquet` contains the 512x512 JPEG bytes. The cache script reads images
+from parquet and does not need `data/the_cauldron/` or the JPEG sidecar
+directory `data/the_cauldron_yes_no_vsr_token1000_img512/images/`.
+
+Default cache output:
+
+- `artifacts/teacher_cache/smolvlm_yes_no_vsr_token1000_img512.jsonl`
 
 Caching uses the original `teacher_prompt` and the 512x512 padded student image.
-The script does not load full-resolution Cauldron source images.
 
 ## Preflight
+
+If the parquet artifact is not present yet, build it locally from the 512x512
+sidecar dataset before copying data to the VM. This build step requires
+`data/the_cauldron_yes_no_vsr_token1000_img512/`, but the caching step does not:
+
+```bash
+uv run python scripts/build_student_img512_parquet_dataset.py --force
+```
 
 Check dataset visibility and planned record count:
 
@@ -48,9 +66,7 @@ Manual equivalent:
 
 ```bash
 uv run python scripts/cache_smolvlm_yes_no_teacher.py \
-  --dataset data/the_cauldron_yes_no_vsr_token1000_img512/dataset \
-  --student-image-root data/the_cauldron_yes_no_vsr_token1000_img512 \
-  --image-source student-512 \
+  --dataset data/the_cauldron_yes_no_vsr_token1000_img512_parquet \
   --output artifacts/teacher_cache/smolvlm_yes_no_vsr_token1000_img512.jsonl \
   --device cuda \
   --torch-dtype float16 \
@@ -74,7 +90,7 @@ SHARD_COUNT=4 SHARD_INDEX=3 scripts/run_smolvlm_yes_no_teacher_cache_vm.sh
 Each JSONL record includes:
 
 - hard yes/no label and exact dataset identity
-- 512x512 student image sidecar identity and resize metadata
+- 512x512 parquet image identity and resize metadata
 - teacher prompt, student prompt, prompt hashes, and cache image hash
 - teacher input token ids, token strings, and attention mask
 - image preprocessing tensor metadata and image-token count
