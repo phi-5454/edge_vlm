@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="combined")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--image-processor-backend", choices=["torchvision", "pil"], default="torchvision")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-examples", type=int, default=None)
@@ -411,6 +412,7 @@ def main() -> None:
         args.model,
         local_files_only=args.local_files_only,
         trust_remote_code=args.trust_remote_code,
+        backend=args.image_processor_backend,
     )
     processor.tokenizer.padding_side = "right"
     model = AutoModelForImageTextToText.from_pretrained(

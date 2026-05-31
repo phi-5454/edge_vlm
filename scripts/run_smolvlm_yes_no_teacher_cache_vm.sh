@@ -10,6 +10,7 @@ DEVICE="${DEVICE:-cuda}"
 TORCH_DTYPE="${TORCH_DTYPE:-float16}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 DECODE_WORKERS="${DECODE_WORKERS:-8}"
+IMAGE_PROCESSOR_BACKEND="${IMAGE_PROCESSOR_BACKEND:-torchvision}"
 LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-0}"
 
 mkdir -p "${OUTPUT_DIR}/logs"
@@ -30,6 +31,7 @@ uv run python scripts/cache_smolvlm_yes_no_teacher.py \
   --torch-dtype "${TORCH_DTYPE}" \
   --batch-size "${BATCH_SIZE}" \
   --decode-workers "${DECODE_WORKERS}" \
+  --image-processor-backend "${IMAGE_PROCESSOR_BACKEND}" \
   --top-k 10 \
   --temperature 1.0 \
   --resume \
