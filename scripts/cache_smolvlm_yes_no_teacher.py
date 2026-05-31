@@ -73,12 +73,6 @@ def dtype_from_arg(value: str, device: str) -> torch.dtype:
     return getattr(torch, value)
 
 
-def image_sha256(image: Image.Image) -> str:
-    buf = BytesIO()
-    image.save(buf, format="PNG")
-    return hashlib.sha256(buf.getvalue()).hexdigest()
-
-
 def chat_prompt(processor: Any, question: str) -> str:
     messages = [
         {
@@ -487,7 +481,7 @@ def main() -> None:
                         "student_prompt_sha256": hashlib.sha256(
                             str(row["student_prompt"]).encode("utf-8")
                         ).hexdigest(),
-                        "image_sha256_png": image_sha256(image),
+                        "image_sha256": image_identity["student_image_sha256"],
                         "image_identity": image_identity,
                     },
                     "teacher_input": {
