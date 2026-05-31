@@ -24,8 +24,8 @@ DEFAULT_MODEL = "HuggingFaceTB/SmolVLM-256M-Instruct"
 DEFAULT_DATASET = Path("data/the_cauldron_yes_no_vsr_token1000_img512_parquet")
 DEFAULT_OUTPUT = Path("artifacts/teacher_cache/smolvlm_yes_no_vsr_token1000_img512.jsonl")
 ANSWER_VARIANTS = {
-    "yes": ["yes", "Yes", " yes", "Yes.", "yes."],
-    "no": ["no", "No", " no", "No.", "no."],
+    "yes": ["yes", "Yes", " yes"],
+    "no": ["no", "No", " no"],
 }
 
 
@@ -298,32 +298,18 @@ def entropy_from_log_probs(log_probs: torch.Tensor) -> float:
     return float((-(probs * log_probs).sum()).detach().cpu())
 
 
-def repeat_past_key_values(past_key_values: Any, repeats: int) -> Any:
-    if hasattr(past_key_values, "batch_repeat_interleave"):
-        past_key_values.batch_repeat_interleave(repeats)
-        return past_key_values
-    return tuple(
-        tuple(tensor.repeat_interleave(repeats, dim=0) for tensor in layer)
-        for layer in past_key_values
-    )
-
-
 def sequence_log_likelihoods(
-    model: Any,
     processor: Any,
     answer_texts: list[str],
-    prompt_attention_mask: torch.Tensor,
     prompt_next_logits: torch.Tensor,
-    past_key_values: Any,
-    device: str,
     temperature: float,
 ) -> list[dict[str, Any]]:
     token_ids = [
         processor.tokenizer(answer_text, add_special_tokens=False)["input_ids"]
         for answer_text in answer_texts
     ]
-    if any(not ids or len(ids) > 2 for ids in token_ids):
-        raise ValueError("Answer variants must tokenize to one or two tokens")
+    if any(len(ids) != 1 for ids in token_ids):
+        raise ValueError("Answer variants must tokenize to exactly one token")
 
     first_log_probs = torch.log_softmax(prompt_next_logits.float() / temperature, dim=-1)
     first_entropy = entropy_from_log_probs(first_log_probs)
@@ -332,38 +318,6 @@ def sequence_log_likelihoods(
         for ids in token_ids
     ]
     step_entropies = [[first_entropy] for _ in token_ids]
-
-    continuation_indices = [index for index, ids in enumerate(token_ids) if len(ids) == 2]
-    if continuation_indices:
-        continuation_first_ids = torch.tensor(
-            [[token_ids[index][0]] for index in continuation_indices],
-            dtype=torch.long,
-            device=device,
-        )
-        continuation_attention_mask = torch.cat(
-            [
-                prompt_attention_mask.repeat(len(continuation_indices), 1),
-                torch.ones((len(continuation_indices), 1), dtype=prompt_attention_mask.dtype, device=device),
-            ],
-            dim=1,
-        )
-        repeated_past = repeat_past_key_values(past_key_values, len(continuation_indices))
-        with torch.inference_mode():
-            continuation_outputs = model(
-                input_ids=continuation_first_ids,
-                attention_mask=continuation_attention_mask,
-                past_key_values=repeated_past,
-                use_cache=False,
-            )
-        for batch_index, answer_index in enumerate(continuation_indices):
-            log_probs = torch.log_softmax(
-                continuation_outputs.logits[batch_index, -1].float() / temperature,
-                dim=-1,
-            )
-            step_logprobs[answer_index].append(
-                float(log_probs[token_ids[answer_index][1]].detach().cpu())
-            )
-            step_entropies[answer_index].append(entropy_from_log_probs(log_probs))
 
     scores: list[dict[str, Any]] = []
     for answer_text, ids, logprobs, entropies in zip(
@@ -467,7 +421,7 @@ def main() -> None:
             inputs = {key: value.to(device) for key, value in inputs.items()}
 
             with torch.inference_mode():
-                outputs = model(**inputs, use_cache=True)
+                outputs = model(**inputs, use_cache=False)
 
             next_logits = outputs.logits[0, -1].float()
             scaled_logits = next_logits / args.temperature
@@ -487,13 +441,9 @@ def main() -> None:
                 variant for variants in ANSWER_VARIANTS.values() for variant in variants
             ]
             answer_variant_scores = sequence_log_likelihoods(
-                model=model,
                 processor=processor,
                 answer_texts=answer_variants,
-                prompt_attention_mask=inputs["attention_mask"],
                 prompt_next_logits=next_logits,
-                past_key_values=outputs.past_key_values,
-                device=device,
                 temperature=args.temperature,
             )
 

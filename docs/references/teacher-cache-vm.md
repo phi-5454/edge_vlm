@@ -95,7 +95,7 @@ Each JSONL record includes:
 - image preprocessing tensor metadata and image-token count
 - top-k next-token logits
 - standalone yes/no logits, log-likelihoods, yes-minus-no logit, and entropy
-- sequence log-likelihoods for yes/no answer variants
+- first-token log-likelihoods for yes/no answer variants
 - per-record standalone yes/no metrics: prediction, correctness, NLL, L1/L2
   distance to the hard one-hot label, and target probability
 
@@ -109,5 +109,6 @@ squared L2, and mean target probability for records written by that invocation.
 - `--max-examples N` is only for smoke tests. Omitting it caches the selected
   shard.
 - `--force` replaces an existing output. Use `--resume` for interrupted jobs.
-- Answer-variant scoring reuses the prompt KV cache. It does not rerun the
-  multimodal prompt for each variant.
+- Answer-variant scoring uses the first next-token logits from the prompt
+  forward pass. It does not run continuation steps or rerun the multimodal
+  prompt.
