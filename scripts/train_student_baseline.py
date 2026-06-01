@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# Colab shells can inherit Jupyter's inline backend, which is invalid outside
+# the notebook kernel. Training does not render interactive figures.
+os.environ["MPLBACKEND"] = "Agg"
 
 import hydra
 import lightning as L
