@@ -1,0 +1,20 @@
+defaults:
+  - student_baseline
+  - _self_
+
+# CPU-only profile for the local 4-core / 8-thread, 16 GB host. images.parquet
+# row groups are roughly 354 MB and cached once per worker, so avoid worker
+# processes entirely on this machine.
+data:
+  batch_size: 8
+  num_workers: 0
+  prefetch_factor: 2
+  persistent_workers: false
+  pin_memory: false
+  tensor_cache_size: 8
+
+wandb:
+  tags: [student, baseline, mobilenet-v3-small, distillation, local-run]
+
+experiment:
+  run_name: student-baseline-local-alpha-${distillation.alpha}
