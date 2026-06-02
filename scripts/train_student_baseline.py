@@ -196,7 +196,10 @@ def main(cfg: DictConfig) -> None:
         logger=logger,
     )
     trainer.fit(module, datamodule=data)
-    trainer.test(module, datamodule=data, ckpt_path="best")
+    # The checkpoint is produced by this training run. Explicitly permit the
+    # full Lightning checkpoint so PyTorch 2.6 can reload older files that
+    # serialized pathlib paths before the data-module metadata was sanitized.
+    trainer.test(module, datamodule=data, ckpt_path="best", weights_only=False)
     logger.experiment.save(str(report_path), policy="now")
     wandb.finish()
 

@@ -273,6 +273,10 @@ class StudentDataModule(L.LightningDataModule):
         if missing_teacher_policy not in {"filter", "keep"}:
             raise ValueError("missing_teacher_policy must be 'filter' or 'keep'.")
         self.save_hyperparameters()
+        # Keep Lightning checkpoints compatible with PyTorch's safe
+        # weights-only loader. pathlib.PosixPath is not allowlisted by default.
+        self.hparams.dataset_root = str(dataset_root)
+        self.hparams.teacher_cache = str(teacher_cache) if teacher_cache is not None else None
         self.rows = load_prompt_rows(dataset_root)
         self.vocabulary = CompactVocabulary.from_rows(self.rows)
         self.teacher_targets = load_teacher_targets(teacher_cache)

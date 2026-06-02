@@ -211,3 +211,8 @@ def test_data_module_filters_rows_missing_teacher_targets(tmp_path: Path) -> Non
     assert sum(data.split_sizes().values()) == 1
     assert sum(data.full_split_sizes().values()) == 3
     assert data.cache_coverage()["covered_fraction"] == 1 / 3
+    assert data.hparams.dataset_root == str(tmp_path)
+    assert data.hparams.teacher_cache == str(cache)
+    metadata = tmp_path / "datamodule_hparams.pt"
+    torch.save(dict(data.hparams), metadata)
+    assert torch.load(metadata, weights_only=True)["dataset_root"] == str(tmp_path)

@@ -37,12 +37,16 @@ cache-covered prompts for every alpha value, including the hard-label-only
 baseline, so sweep results remain comparable. A hard-label-only run can opt into
 all prompts with `data.missing_teacher_policy=keep`. An invalid trailing JSONL
 record is ignored as an interrupted write; malformed records elsewhere fail.
+Data-module paths are serialized as strings so new Lightning checkpoints remain
+compatible with PyTorch's safe weights-only loader. Testing explicitly permits
+full reloads of project-generated checkpoints for compatibility with older runs.
 
 ## Evidence
 
 - Dataset: `data/the_cauldron_yes_no_vsr_token1000_img512_parquet`
 - Training entrypoint: `scripts/train_student_baseline.py`
 - Alpha sweep: `scripts/run_student_baseline_alpha_sweep.sh`
+- uint8 image preprocessing: `scripts/build_student_uint8_dataset.py`
 - Architecture reports: `artifacts/reports/student_baseline/`
 - Local resource smoke report: `artifacts/reports/student_baseline/local_resource_smoke.json`
 - W&B project: `vlm-micro`
@@ -69,3 +73,14 @@ run name and W&B tag. Run the local sweep with:
 
 Worker count, batch size, cache sizes, prefetching, and pinned memory remain
 explicit tuning parameters for measured host-specific optimization.
+
+To remove JPEG decoding, parquet image-byte decompression, and runtime resizing
+from the training path, preprocess the unique images into a CHW uint8
+memory-mapped tensor file:
+
+`uv run python scripts/build_student_uint8_dataset.py`
+
+The preprocessing report records the input path, tensor shape, resize behavior,
+normalization assumption, file sizes, and hashes. Training-loader integration is
+tracked separately so the existing parquet path remains available for
+comparison.
