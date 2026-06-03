@@ -331,7 +331,7 @@ def continuation_logits_for_prefixes(
 ) -> dict[tuple[int, ...], torch.Tensor]:
     if not prefixes:
         return {}
-    pad_token_id = int(getattr(model.config, "pad_token_id", 0) or 0)
+    pad_token_id = safe_text_pad_token_id(model)
     continuation_logits: dict[tuple[int, ...], torch.Tensor] = {}
     batch_size = int(inputs["input_ids"].shape[0])
     device = inputs["input_ids"].device
@@ -368,6 +368,7 @@ def continuation_logits_for_prefixes(
         }
         if pixel_attention_mask is not None:
             model_inputs["pixel_attention_mask"] = pixel_attention_mask
+        validate_input_ids(model, extended_input_ids, f"continuation prefix {prefix}")
         with torch.inference_mode():
             outputs = model(**model_inputs, use_cache=False)
         logits = []
@@ -376,6 +377,38 @@ def continuation_logits_for_prefixes(
             logits.append(outputs.logits[batch_offset, position].float())
         continuation_logits[prefix] = torch.stack(logits, dim=0)
     return continuation_logits
+
+
+def safe_text_pad_token_id(model: Any) -> int:
+    embedding = model.get_input_embeddings()
+    vocab_size = int(embedding.num_embeddings) if embedding is not None else 0
+    candidates = [
+        getattr(getattr(model.config, "text_config", None), "pad_token_id", None),
+        getattr(model.config, "pad_token_id", None),
+        0,
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        token_id = int(candidate)
+        if 0 <= token_id < vocab_size:
+            return token_id
+    raise ValueError(f"Could not find a valid pad token ID for embedding size {vocab_size}.")
+
+
+def validate_input_ids(model: Any, input_ids: torch.Tensor, context: str) -> None:
+    embedding = model.get_input_embeddings()
+    if embedding is None:
+        return
+    vocab_size = int(embedding.num_embeddings)
+    min_id = int(input_ids.detach().min().cpu().item())
+    max_id = int(input_ids.detach().max().cpu().item())
+    if min_id < 0 or max_id >= vocab_size:
+        raise ValueError(
+            f"{context} input_ids contain IDs outside embedding range: "
+            f"min={min_id}, max={max_id}, embedding_rows={vocab_size}. "
+            "This would trigger a CUDA device-side assert."
+        )
 
 
 def numeric_answer_metrics(
@@ -641,6 +674,7 @@ def main() -> None:
             chat_texts = prepared["chat_texts"]
             inputs = prepared["inputs"]
             inputs = {key: value.to(device) for key, value in inputs.items()}
+            validate_input_ids(model, inputs["input_ids"], "teacher prompt batch")
 
             with torch.inference_mode():
                 outputs = model(**inputs, use_cache=False)
