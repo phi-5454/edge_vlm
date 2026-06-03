@@ -95,6 +95,37 @@ def test_parquet_dataset_and_model_forward(tmp_path: Path) -> None:
     assert logits.shape == (1,)
 
 
+def test_student_baseline_defaults_to_mobilenet_v3_large() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=1,
+        fusion_heads=4,
+    )
+
+    assert model.image_backbone_name == "mobilenet_v3_large"
+    assert model.image_projection[0].in_features == 960
+
+
+def test_student_baseline_can_still_select_mobilenet_v3_small() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=1,
+        fusion_heads=4,
+        image_backbone="mobilenet_v3_small",
+    )
+
+    assert model.image_backbone_name == "mobilenet_v3_small"
+    assert model.image_projection[0].in_features == 576
+
+
 def test_alpha_one_does_not_require_teacher_targets() -> None:
     model = StudentBaseline(
         embedding_rows=torch.randn(2, 16),

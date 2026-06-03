@@ -14,7 +14,7 @@ data:
   tensor_cache_size: 8
 
 wandb:
-  tags: [student, baseline, mobilenet-v3-small, distillation, local-run]
+  tags: [student, baseline, mobilenet-v3-large, distillation, local-run]
 
 experiment:
   run_name: student-baseline-local-alpha-${distillation.alpha}

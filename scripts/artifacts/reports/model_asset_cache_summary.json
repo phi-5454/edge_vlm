@@ -1,0 +1,23 @@
+{
+  "created_at_utc": "2026-06-03T18:31:24.147081+00:00",
+  "cache_root": "data/model_cache",
+  "environment": {
+    "HF_HOME": "data/model_cache/huggingface",
+    "HF_HUB_CACHE": "data/model_cache/huggingface/hub",
+    "TRANSFORMERS_CACHE": "data/model_cache/huggingface/hub",
+    "TORCH_HOME": "data/model_cache/torch"
+  },
+  "actions": {
+    "smolvlm": true,
+    "mobilenet": true
+  },
+  "smolvlm_model": "HuggingFaceTB/SmolVLM-256M-Instruct",
+  "huggingface_cache": {
+    "files": 30,
+    "bytes": 1035820642
+  },
+  "torch_cache": {
+    "files": 2,
+    "bytes": 32438664
+  }
+}

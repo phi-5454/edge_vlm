@@ -139,6 +139,7 @@ def main(cfg: DictConfig) -> None:
         fusion_heads=int(cfg.model.fusion_heads),
         fusion_mlp_ratio=int(cfg.model.fusion_mlp_ratio),
         dropout=float(cfg.model.dropout),
+        image_backbone=str(cfg.model.image_backbone),
     )
     module = StudentBaselineModule(
         model=model,

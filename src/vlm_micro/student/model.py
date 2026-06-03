@@ -5,7 +5,12 @@ from typing import Any
 
 import torch
 from torch import nn
-from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
+from torchvision.models import (
+    MobileNet_V3_Large_Weights,
+    MobileNet_V3_Small_Weights,
+    mobilenet_v3_large,
+    mobilenet_v3_small,
+)
 from transformers import AutoModelForImageTextToText
 
 
@@ -72,6 +77,7 @@ class StudentBaseline(nn.Module):
         fusion_heads: int = 4,
         fusion_mlp_ratio: int = 2,
         dropout: float = 0.1,
+        image_backbone: str = "mobilenet_v3_large",
     ):
         super().__init__()
         if query_dim != fusion_dim or image_dim != fusion_dim:
@@ -87,9 +93,19 @@ class StudentBaseline(nn.Module):
             nn.GELU(),
             nn.LayerNorm(query_dim),
         )
-        backbone = mobilenet_v3_small(
-            weights=MobileNet_V3_Small_Weights.DEFAULT if image_pretrained else None
-        )
+        if image_backbone == "mobilenet_v3_large":
+            backbone = mobilenet_v3_large(
+                weights=MobileNet_V3_Large_Weights.DEFAULT if image_pretrained else None
+            )
+        elif image_backbone == "mobilenet_v3_small":
+            backbone = mobilenet_v3_small(
+                weights=MobileNet_V3_Small_Weights.DEFAULT if image_pretrained else None
+            )
+        else:
+            raise ValueError(
+                "image_backbone must be one of {'mobilenet_v3_large', 'mobilenet_v3_small'}."
+            )
+        self.image_backbone_name = image_backbone
         self.image_features = backbone.features
         self.image_pool = backbone.avgpool
         self.image_projection = nn.Sequential(

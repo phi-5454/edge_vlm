@@ -16,6 +16,7 @@ teacher:
 model:
   freeze_embeddings: true
   image_pretrained: true
+  image_backbone: mobilenet_v3_large
   image_size: 224
   query_dim: 128
   image_dim: 128
@@ -61,7 +62,7 @@ wandb:
   project: vlm-micro
   entity: null
   mode: online
-  tags: [student, baseline, mobilenet-v3-small, distillation]
+  tags: [student, baseline, mobilenet-v3-large, distillation]
 
 experiment:
   run_name: student-baseline-alpha-${distillation.alpha}
