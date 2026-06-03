@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import time
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--decode-workers", type=int, default=min(8, os.cpu_count() or 1))
+    parser.add_argument("--prefetch-batches", type=int, default=4)
     parser.add_argument("--cpu-threads", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--device", default="auto")
     parser.add_argument("--torch-dtype", default="auto")
@@ -53,6 +56,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trust-remote-code", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--flush-every", type=int, default=1)
+    parser.add_argument("--log-timing-every", type=int, default=25)
+    parser.add_argument("--synchronize-timing", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
@@ -101,6 +106,75 @@ def runtime_metadata(device: str) -> dict[str, Any]:
             for index in range(torch.cuda.device_count())
         ]
     return metadata
+
+
+def synchronize_if_requested(device: str, enabled: bool) -> None:
+    if enabled and device == "cuda":
+        torch.cuda.synchronize()
+
+
+@dataclass
+class TimingAccumulator:
+    batches: int = 0
+    records: int = 0
+    wait_for_prepared_batch_s: float = 0.0
+    move_to_device_s: float = 0.0
+    teacher_forward_s: float = 0.0
+    continuation_forward_s: float = 0.0
+    record_build_write_s: float = 0.0
+    progress_update_s: float = 0.0
+    loop_s: float = 0.0
+
+    def add_batch(
+        self,
+        records: int,
+        wait_for_prepared_batch_s: float,
+        move_to_device_s: float,
+        teacher_forward_s: float,
+        continuation_forward_s: float,
+        record_build_write_s: float,
+        progress_update_s: float,
+        loop_s: float,
+    ) -> None:
+        self.batches += 1
+        self.records += records
+        self.wait_for_prepared_batch_s += wait_for_prepared_batch_s
+        self.move_to_device_s += move_to_device_s
+        self.teacher_forward_s += teacher_forward_s
+        self.continuation_forward_s += continuation_forward_s
+        self.record_build_write_s += record_build_write_s
+        self.progress_update_s += progress_update_s
+        self.loop_s += loop_s
+
+    def summary(self, synchronized: bool) -> dict[str, Any]:
+        total = self.loop_s
+
+        def fraction(value: float) -> float | None:
+            return value / total if total > 0 else None
+
+        return {
+            "synchronized_cuda_timing": synchronized,
+            "batches": self.batches,
+            "records": self.records,
+            "records_per_second": self.records / total if total > 0 else None,
+            "seconds": {
+                "loop": self.loop_s,
+                "wait_for_prepared_batch": self.wait_for_prepared_batch_s,
+                "move_to_device": self.move_to_device_s,
+                "teacher_forward": self.teacher_forward_s,
+                "continuation_forward": self.continuation_forward_s,
+                "record_build_write": self.record_build_write_s,
+                "progress_update": self.progress_update_s,
+            },
+            "fractions": {
+                "wait_for_prepared_batch": fraction(self.wait_for_prepared_batch_s),
+                "move_to_device": fraction(self.move_to_device_s),
+                "teacher_forward": fraction(self.teacher_forward_s),
+                "continuation_forward": fraction(self.continuation_forward_s),
+                "record_build_write": fraction(self.record_build_write_s),
+                "progress_update": fraction(self.progress_update_s),
+            },
+        }
 
 
 def chat_prompt(processor: Any, question: str) -> str:
@@ -184,8 +258,12 @@ def planned_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
         raise ValueError("--batch-size must be positive")
     if args.decode_workers <= 0:
         raise ValueError("--decode-workers must be positive")
+    if args.prefetch_batches <= 0:
+        raise ValueError("--prefetch-batches must be positive")
     if args.cpu_threads <= 0:
         raise ValueError("--cpu-threads must be positive")
+    if args.log_timing_every < 0:
+        raise ValueError("--log-timing-every must be non-negative")
     if args.shard_count <= 0:
         raise ValueError("--shard-count must be positive")
     if not 0 <= args.shard_index < args.shard_count:
@@ -585,6 +663,9 @@ def main() -> None:
                     "shard_count": args.shard_count,
                     "shard_index": args.shard_index,
                     "batch_size": args.batch_size,
+                    "prefetch_batches": args.prefetch_batches,
+                    "decode_workers": args.decode_workers,
+                    "cpu_threads": args.cpu_threads,
                     "answer_range": [args.answer_min, args.answer_max],
                     "output": str(args.output),
                     "runtime": runtime_metadata(device),
@@ -630,7 +711,8 @@ def main() -> None:
     total_examples = len(indices)
     output_mode = "a" if args.resume else "w"
     decode_executor = ThreadPoolExecutor(max_workers=args.decode_workers)
-    prefetch_executor = ThreadPoolExecutor(max_workers=1)
+    prefetch_executor = ThreadPoolExecutor(max_workers=args.prefetch_batches)
+    timing = TimingAccumulator()
 
     with args.output.open(output_mode, encoding="utf-8") as handle:
         progress = tqdm(
@@ -639,33 +721,39 @@ def main() -> None:
             desc="Caching TallyQA teacher logits",
             unit="example",
         )
-        batch_starts = list(range(0, total_examples, args.batch_size))
-        future = None
-        if batch_starts:
-            future = submit_prepare_batch(
-                prefetch_executor,
-                indices[: args.batch_size],
-                examples,
-                image_store,
-                processor,
-                decode_executor,
-            )
-        for batch_number, batch_start in enumerate(batch_starts):
-            assert future is not None
-            prepared = future.result()
-            next_start = batch_start + args.batch_size
-            future = (
-                submit_prepare_batch(
-                    prefetch_executor,
-                    indices[next_start : next_start + args.batch_size],
-                    examples,
-                    image_store,
-                    processor,
-                    decode_executor,
+        batch_indices_list = [
+            indices[start : start + args.batch_size]
+            for start in range(0, total_examples, args.batch_size)
+        ]
+        pending: deque[Future[dict[str, Any]]] = deque()
+        next_batch_to_submit = 0
+
+        def fill_prefetch_queue() -> None:
+            nonlocal next_batch_to_submit
+            while (
+                next_batch_to_submit < len(batch_indices_list)
+                and len(pending) < args.prefetch_batches
+            ):
+                pending.append(
+                    submit_prepare_batch(
+                        prefetch_executor,
+                        batch_indices_list[next_batch_to_submit],
+                        examples,
+                        image_store,
+                        processor,
+                        decode_executor,
+                    )
                 )
-                if batch_number + 1 < len(batch_starts)
-                else None
-            )
+                next_batch_to_submit += 1
+
+        fill_prefetch_queue()
+        for batch_number in range(len(batch_indices_list)):
+            batch_loop_start = time.perf_counter()
+            wait_start = time.perf_counter()
+            future = pending.popleft()
+            prepared = future.result()
+            wait_for_prepared_batch_s = time.perf_counter() - wait_start
+            fill_prefetch_queue()
             batch_indices = prepared["batch_indices"]
             rows = prepared["rows"]
             images = prepared["images"]
@@ -673,19 +761,31 @@ def main() -> None:
             teacher_prompts = prepared["teacher_prompts"]
             chat_texts = prepared["chat_texts"]
             inputs = prepared["inputs"]
+
+            transfer_start = time.perf_counter()
             inputs = {key: value.to(device) for key, value in inputs.items()}
             validate_input_ids(model, inputs["input_ids"], "teacher prompt batch")
+            synchronize_if_requested(device, args.synchronize_timing)
+            move_to_device_s = time.perf_counter() - transfer_start
 
+            teacher_forward_start = time.perf_counter()
             with torch.inference_mode():
                 outputs = model(**inputs, use_cache=False)
+            synchronize_if_requested(device, args.synchronize_timing)
+            teacher_forward_s = time.perf_counter() - teacher_forward_start
 
             sequence_lengths = inputs["attention_mask"].sum(dim=1)
+            continuation_start = time.perf_counter()
             continuation_logits_by_prefix = continuation_logits_for_prefixes(
                 model=model,
                 inputs=inputs,
                 sequence_lengths=sequence_lengths,
                 prefixes=prefixes,
             )
+            synchronize_if_requested(device, args.synchronize_timing)
+            continuation_forward_s = time.perf_counter() - continuation_start
+
+            record_start = time.perf_counter()
             for batch_offset, dataset_index in enumerate(batch_indices):
                 row = rows[batch_offset]
                 image = images[batch_offset]
@@ -790,7 +890,33 @@ def main() -> None:
                 records_written += 1
                 if args.flush_every > 0 and records_written % args.flush_every == 0:
                     handle.flush()
+            record_build_write_s = time.perf_counter() - record_start
+
+            progress_start = time.perf_counter()
             progress.update(len(batch_indices))
+            progress_update_s = time.perf_counter() - progress_start
+            loop_s = time.perf_counter() - batch_loop_start
+            timing.add_batch(
+                records=len(batch_indices),
+                wait_for_prepared_batch_s=wait_for_prepared_batch_s,
+                move_to_device_s=move_to_device_s,
+                teacher_forward_s=teacher_forward_s,
+                continuation_forward_s=continuation_forward_s,
+                record_build_write_s=record_build_write_s,
+                progress_update_s=progress_update_s,
+                loop_s=loop_s,
+            )
+            if args.log_timing_every and (batch_number + 1) % args.log_timing_every == 0:
+                timing_summary = timing.summary(args.synchronize_timing)
+                fractions = timing_summary["fractions"]
+                progress.set_postfix(
+                    {
+                        "prep_wait": f"{100 * (fractions['wait_for_prepared_batch'] or 0):.0f}%",
+                        "fwd": f"{100 * (fractions['teacher_forward'] or 0):.0f}%",
+                        "cont": f"{100 * (fractions['continuation_forward'] or 0):.0f}%",
+                        "record": f"{100 * (fractions['record_build_write'] or 0):.0f}%",
+                    }
+                )
         progress.close()
     prefetch_executor.shutdown()
     decode_executor.shutdown()
@@ -804,6 +930,7 @@ def main() -> None:
         "records_in_metric_aggregate": overall_metrics.count,
         "selected_records": selected_examples,
         "planned_records_this_invocation": total_examples,
+        "timing": timing.summary(args.synchronize_timing),
         "teacher_metrics": {
             "numeric_answer": overall_metrics.aggregate(),
             "by_student_prompt": by_prompt,
