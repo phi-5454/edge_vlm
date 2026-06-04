@@ -38,6 +38,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--answer-min", type=int, default=0)
     parser.add_argument("--answer-max", type=int, default=15)
+    parser.add_argument(
+        "--run-mode",
+        choices=["full", "calibration"],
+        default="full",
+        help="Use 'calibration' to cache a deterministic balanced subset for model comparison.",
+    )
+    parser.add_argument(
+        "--calibration-examples",
+        type=int,
+        default=4096,
+        help="Target number of examples when --run-mode=calibration.",
+    )
+    parser.add_argument(
+        "--calibration-seed",
+        type=int,
+        default=20260604,
+        help="Seed for deterministic calibration subset selection.",
+    )
+    parser.add_argument(
+        "--calibration-collapse-at",
+        type=int,
+        default=5,
+        help="Answer value where calibration balancing collapses counts into a '<n>+' bucket.",
+    )
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--end-index", type=int, default=None)
@@ -106,6 +130,21 @@ def runtime_metadata(device: str) -> dict[str, Any]:
             for index in range(torch.cuda.device_count())
         ]
     return metadata
+
+
+def cached_model_revision(model_name: str) -> str | None:
+    model_cache_name = "models--" + model_name.replace("/", "--")
+    cache_roots = []
+    if os.environ.get("HF_HUB_CACHE"):
+        cache_roots.append(Path(os.environ["HF_HUB_CACHE"]))
+    if os.environ.get("HF_HOME"):
+        cache_roots.append(Path(os.environ["HF_HOME"]) / "hub")
+    cache_roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    for cache_root in cache_roots:
+        ref_path = cache_root / model_cache_name / "refs" / "main"
+        if ref_path.exists():
+            return ref_path.read_text(encoding="utf-8").strip()
+    return None
 
 
 def synchronize_if_requested(device: str, enabled: bool) -> None:
@@ -249,7 +288,72 @@ class Uint8ImageStore:
         }
 
 
-def planned_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
+def stable_sort_key(seed: int, *parts: object) -> str:
+    joined = ":".join([str(seed), *(str(part) for part in parts)])
+    return hashlib.blake2b(joined.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def full_run_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
+    stop = dataset_len if args.end_index is None else min(dataset_len, args.end_index)
+    if args.max_examples is not None:
+        stop = min(stop, args.start_index + args.max_examples)
+    return [
+        index
+        for index in range(args.start_index, stop)
+        if index % args.shard_count == args.shard_index
+    ]
+
+
+def calibration_indices(examples: list[dict[str, Any]], args: argparse.Namespace) -> list[int]:
+    stop = len(examples) if args.end_index is None else min(len(examples), args.end_index)
+    eligible_indices = list(range(args.start_index, stop))
+    if args.max_examples is not None:
+        eligible_indices = eligible_indices[: args.max_examples]
+    target_count = min(args.calibration_examples, len(eligible_indices))
+    buckets: dict[tuple[str, int], list[int]] = defaultdict(list)
+    for index in eligible_indices:
+        row = examples[index]
+        answer = int(row["answer"])
+        output_bucket = min(answer, args.calibration_collapse_at)
+        buckets[(str(row["student_prompt"]), output_bucket)].append(index)
+
+    for bucket_key, bucket_indices in buckets.items():
+        bucket_indices.sort(
+            key=lambda index: stable_sort_key(
+                args.calibration_seed,
+                bucket_key[0],
+                bucket_key[1],
+                index,
+            )
+        )
+
+    active_keys = sorted(
+        buckets,
+        key=lambda key: stable_sort_key(args.calibration_seed, key[0], key[1]),
+    )
+    selected: list[int] = []
+    while active_keys and len(selected) < target_count:
+        next_active_keys: list[tuple[str, int]] = []
+        for key in active_keys:
+            if len(selected) >= target_count:
+                next_active_keys.append(key)
+                continue
+            bucket = buckets[key]
+            if bucket:
+                selected.append(bucket.pop(0))
+            if bucket:
+                next_active_keys.append(key)
+        active_keys = next_active_keys
+
+    selected = [
+        index
+        for index in selected
+        if index % args.shard_count == args.shard_index
+    ]
+    return selected
+
+
+def planned_indices(examples: list[dict[str, Any]], args: argparse.Namespace) -> list[int]:
     if args.temperature <= 0:
         raise ValueError("--temperature must be positive")
     if args.top_k <= 0:
@@ -276,15 +380,14 @@ def planned_indices(dataset_len: int, args: argparse.Namespace) -> list[int]:
         raise ValueError("--max-examples must be non-negative")
     if args.answer_min > args.answer_max:
         raise ValueError("--answer-min must be <= --answer-max")
+    if args.calibration_examples <= 0:
+        raise ValueError("--calibration-examples must be positive")
+    if args.calibration_collapse_at < 0:
+        raise ValueError("--calibration-collapse-at must be non-negative")
 
-    stop = dataset_len if args.end_index is None else min(dataset_len, args.end_index)
-    if args.max_examples is not None:
-        stop = min(stop, args.start_index + args.max_examples)
-    return [
-        index
-        for index in range(args.start_index, stop)
-        if index % args.shard_count == args.shard_index
-    ]
+    if args.run_mode == "calibration":
+        return calibration_indices(examples, args)
+    return full_run_indices(len(examples), args)
 
 
 @dataclass
@@ -634,7 +737,7 @@ def main() -> None:
 
     metadata = load_metadata(args.dataset)
     examples = load_examples(args.dataset)
-    selected_indices = planned_indices(len(examples), args)
+    selected_indices = planned_indices(examples, args)
     selected_set = set(selected_indices)
     completed, overall_metrics, by_prompt_metrics = completed_indices_and_metrics(
         args.output, selected_set
@@ -667,6 +770,12 @@ def main() -> None:
                     "decode_workers": args.decode_workers,
                     "cpu_threads": args.cpu_threads,
                     "answer_range": [args.answer_min, args.answer_max],
+                    "run_mode": args.run_mode,
+                    "calibration": {
+                        "examples": args.calibration_examples,
+                        "seed": args.calibration_seed,
+                        "collapse_at": args.calibration_collapse_at,
+                    } if args.run_mode == "calibration" else None,
                     "output": str(args.output),
                     "runtime": runtime_metadata(device),
                     "metrics": {
@@ -699,11 +808,7 @@ def main() -> None:
     ).to(device)
     model.eval()
 
-    model_revision_path = (
-        Path.home()
-        / ".cache/huggingface/hub/models--HuggingFaceTB--SmolVLM-256M-Instruct/refs/main"
-    )
-    model_revision = model_revision_path.read_text().strip() if model_revision_path.exists() else None
+    model_revision = cached_model_revision(args.model)
     image_store = Uint8ImageStore(args.dataset, metadata)
 
     records_written = 0
@@ -930,6 +1035,19 @@ def main() -> None:
         "records_in_metric_aggregate": overall_metrics.count,
         "selected_records": selected_examples,
         "planned_records_this_invocation": total_examples,
+        "selection": {
+            "run_mode": args.run_mode,
+            "calibration": {
+                "target_examples": args.calibration_examples,
+                "seed": args.calibration_seed,
+                "collapse_at": args.calibration_collapse_at,
+            } if args.run_mode == "calibration" else None,
+            "first_index": selected_indices[0] if selected_indices else None,
+            "last_index": selected_indices[-1] if selected_indices else None,
+            "selected_indices_sha256": hashlib.sha256(
+                json.dumps(selected_indices, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        },
         "timing": timing.summary(args.synchronize_timing),
         "teacher_metrics": {
             "numeric_answer": overall_metrics.aggregate(),

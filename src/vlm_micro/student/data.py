@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import lightning as L
+import numpy as np
 import pyarrow.parquet as pq
 import torch
 from PIL import Image
@@ -106,6 +107,77 @@ def split_for_image(image_id: str, seed: int) -> str:
     return "test"
 
 
+def collapse_count(answer: int, collapse_at: int = 5) -> int:
+    return min(int(answer), collapse_at)
+
+
+def load_tallyqa_rows(dataset_root: Path) -> list[dict[str, Any]]:
+    columns = [
+        "example_id",
+        "source_subset",
+        "source_row_index",
+        "qa_index",
+        "answer",
+        "student_prompt",
+        "item",
+        "item_class_id",
+        "image_id",
+        "image_index",
+    ]
+    return pq.read_table(dataset_root / "examples.parquet", columns=columns).to_pylist()
+
+
+def load_tallyqa_prompt_artifact(path: Path) -> dict[str, Any]:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    required = {"prompt_token_ids", "prompt_attention_mask", "embedding_rows"}
+    missing = required - set(payload)
+    if missing:
+        raise ValueError(f"{path} is missing required prompt embedding fields: {sorted(missing)}")
+    return payload
+
+
+def load_tallyqa_teacher_targets(
+    path: Path | None,
+    num_classes: int = 6,
+    collapse_at: int = 5,
+) -> dict[int, torch.Tensor]:
+    if path is None:
+        return {}
+    targets: dict[int, torch.Tensor] = {}
+
+    def load_line(line: str, line_number: int, allow_truncated: bool) -> None:
+        if not line.strip():
+            return
+        try:
+            payload = json.loads(line)
+            probabilities = torch.zeros(num_classes, dtype=torch.float32)
+            for candidate in payload["teacher_logits"]["numeric_answer_candidates"]:
+                class_id = collapse_count(int(candidate["answer"]), collapse_at)
+                probabilities[class_id] += float(candidate["candidate_probability"])
+            total = float(probabilities.sum().item())
+            if total <= 0:
+                raise ValueError("teacher candidate probabilities sum to zero")
+            targets[int(payload["dataset_index"])] = probabilities / total
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            if allow_truncated:
+                warnings.warn(
+                    f"Ignoring invalid trailing teacher cache record at {path}:{line_number}: {error}",
+                    stacklevel=2,
+                )
+                return
+            raise ValueError(f"Invalid teacher cache record at {path}:{line_number}") from error
+
+    with path.open("r", encoding="utf-8") as handle:
+        previous: tuple[str, int] | None = None
+        for line_number, line in enumerate(handle, start=1):
+            if previous is not None:
+                load_line(*previous, allow_truncated=False)
+            previous = (line, line_number)
+        if previous is not None:
+            load_line(*previous, allow_truncated=True)
+    return targets
+
+
 class ParquetImageStore:
     """Random-access image parquet reader with worker-local LRU caches."""
 
@@ -167,6 +239,48 @@ class ParquetImageStore:
         return self._tensors[image_id]
 
 
+class Uint8MemmapImageStore:
+    """Random-access CHW uint8 image memmap with ImageNet normalization."""
+
+    def __init__(self, dataset_root: Path, tensor_cache_size: int = 256):
+        self.dataset_root = Path(dataset_root)
+        metadata = json.loads((self.dataset_root / "metadata.json").read_text(encoding="utf-8"))
+        image_meta = metadata["image"]
+        self.shape = tuple(int(dim) for dim in image_meta["shape"])
+        self.tensor_path = self.dataset_root / image_meta.get("tensor_file", "images.uint8.bin")
+        self.tensor_cache_size = tensor_cache_size
+        self._images: np.memmap | None = None
+        self._tensors: OrderedDict[int, torch.Tensor] = OrderedDict()
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        state["_images"] = None
+        state["_tensors"] = OrderedDict()
+        return state
+
+    @property
+    def images(self) -> np.memmap:
+        if self._images is None:
+            self._images = np.memmap(
+                self.tensor_path,
+                dtype=np.uint8,
+                mode="r",
+                shape=self.shape,
+            )
+        return self._images
+
+    def tensor(self, image_index: int) -> torch.Tensor:
+        image_index = int(image_index)
+        if image_index not in self._tensors:
+            tensor = torch.from_numpy(np.asarray(self.images[image_index]).copy()).float() / 255.0
+            tensor = TF.normalize(tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            self._tensors[image_index] = tensor
+            while len(self._tensors) > self.tensor_cache_size:
+                self._tensors.popitem(last=False)
+        self._tensors.move_to_end(image_index)
+        return self._tensors[image_index]
+
+
 class StudentDataset(Dataset[dict[str, Any]]):
     def __init__(
         self,
@@ -197,6 +311,50 @@ class StudentDataset(Dataset[dict[str, Any]]):
         }
 
 
+class TallyQAStudentDataset(Dataset[dict[str, Any]]):
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        indices: list[int],
+        prompt_token_ids: torch.Tensor,
+        prompt_attention_mask: torch.Tensor,
+        teacher_targets: dict[int, torch.Tensor],
+        image_store: Uint8MemmapImageStore,
+        collapse_at: int = 5,
+        num_classes: int = 6,
+    ):
+        self.rows = rows
+        self.indices = indices
+        self.prompt_token_ids = prompt_token_ids
+        self.prompt_attention_mask = prompt_attention_mask
+        self.teacher_targets = teacher_targets
+        self.image_store = image_store
+        self.collapse_at = collapse_at
+        self.num_classes = num_classes
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, item: int) -> dict[str, Any]:
+        dataset_index = self.indices[item]
+        row = self.rows[dataset_index]
+        item_class_id = int(row["item_class_id"])
+        teacher_probs = self.teacher_targets.get(
+            dataset_index,
+            torch.full((self.num_classes,), float("nan"), dtype=torch.float32),
+        )
+        return {
+            "dataset_index": dataset_index,
+            "token_ids": self.prompt_token_ids[item_class_id],
+            "attention_mask": self.prompt_attention_mask[item_class_id],
+            "image": self.image_store.tensor(int(row["image_index"])),
+            "label": collapse_count(int(row["answer"]), self.collapse_at),
+            "teacher_probs": teacher_probs,
+            "item_class_id": item_class_id,
+            "image_id": str(row["image_id"]),
+        }
+
+
 class ImageGroupedBatchSampler(Sampler[list[int]]):
     """Shuffle image groups while keeping repeated-image prompts close together."""
 
@@ -208,6 +366,48 @@ class ImageGroupedBatchSampler(Sampler[list[int]]):
         groups: dict[str, list[int]] = {}
         for local_index, dataset_index in enumerate(dataset.indices):
             image_id = str(dataset.rows[dataset_index]["student_image_id"])
+            groups.setdefault(image_id, []).append(local_index)
+        self.groups = list(groups.values())
+
+    def __len__(self) -> int:
+        return (sum(len(group) for group in self.groups) + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self) -> Iterable[list[int]]:
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        self.epoch += 1
+        pending: list[int] = []
+        blocks = [
+            list(range(start, min(start + self.shuffle_block_size, len(self.groups))))
+            for start in range(0, len(self.groups), self.shuffle_block_size)
+        ]
+        for block_index in torch.randperm(len(blocks), generator=generator).tolist():
+            block = blocks[block_index]
+            for offset in torch.randperm(len(block), generator=generator).tolist():
+                pending.extend(self.groups[block[offset]])
+                while len(pending) >= self.batch_size:
+                    yield pending[: self.batch_size]
+                    pending = pending[self.batch_size :]
+        if pending:
+            yield pending
+
+
+class TallyQAImageGroupedBatchSampler(Sampler[list[int]]):
+    """Shuffle image groups while keeping repeated-image tally prompts close together."""
+
+    def __init__(
+        self,
+        dataset: TallyQAStudentDataset,
+        batch_size: int,
+        seed: int,
+        shuffle_block_size: int,
+    ):
+        self.batch_size = batch_size
+        self.seed = seed
+        self.shuffle_block_size = shuffle_block_size
+        self.epoch = 0
+        groups: dict[str, list[int]] = {}
+        for local_index, dataset_index in enumerate(dataset.indices):
+            image_id = str(dataset.rows[dataset_index]["image_id"])
             groups.setdefault(image_id, []).append(local_index)
         self.groups = list(groups.values())
 
@@ -248,6 +448,18 @@ def collate_student_batch(rows: list[dict[str, Any]]) -> dict[str, torch.Tensor]
         "images": torch.stack([row["image"] for row in rows]),
         "labels": torch.tensor([row["label"] for row in rows], dtype=torch.float32),
         "teacher_logits": torch.tensor([row["teacher_logit"] for row in rows], dtype=torch.float32),
+    }
+
+
+def collate_tallyqa_student_batch(rows: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+    return {
+        "dataset_index": torch.tensor([row["dataset_index"] for row in rows], dtype=torch.long),
+        "token_ids": torch.stack([row["token_ids"] for row in rows]).long(),
+        "attention_mask": torch.stack([row["attention_mask"] for row in rows]).bool(),
+        "images": torch.stack([row["image"] for row in rows]),
+        "labels": torch.tensor([row["label"] for row in rows], dtype=torch.long),
+        "teacher_probs": torch.stack([row["teacher_probs"] for row in rows]).float(),
+        "item_class_ids": torch.tensor([row["item_class_id"] for row in rows], dtype=torch.long),
     }
 
 
@@ -314,6 +526,126 @@ class StudentDataModule(L.LightningDataModule):
             return DataLoader(
                 **common,
                 batch_sampler=ImageGroupedBatchSampler(
+                    dataset,
+                    self.hparams.batch_size,
+                    self.hparams.seed,
+                    self.hparams.shuffle_block_size,
+                ),
+            )
+        return DataLoader(
+            **common,
+            batch_size=self.hparams.batch_size,
+            shuffle=shuffle,
+        )
+
+    def train_dataloader(self) -> DataLoader[dict[str, torch.Tensor]]:
+        return self._loader("train", shuffle=True)
+
+    def val_dataloader(self) -> DataLoader[dict[str, torch.Tensor]]:
+        return self._loader("val", shuffle=False)
+
+    def test_dataloader(self) -> DataLoader[dict[str, torch.Tensor]]:
+        return self._loader("test", shuffle=False)
+
+    def split_sizes(self) -> dict[str, int]:
+        return {split: len(indices) for split, indices in self.indices.items()}
+
+    def full_split_sizes(self) -> dict[str, int]:
+        return {split: len(indices) for split, indices in self.full_indices.items()}
+
+    def cache_coverage(self) -> dict[str, float | int | str]:
+        covered = sum(index in self.teacher_targets for index in range(len(self.rows)))
+        return {
+            "policy": str(self.hparams.missing_teacher_policy),
+            "covered_prompts": covered,
+            "total_prompts": len(self.rows),
+            "covered_fraction": covered / len(self.rows) if self.rows else 0.0,
+            "active_prompts": sum(map(len, self.indices.values())),
+        }
+
+
+class TallyQAStudentDataModule(L.LightningDataModule):
+    def __init__(
+        self,
+        dataset_root: Path,
+        prompt_embeddings: Path,
+        teacher_cache: Path | None,
+        batch_size: int,
+        num_workers: int,
+        seed: int,
+        tensor_cache_size: int = 256,
+        prefetch_factor: int = 4,
+        persistent_workers: bool = True,
+        pin_memory: bool = True,
+        group_train_by_image: bool = True,
+        shuffle_block_size: int = 256,
+        missing_teacher_policy: str = "filter",
+        collapse_at: int = 5,
+        num_classes: int = 6,
+    ):
+        super().__init__()
+        if missing_teacher_policy not in {"filter", "keep"}:
+            raise ValueError("missing_teacher_policy must be 'filter' or 'keep'.")
+        if collapse_at != num_classes - 1:
+            raise ValueError("This TallyQA path expects collapse_at == num_classes - 1.")
+        self.save_hyperparameters()
+        self.hparams.dataset_root = str(dataset_root)
+        self.hparams.prompt_embeddings = str(prompt_embeddings)
+        self.hparams.teacher_cache = str(teacher_cache) if teacher_cache is not None else None
+
+        prompt_payload = load_tallyqa_prompt_artifact(prompt_embeddings)
+        self.prompt_token_ids = prompt_payload["prompt_token_ids"].long()
+        self.prompt_attention_mask = prompt_payload["prompt_attention_mask"].bool()
+        self.embedding_rows = prompt_payload["embedding_rows"].float()
+        self.prompt_classes = prompt_payload.get("prompt_classes", [])
+
+        self.rows = load_tallyqa_rows(dataset_root)
+        self.teacher_targets = load_tallyqa_teacher_targets(
+            teacher_cache,
+            num_classes=num_classes,
+            collapse_at=collapse_at,
+        )
+        self.full_indices = {"train": [], "val": [], "test": []}
+        self.indices = {"train": [], "val": [], "test": []}
+        for index, row in enumerate(self.rows):
+            split = split_for_image(str(row["image_id"]), seed)
+            self.full_indices[split].append(index)
+            if missing_teacher_policy == "keep" or index in self.teacher_targets:
+                self.indices[split].append(index)
+        if missing_teacher_policy == "filter" and not sum(map(len, self.indices.values())):
+            raise ValueError("The teacher cache does not contain any usable TallyQA targets.")
+
+    def _dataset(self, split: str) -> TallyQAStudentDataset:
+        store = Uint8MemmapImageStore(
+            Path(self.hparams.dataset_root),
+            tensor_cache_size=self.hparams.tensor_cache_size,
+        )
+        return TallyQAStudentDataset(
+            rows=self.rows,
+            indices=self.indices[split],
+            prompt_token_ids=self.prompt_token_ids,
+            prompt_attention_mask=self.prompt_attention_mask,
+            teacher_targets=self.teacher_targets,
+            image_store=store,
+            collapse_at=self.hparams.collapse_at,
+            num_classes=self.hparams.num_classes,
+        )
+
+    def _loader(self, split: str, shuffle: bool) -> DataLoader[dict[str, torch.Tensor]]:
+        workers = int(self.hparams.num_workers)
+        dataset = self._dataset(split)
+        common = {
+            "dataset": dataset,
+            "num_workers": workers,
+            "collate_fn": collate_tallyqa_student_batch,
+            "pin_memory": self.hparams.pin_memory,
+            "persistent_workers": self.hparams.persistent_workers and workers > 0,
+            "prefetch_factor": self.hparams.prefetch_factor if workers > 0 else None,
+        }
+        if split == "train" and self.hparams.group_train_by_image:
+            return DataLoader(
+                **common,
+                batch_sampler=TallyQAImageGroupedBatchSampler(
                     dataset,
                     self.hparams.batch_size,
                     self.hparams.seed,

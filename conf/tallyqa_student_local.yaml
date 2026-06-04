@@ -1,0 +1,37 @@
+defaults:
+  - tallyqa_student
+  - _self_
+
+model:
+  image_pretrained: false
+  image_backbone: mobilenet_v3_small
+  query_dim: 32
+  image_dim: 32
+  fusion_dim: 32
+  fusion_depth: 1
+  fusion_heads: 4
+
+data:
+  batch_size: 16
+  num_workers: 0
+  prefetch_factor: 2
+  persistent_workers: false
+  pin_memory: false
+  tensor_cache_size: 8
+
+trainer:
+  accelerator: cpu
+  precision: 32-true
+  max_epochs: 10
+  log_every_n_steps: 10
+  limit_train_batches: 200
+  limit_val_batches: 10
+  limit_test_batches: 10
+
+wandb:
+  mode: offline
+  tags:
+    [student, tallyqa, mobilenet-v3-small, distillation, count-5plus, local-run]
+
+experiment:
+  run_name: tallyqa-student-local

@@ -78,10 +78,14 @@ class StudentBaseline(nn.Module):
         fusion_mlp_ratio: int = 2,
         dropout: float = 0.1,
         image_backbone: str = "mobilenet_v3_large",
+        num_outputs: int = 1,
     ):
         super().__init__()
+        if num_outputs <= 0:
+            raise ValueError("num_outputs must be positive.")
         if query_dim != fusion_dim or image_dim != fusion_dim:
             raise ValueError("query_dim and image_dim must equal fusion_dim for two-token fusion.")
+        self.num_outputs = num_outputs
         pad_row = torch.zeros((1, embedding_rows.shape[1]), dtype=embedding_rows.dtype)
         self.token_embedding = nn.Embedding.from_pretrained(
             torch.cat([pad_row, embedding_rows], dim=0),
@@ -121,7 +125,7 @@ class StudentBaseline(nn.Module):
         )
         self.classifier = nn.Sequential(
             nn.LayerNorm(fusion_dim),
-            nn.Linear(fusion_dim, 1),
+            nn.Linear(fusion_dim, num_outputs),
         )
 
     def forward(
@@ -140,7 +144,8 @@ class StudentBaseline(nn.Module):
 
         tokens = torch.stack([query, image], dim=1)
         fused = self.fusion(tokens).mean(dim=1)
-        return self.classifier(fused).squeeze(-1)
+        logits = self.classifier(fused)
+        return logits.squeeze(-1) if self.num_outputs == 1 else logits
 
 
 def parameter_counts(model: nn.Module) -> dict[str, int]:

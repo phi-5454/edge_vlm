@@ -1,0 +1,66 @@
+seed: 42
+
+paths:
+  dataset_root: data/tallyqa_cauldron_target_mobilenet224
+  teacher_cache: artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl
+  prompt_embeddings: artifacts/models/tallyqa_smolvlm_prompt_embeddings.pt
+  report_dir: artifacts/reports/tallyqa_student
+  checkpoint_dir: artifacts/models/tallyqa_student
+  wandb_env_file: ../wandb_api_key.env
+
+model:
+  freeze_embeddings: true
+  image_pretrained: true
+  image_backbone: mobilenet_v3_large
+  image_size: 224
+  num_outputs: 6
+  query_dim: 128
+  image_dim: 128
+  fusion_dim: 128
+  fusion_depth: 2
+  fusion_heads: 4
+  fusion_mlp_ratio: 2
+  dropout: 0.1
+
+distillation:
+  # Loss = alpha * CE(student, hard count class) + beta * T^2 * KL(teacher || student)
+  alpha: 1.0
+  beta: 0.5
+  temperature: 2.0
+
+data:
+  collapse_at: 5
+  batch_size: 256
+  num_workers: 16
+  prefetch_factor: 4
+  persistent_workers: true
+  pin_memory: true
+  tensor_cache_size: 256
+  group_train_by_image: true
+  shuffle_block_size: 256
+  missing_teacher_policy: filter
+
+optimizer:
+  learning_rate: 0.0003
+  warmup_start_learning_rate: 0.00003
+  warmup_steps: 1000
+  weight_decay: 0.01
+
+trainer:
+  accelerator: auto
+  devices: 1
+  precision: 16-mixed
+  max_epochs: 10
+  log_every_n_steps: 25
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+
+wandb:
+  project: vlm-micro
+  entity: null
+  mode: online
+  tags: [student, tallyqa, mobilenet-v3-large, distillation, count-5plus]
+
+experiment:
+  run_name: tallyqa-student-a${distillation.alpha}-b${distillation.beta}-t${distillation.temperature}
