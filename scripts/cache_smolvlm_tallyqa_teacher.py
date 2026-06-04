@@ -152,6 +152,21 @@ def synchronize_if_requested(device: str, enabled: bool) -> None:
         torch.cuda.synchronize()
 
 
+def load_processor(args: argparse.Namespace) -> AutoProcessor:
+    processor_kwargs = {
+        "local_files_only": args.local_files_only,
+        "trust_remote_code": args.trust_remote_code,
+        "backend": args.image_processor_backend,
+    }
+    try:
+        return AutoProcessor.from_pretrained(args.model, **processor_kwargs)
+    except AttributeError as exc:
+        if "backend" not in str(exc):
+            raise
+        processor_kwargs.pop("backend")
+        return AutoProcessor.from_pretrained(args.model, **processor_kwargs)
+
+
 @dataclass
 class TimingAccumulator:
     batches: int = 0
@@ -227,6 +242,27 @@ def chat_prompt(processor: Any, question: str) -> str:
         }
     ]
     return processor.apply_chat_template(messages, add_generation_prompt=True)
+
+
+def encode_processor_batch(
+    processor: Any,
+    chat_texts: list[str],
+    images: list[Image.Image],
+) -> Any:
+    nested_images = [[image] for image in images]
+    try:
+        return processor(
+            text=chat_texts,
+            images=nested_images,
+            text_kwargs={"return_tensors": "pt", "padding": True},
+        )
+    except TypeError:
+        return processor(
+            text=chat_texts,
+            images=nested_images,
+            return_tensors="pt",
+            padding=True,
+        )
 
 
 def load_examples(dataset_path: Path) -> list[dict[str, Any]]:
@@ -683,7 +719,7 @@ def prepare_batch(
         "image_identities": [identity for _, identity in images_and_identities],
         "teacher_prompts": teacher_prompts,
         "chat_texts": chat_texts,
-        "inputs": processor(text=chat_texts, images=images, return_tensors="pt", padding=True),
+        "inputs": encode_processor_batch(processor, chat_texts, images),
     }
 
 
@@ -791,12 +827,7 @@ def main() -> None:
     device = device_from_arg(args.device)
     dtype = dtype_from_arg(args.torch_dtype, device)
     configure_runtime(args, device)
-    processor = AutoProcessor.from_pretrained(
-        args.model,
-        local_files_only=args.local_files_only,
-        trust_remote_code=args.trust_remote_code,
-        backend=args.image_processor_backend,
-    )
+    processor = load_processor(args)
     processor.tokenizer.padding_side = "right"
     candidates = answer_candidates(processor, args.answer_min, args.answer_max)
     prefixes = candidate_prefixes(candidates)
