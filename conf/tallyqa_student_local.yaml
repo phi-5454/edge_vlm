@@ -3,12 +3,11 @@ defaults:
   - _self_
 
 model:
-  image_pretrained: false
-  image_backbone: mobilenet_v3_small
+  image_backbone: mobilenet_v3_large
   query_dim: 32
   image_dim: 32
   fusion_dim: 32
-  fusion_depth: 1
+  fusion_depth: 4
   fusion_heads: 4
 
 data:
@@ -29,7 +28,6 @@ trainer:
   limit_test_batches: 10
 
 wandb:
-  mode: offline
   tags:
     [student, tallyqa, mobilenet-v3-small, distillation, count-5plus, local-run]
 

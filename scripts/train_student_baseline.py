@@ -131,6 +131,7 @@ def main(cfg: DictConfig) -> None:
     model = StudentBaseline(
         embedding_rows=embedding_rows,
         freeze_embeddings=bool(cfg.model.freeze_embeddings),
+        freeze_image_features=bool(cfg.model.get("freeze_image_features", False)),
         image_pretrained=bool(cfg.model.image_pretrained),
         query_dim=int(cfg.model.query_dim),
         image_dim=int(cfg.model.image_dim),
@@ -140,6 +141,14 @@ def main(cfg: DictConfig) -> None:
         fusion_mlp_ratio=int(cfg.model.fusion_mlp_ratio),
         dropout=float(cfg.model.dropout),
         image_backbone=str(cfg.model.image_backbone),
+        image_feature_cutoff=cfg.model.get("image_feature_cutoff", "auto"),
+        image_token_mode=str(cfg.model.get("image_token_mode", "spatial")),
+        fusion_mode=str(cfg.model.get("fusion_mode", "transformer")),
+        use_prompt_identity=bool(cfg.model.get("use_prompt_identity", True)),
+        use_image_positional_embeddings=bool(
+            cfg.model.get("use_image_positional_embeddings", True)
+        ),
+        image_position_tokens=int(cfg.model.get("image_position_tokens", 196)),
     )
     module = StudentBaselineModule(
         model=model,

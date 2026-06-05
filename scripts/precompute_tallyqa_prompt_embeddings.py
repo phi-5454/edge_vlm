@@ -12,9 +12,9 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolVLM-256M-Instruct"
-DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224")
-DEFAULT_OUTPUT = Path("artifacts/models/tallyqa_smolvlm_prompt_embeddings.pt")
-DEFAULT_REPORT = Path("artifacts/reports/tallyqa_prompt_embeddings_summary.json")
+DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
+DEFAULT_OUTPUT = Path("artifacts/models/tallyqa_smolvlm_prompt_embeddings_letterbox.pt")
+DEFAULT_REPORT = Path("artifacts/reports/tallyqa_prompt_embeddings_letterbox_summary.json")
 
 
 def parse_args() -> argparse.Namespace:

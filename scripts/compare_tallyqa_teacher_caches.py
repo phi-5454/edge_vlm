@@ -6,14 +6,17 @@ from datetime import datetime, timezone
 import csv
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
+
+os.environ["MPLBACKEND"] = "Agg"
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_BASELINE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl")
+DEFAULT_BASELINE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl")
 DEFAULT_OUTPUT_DIR = Path("artifacts/reports/tallyqa_teacher_cache_comparison")
 
 

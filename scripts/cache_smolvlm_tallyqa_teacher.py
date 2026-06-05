@@ -24,8 +24,8 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolVLM-256M-Instruct"
-DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224")
-DEFAULT_OUTPUT = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl")
+DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
+DEFAULT_OUTPUT = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl")
 
 
 def parse_args() -> argparse.Namespace:
@@ -241,7 +241,16 @@ def chat_prompt(processor: Any, question: str) -> str:
             ],
         }
     ]
-    return processor.apply_chat_template(messages, add_generation_prompt=True)
+    processor_kwargs: dict[str, Any] = {}
+    video_processor = getattr(processor, "video_processor", None)
+    if video_processor is not None:
+        processor_kwargs["num_frames"] = getattr(video_processor, "num_frames", None)
+        processor_kwargs["fps"] = getattr(video_processor, "fps", None)
+    return processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        processor_kwargs=processor_kwargs,
+    )
 
 
 def encode_processor_batch(
@@ -250,19 +259,25 @@ def encode_processor_batch(
     images: list[Image.Image],
 ) -> Any:
     nested_images = [[image] for image in images]
-    try:
-        return processor(
-            text=chat_texts,
-            images=nested_images,
-            text_kwargs={"return_tensors": "pt", "padding": True},
-        )
-    except TypeError:
-        return processor(
-            text=chat_texts,
-            images=nested_images,
-            return_tensors="pt",
-            padding=True,
-        )
+    call_variants = [
+        {"processor_kwargs": {"text_kwargs": {"return_tensors": "pt", "padding": True}}},
+        {"text_kwargs": {"return_tensors": "pt", "padding": True}},
+        {"return_tensors": "pt", "padding": True},
+    ]
+    last_error: Exception | None = None
+    for kwargs in call_variants:
+        try:
+            inputs = processor(text=chat_texts, images=nested_images, **kwargs)
+        except TypeError as exc:
+            last_error = exc
+            continue
+        input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+        if isinstance(input_ids, torch.Tensor):
+            return inputs
+    if last_error is not None:
+        raise last_error
+    raise TypeError("Processor did not return tensor input_ids for any supported call form.")
+
 
 
 def load_examples(dataset_path: Path) -> list[dict[str, Any]]:

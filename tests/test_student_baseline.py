@@ -24,6 +24,24 @@ from vlm_micro.student.lightning import StudentBaselineModule
 from vlm_micro.student.model import StudentBaseline
 
 
+def _fusion_input_shape(model: StudentBaseline, image_size: int = 224) -> tuple[int, ...]:
+    shapes: list[tuple[int, ...]] = []
+
+    def hook(_module: torch.nn.Module, inputs: tuple[torch.Tensor, ...], _output: torch.Tensor) -> None:
+        shapes.append(tuple(inputs[0].shape))
+
+    handle = model.fusion[0].register_forward_hook(hook)
+    try:
+        model(
+            torch.tensor([[1, 2]]),
+            torch.tensor([[True, True]]),
+            torch.randn(1, 3, image_size, image_size),
+        )
+    finally:
+        handle.remove()
+    return shapes[0]
+
+
 def _jpeg_bytes() -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (32, 32), (100, 120, 140)).save(output, format="JPEG")
@@ -107,7 +125,13 @@ def test_student_baseline_defaults_to_mobilenet_v3_large() -> None:
     )
 
     assert model.image_backbone_name == "mobilenet_v3_large"
-    assert model.image_projection[0].in_features == 960
+    assert model.image_feature_cutoff == 13
+    assert model.image_token_mode == "spatial"
+    assert model.prompt_identity is not None
+    assert model.image_position_embeddings is not None
+    assert model.image_position_embeddings.shape == (1, 196, 16)
+    assert model.image_projection[0].in_features == 112
+    assert _fusion_input_shape(model) == (1, 197, 16)
 
 
 def test_student_baseline_can_still_select_mobilenet_v3_small() -> None:
@@ -123,7 +147,133 @@ def test_student_baseline_can_still_select_mobilenet_v3_small() -> None:
     )
 
     assert model.image_backbone_name == "mobilenet_v3_small"
-    assert model.image_projection[0].in_features == 576
+    assert model.image_feature_cutoff == 9
+    assert model.image_token_mode == "spatial"
+    assert model.image_projection[0].in_features == 48
+    assert _fusion_input_shape(model) == (1, 197, 16)
+
+
+def test_student_baseline_can_still_use_full_mobilenet_features() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=1,
+        fusion_heads=4,
+        image_feature_cutoff=None,
+    )
+
+    assert model.image_feature_cutoff is None
+    assert model.image_projection[0].in_features == 960
+
+
+def test_student_baseline_can_still_use_pooled_image_token() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=1,
+        fusion_heads=4,
+        image_token_mode="pooled",
+    )
+
+    assert _fusion_input_shape(model) == (1, 2, 16)
+
+
+def test_student_baseline_can_freeze_image_features_only() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=1,
+        fusion_heads=4,
+        freeze_image_features=True,
+    )
+
+    assert all(not parameter.requires_grad for parameter in model.image_features.parameters())
+    assert model.prompt_identity is not None
+    assert model.prompt_identity.requires_grad
+    assert model.image_position_embeddings is not None
+    assert model.image_position_embeddings.requires_grad
+    assert all(parameter.requires_grad for parameter in model.image_projection.parameters())
+    assert all(parameter.requires_grad for parameter in model.fusion.parameters())
+    assert all(parameter.requires_grad for parameter in model.classifier.parameters())
+
+
+def test_student_baseline_can_disable_prompt_and_image_position_embeddings() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=1,
+        fusion_heads=4,
+        use_prompt_identity=False,
+        use_image_positional_embeddings=False,
+    )
+
+    assert model.prompt_identity is None
+    assert model.image_position_embeddings is None
+    assert _fusion_input_shape(model) == (1, 197, 16)
+
+
+def test_student_baseline_can_apply_prompt_film_before_112_channel_blocks() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=1,
+        fusion_heads=4,
+        image_backbone="mobilenet_v3_large",
+        image_feature_cutoff=13,
+        image_film_at=10,
+        freeze_image_features=True,
+        num_outputs=6,
+    )
+
+    assert model.image_film_at == 10
+    assert model.image_film is not None
+    assert model.image_film.channels == 80
+    assert all(not parameter.requires_grad for parameter in model.image_features.parameters())
+    assert all(parameter.requires_grad for parameter in model.image_film.parameters())
+    assert torch.count_nonzero(model.image_film.to_scale_shift.weight) == 0
+    assert torch.count_nonzero(model.image_film.to_scale_shift.bias) == 0
+    assert _fusion_input_shape(model) == (1, 197, 16)
+
+
+def test_student_baseline_concat_mlp_fusion_has_no_transformer_blocks() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=4,
+        fusion_heads=4,
+        fusion_mode="concat_mlp",
+        use_prompt_identity=False,
+        use_image_positional_embeddings=False,
+        num_outputs=6,
+    )
+    logits = model(
+        torch.tensor([[1, 2]]),
+        torch.tensor([[True, True]]),
+        torch.randn(1, 3, 224, 224),
+    )
+
+    assert isinstance(model.fusion, torch.nn.Identity)
+    assert model.prompt_identity is None
+    assert model.image_position_embeddings is None
+    assert logits.shape == (1, 6)
 
 
 def test_alpha_one_does_not_require_teacher_targets() -> None:

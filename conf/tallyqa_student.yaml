@@ -1,23 +1,31 @@
 seed: 42
 
 paths:
-  dataset_root: data/tallyqa_cauldron_target_mobilenet224
-  teacher_cache: artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl
-  prompt_embeddings: artifacts/models/tallyqa_smolvlm_prompt_embeddings.pt
+  dataset_root: data/tallyqa_cauldron_target_mobilenet224_letterbox
+  teacher_cache: artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl
+  prompt_embeddings: artifacts/models/tallyqa_smolvlm_prompt_embeddings_letterbox.pt
   report_dir: artifacts/reports/tallyqa_student
   checkpoint_dir: artifacts/models/tallyqa_student
   wandb_env_file: ../wandb_api_key.env
 
 model:
   freeze_embeddings: true
+  freeze_image_features: false
   image_pretrained: true
   image_backbone: mobilenet_v3_large
+  image_feature_cutoff: auto
+  image_film_at: null
+  image_token_mode: spatial
+  fusion_mode: transformer
+  use_prompt_identity: true
+  use_image_positional_embeddings: true
+  image_position_tokens: 196
   image_size: 224
   num_outputs: 6
   query_dim: 128
   image_dim: 128
   fusion_dim: 128
-  fusion_depth: 2
+  fusion_depth: 4
   fusion_heads: 4
   fusion_mlp_ratio: 2
   dropout: 0.1
@@ -27,6 +35,11 @@ distillation:
   alpha: 1.0
   beta: 0.5
   temperature: 2.0
+  class_weights: null
+  class_weight_mode: balanced
+  target_distribution: hard
+  local_soft_sigma: 1.0
+  local_soft_radius: 1
 
 data:
   collapse_at: 5
@@ -37,12 +50,24 @@ data:
   pin_memory: true
   tensor_cache_size: 256
   group_train_by_image: true
+  shuffle_train: true
+  train_sampling: natural
+  prompt_class_sampling_temperature: 0.5
+  train_epoch_size: null
+  train_example_limit: null
   shuffle_block_size: 256
   missing_teacher_policy: filter
+  require_teacher_cache: true
+  prompt_class_filter_csv: null
+  min_prompt_accuracy: null
+  prompt_class_names: null
+  prompt_class_names_file: null
+  curriculum_schedule: null
 
 optimizer:
-  learning_rate: 0.0003
-  warmup_start_learning_rate: 0.00003
+  learning_rate: 0.001
+  image_learning_rate_scale: 0.1
+  warmup_start_learning_rate: 0.0001
   warmup_steps: 1000
   weight_decay: 0.01
 
@@ -52,14 +77,34 @@ trainer:
   precision: 16-mixed
   max_epochs: 10
   log_every_n_steps: 25
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: norm
   limit_train_batches: null
   limit_val_batches: null
   limit_test_batches: null
+  reload_dataloaders_every_n_epochs: 0
+  early_stopping:
+    enabled: true
+    monitor: val/loss
+    mode: min
+    patience: 3
+    min_delta: 0.0
+
+validation_plots:
+  enabled: true
+  samples: 4
+  every_n_epochs: 1
 
 wandb:
   project: vlm-micro
   entity: null
   mode: online
+  watch:
+    enabled: true
+    log: all
+    log_freq: 100
+    log_graph: false
   tags: [student, tallyqa, mobilenet-v3-large, distillation, count-5plus]
 
 experiment:

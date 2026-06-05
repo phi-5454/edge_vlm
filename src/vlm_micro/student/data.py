@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import warnings
+import csv
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +15,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Dataset, Sampler, WeightedRandomSampler
 from torchvision.transforms import functional as TF
 
 
@@ -134,6 +135,66 @@ def load_tallyqa_prompt_artifact(path: Path) -> dict[str, Any]:
     if missing:
         raise ValueError(f"{path} is missing required prompt embedding fields: {sorted(missing)}")
     return payload
+
+
+def load_prompt_accuracy_filter(path: Path | None, min_accuracy: float | None) -> set[str] | None:
+    if path is None:
+        return None
+    if min_accuracy is None:
+        raise ValueError("min_prompt_accuracy is required when prompt_class_filter_csv is set.")
+    if not 0 <= min_accuracy <= 1:
+        raise ValueError("min_prompt_accuracy must be between 0 and 1.")
+    prompts: set[str] = set()
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            if float(row["accuracy"]) >= min_accuracy:
+                prompts.add(str(row["student_prompt"]))
+    if not prompts:
+        raise ValueError(f"No prompt classes in {path} have accuracy >= {min_accuracy}.")
+    return prompts
+
+
+def parse_prompt_class_names(value: str | None) -> set[str] | None:
+    if value is None:
+        return None
+    prompts = {prompt.strip() for prompt in value.split(",") if prompt.strip()}
+    if not prompts:
+        raise ValueError("prompt_class_names must contain at least one prompt name when set.")
+    return prompts
+
+
+def load_prompt_class_names_file(path: Path | None) -> set[str] | None:
+    if path is None:
+        return None
+    prompts = {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    if not prompts:
+        raise ValueError(f"{path} does not contain any prompt class names.")
+    return prompts
+
+
+def load_curriculum_schedule(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError(f"{path} must contain a JSON list of curriculum stages.")
+    stages: list[dict[str, Any]] = []
+    for stage in payload:
+        if not isinstance(stage, dict):
+            raise ValueError(f"{path} curriculum stages must be JSON objects.")
+        start_epoch = int(stage["start_epoch"])
+        if start_epoch <= 0:
+            raise ValueError("curriculum start_epoch values are 1-based and must be positive.")
+        train_sampling = str(stage.get("train_sampling", "natural"))
+        if train_sampling not in {"natural", "prompt_class_tempered"}:
+            raise ValueError("curriculum train_sampling must be 'natural' or 'prompt_class_tempered'.")
+        stages.append({**stage, "start_epoch": start_epoch, "train_sampling": train_sampling})
+    stages.sort(key=lambda row: int(row["start_epoch"]))
+    return stages
 
 
 def load_tallyqa_teacher_targets(
@@ -352,6 +413,7 @@ class TallyQAStudentDataset(Dataset[dict[str, Any]]):
             "teacher_probs": teacher_probs,
             "item_class_id": item_class_id,
             "image_id": str(row["image_id"]),
+            "student_prompt": str(row["student_prompt"]),
         }
 
 
@@ -460,6 +522,7 @@ def collate_tallyqa_student_batch(rows: list[dict[str, Any]]) -> dict[str, torch
         "labels": torch.tensor([row["label"] for row in rows], dtype=torch.long),
         "teacher_probs": torch.stack([row["teacher_probs"] for row in rows]).float(),
         "item_class_ids": torch.tensor([row["item_class_id"] for row in rows], dtype=torch.long),
+        "student_prompts": [str(row["student_prompt"]) for row in rows],
     }
 
 
@@ -478,6 +541,10 @@ class StudentDataModule(L.LightningDataModule):
         persistent_workers: bool = True,
         pin_memory: bool = True,
         group_train_by_image: bool = True,
+        shuffle_train: bool = True,
+        train_sampling: str = "natural",
+        prompt_class_sampling_temperature: float = 0.5,
+        train_epoch_size: int | None = None,
         shuffle_block_size: int = 256,
         missing_teacher_policy: str = "filter",
     ):
@@ -522,7 +589,7 @@ class StudentDataModule(L.LightningDataModule):
             "persistent_workers": self.hparams.persistent_workers and workers > 0,
             "prefetch_factor": self.hparams.prefetch_factor if workers > 0 else None,
         }
-        if split == "train" and self.hparams.group_train_by_image:
+        if split == "train" and self.hparams.group_train_by_image and self.hparams.shuffle_train:
             return DataLoader(
                 **common,
                 batch_sampler=ImageGroupedBatchSampler(
@@ -539,7 +606,7 @@ class StudentDataModule(L.LightningDataModule):
         )
 
     def train_dataloader(self) -> DataLoader[dict[str, torch.Tensor]]:
-        return self._loader("train", shuffle=True)
+        return self._loader("train", shuffle=bool(self.hparams.shuffle_train))
 
     def val_dataloader(self) -> DataLoader[dict[str, torch.Tensor]]:
         return self._loader("val", shuffle=False)
@@ -578,20 +645,47 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         persistent_workers: bool = True,
         pin_memory: bool = True,
         group_train_by_image: bool = True,
+        shuffle_train: bool = True,
+        train_sampling: str = "natural",
+        prompt_class_sampling_temperature: float = 0.5,
+        train_epoch_size: int | None = None,
         shuffle_block_size: int = 256,
         missing_teacher_policy: str = "filter",
         collapse_at: int = 5,
         num_classes: int = 6,
+        prompt_class_filter_csv: Path | None = None,
+        min_prompt_accuracy: float | None = None,
+        prompt_class_names: str | None = None,
+        prompt_class_names_file: Path | None = None,
+        curriculum_schedule: Path | None = None,
+        train_example_limit: int | None = None,
     ):
         super().__init__()
         if missing_teacher_policy not in {"filter", "keep"}:
             raise ValueError("missing_teacher_policy must be 'filter' or 'keep'.")
         if collapse_at != num_classes - 1:
             raise ValueError("This TallyQA path expects collapse_at == num_classes - 1.")
+        if train_example_limit is not None and train_example_limit <= 0:
+            raise ValueError("train_example_limit must be positive when provided.")
+        if train_sampling not in {"natural", "prompt_class_tempered"}:
+            raise ValueError("train_sampling must be 'natural' or 'prompt_class_tempered'.")
+        if prompt_class_sampling_temperature < 0:
+            raise ValueError("prompt_class_sampling_temperature must be non-negative.")
+        if train_epoch_size is not None and train_epoch_size <= 0:
+            raise ValueError("train_epoch_size must be positive when provided.")
         self.save_hyperparameters()
         self.hparams.dataset_root = str(dataset_root)
         self.hparams.prompt_embeddings = str(prompt_embeddings)
         self.hparams.teacher_cache = str(teacher_cache) if teacher_cache is not None else None
+        self.hparams.prompt_class_filter_csv = (
+            str(prompt_class_filter_csv) if prompt_class_filter_csv is not None else None
+        )
+        self.hparams.prompt_class_names_file = (
+            str(prompt_class_names_file) if prompt_class_names_file is not None else None
+        )
+        self.hparams.curriculum_schedule = (
+            str(curriculum_schedule) if curriculum_schedule is not None else None
+        )
 
         prompt_payload = load_tallyqa_prompt_artifact(prompt_embeddings)
         self.prompt_token_ids = prompt_payload["prompt_token_ids"].long()
@@ -605,15 +699,115 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             num_classes=num_classes,
             collapse_at=collapse_at,
         )
+        prompt_filters = [
+            prompt_filter
+            for prompt_filter in (
+                load_prompt_accuracy_filter(prompt_class_filter_csv, min_prompt_accuracy),
+                parse_prompt_class_names(prompt_class_names),
+                load_prompt_class_names_file(prompt_class_names_file),
+            )
+            if prompt_filter is not None
+        ]
+        prompt_filter = set.intersection(*prompt_filters) if prompt_filters else None
+        if prompt_filter is not None and not prompt_filter:
+            raise ValueError("Prompt class filters produced an empty prompt set.")
         self.full_indices = {"train": [], "val": [], "test": []}
         self.indices = {"train": [], "val": [], "test": []}
         for index, row in enumerate(self.rows):
             split = split_for_image(str(row["image_id"]), seed)
             self.full_indices[split].append(index)
-            if missing_teacher_policy == "keep" or index in self.teacher_targets:
+            prompt_allowed = prompt_filter is None or str(row["student_prompt"]) in prompt_filter
+            teacher_allowed = missing_teacher_policy == "keep" or index in self.teacher_targets
+            if prompt_allowed and teacher_allowed:
                 self.indices[split].append(index)
+        if train_example_limit is not None:
+            self.indices["train"] = self.indices["train"][:train_example_limit]
         if missing_teacher_policy == "filter" and not sum(map(len, self.indices.values())):
             raise ValueError("The teacher cache does not contain any usable TallyQA targets.")
+        self._base_train_indices = list(self.indices["train"])
+        self._curriculum_schedule = load_curriculum_schedule(curriculum_schedule)
+        self._curriculum_epoch = 0
+        self._curriculum_stage: dict[str, Any] | None = None
+        self.set_train_epoch(0)
+
+    def _stage_prompt_filter(self, stage: dict[str, Any] | None) -> set[str] | None:
+        if stage is None:
+            return None
+        filters = [
+            prompt_filter
+            for prompt_filter in (
+                parse_prompt_class_names(stage.get("prompt_class_names")),
+                load_prompt_class_names_file(
+                    Path(stage["prompt_class_names_file"])
+                    if stage.get("prompt_class_names_file") is not None
+                    else None
+                ),
+            )
+            if prompt_filter is not None
+        ]
+        return set.intersection(*filters) if filters else None
+
+    def set_train_epoch(self, zero_based_epoch: int) -> None:
+        if not self._curriculum_schedule:
+            return
+        one_based_epoch = int(zero_based_epoch) + 1
+        active = self._curriculum_schedule[0]
+        for stage in self._curriculum_schedule:
+            if int(stage["start_epoch"]) <= one_based_epoch:
+                active = stage
+            else:
+                break
+        self._curriculum_epoch = one_based_epoch
+        self._curriculum_stage = active
+
+    def _train_indices(self) -> list[int]:
+        prompt_filter = self._stage_prompt_filter(self._curriculum_stage)
+        if prompt_filter is None:
+            return list(self._base_train_indices)
+        indices = [
+            index
+            for index in self._base_train_indices
+            if str(self.rows[index]["student_prompt"]) in prompt_filter
+        ]
+        if not indices:
+            raise ValueError(f"Curriculum stage produced no train examples: {self._curriculum_stage}")
+        return indices
+
+    def _train_sampling(self) -> str:
+        if self._curriculum_stage is not None:
+            return str(self._curriculum_stage.get("train_sampling", self.hparams.train_sampling))
+        return str(self.hparams.train_sampling)
+
+    def _prompt_sampling_temperature(self) -> float:
+        if self._curriculum_stage is not None:
+            return float(
+                self._curriculum_stage.get(
+                    "prompt_class_sampling_temperature",
+                    self.hparams.prompt_class_sampling_temperature,
+                )
+            )
+        return float(self.hparams.prompt_class_sampling_temperature)
+
+    def _train_epoch_size(self, dataset: TallyQAStudentDataset) -> int:
+        if self._curriculum_stage is not None and self._curriculum_stage.get("train_epoch_size") is not None:
+            return int(self._curriculum_stage["train_epoch_size"])
+        if self.hparams.train_epoch_size is not None:
+            return int(self.hparams.train_epoch_size)
+        return len(dataset)
+
+    def _prompt_class_sampling_weights(self, dataset: TallyQAStudentDataset) -> torch.Tensor:
+        temperature = self._prompt_sampling_temperature()
+        counts: dict[int, int] = {}
+        for dataset_index in dataset.indices:
+            class_id = int(dataset.rows[dataset_index]["item_class_id"])
+            counts[class_id] = counts.get(class_id, 0) + 1
+        return torch.tensor(
+            [
+                counts[int(dataset.rows[dataset_index]["item_class_id"])] ** (-temperature)
+                for dataset_index in dataset.indices
+            ],
+            dtype=torch.double,
+        )
 
     def _dataset(self, split: str) -> TallyQAStudentDataset:
         store = Uint8MemmapImageStore(
@@ -622,7 +816,7 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         )
         return TallyQAStudentDataset(
             rows=self.rows,
-            indices=self.indices[split],
+            indices=self._train_indices() if split == "train" else self.indices[split],
             prompt_token_ids=self.prompt_token_ids,
             prompt_attention_mask=self.prompt_attention_mask,
             teacher_targets=self.teacher_targets,
@@ -642,7 +836,23 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             "persistent_workers": self.hparams.persistent_workers and workers > 0,
             "prefetch_factor": self.hparams.prefetch_factor if workers > 0 else None,
         }
-        if split == "train" and self.hparams.group_train_by_image:
+        if split == "train" and self._train_sampling() == "prompt_class_tempered":
+            if not self.hparams.shuffle_train:
+                raise ValueError("prompt_class_tempered train sampling requires shuffle_train=true.")
+            epoch_size = self._train_epoch_size(dataset)
+            return DataLoader(
+                **common,
+                batch_size=self.hparams.batch_size,
+                sampler=WeightedRandomSampler(
+                    weights=self._prompt_class_sampling_weights(dataset),
+                    num_samples=epoch_size,
+                    replacement=True,
+                    generator=torch.Generator().manual_seed(
+                        int(self.hparams.seed) + int(self._curriculum_epoch)
+                    ),
+                ),
+            )
+        if split == "train" and self.hparams.group_train_by_image and self.hparams.shuffle_train:
             return DataLoader(
                 **common,
                 batch_sampler=TallyQAImageGroupedBatchSampler(
@@ -659,7 +869,7 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         )
 
     def train_dataloader(self) -> DataLoader[dict[str, torch.Tensor]]:
-        return self._loader("train", shuffle=True)
+        return self._loader("train", shuffle=bool(self.hparams.shuffle_train))
 
     def val_dataloader(self) -> DataLoader[dict[str, torch.Tensor]]:
         return self._loader("val", shuffle=False)
@@ -668,10 +878,21 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         return self._loader("test", shuffle=False)
 
     def split_sizes(self) -> dict[str, int]:
-        return {split: len(indices) for split, indices in self.indices.items()}
+        return {
+            "train": len(self._train_indices()),
+            "val": len(self.indices["val"]),
+            "test": len(self.indices["test"]),
+        }
 
     def full_split_sizes(self) -> dict[str, int]:
         return {split: len(indices) for split, indices in self.full_indices.items()}
+
+    def label_counts(self, split: str = "train") -> dict[int, int]:
+        counts = {class_id: 0 for class_id in range(int(self.hparams.num_classes))}
+        for index in self.indices[split]:
+            label = collapse_count(int(self.rows[index]["answer"]), int(self.hparams.collapse_at))
+            counts[label] += 1
+        return counts
 
     def cache_coverage(self) -> dict[str, float | int | str]:
         covered = sum(index in self.teacher_targets for index in range(len(self.rows)))
@@ -681,4 +902,14 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             "total_prompts": len(self.rows),
             "covered_fraction": covered / len(self.rows) if self.rows else 0.0,
             "active_prompts": sum(map(len, self.indices.values())),
+            "prompt_class_filter_csv": self.hparams.prompt_class_filter_csv,
+            "min_prompt_accuracy": self.hparams.min_prompt_accuracy,
+            "prompt_class_names": self.hparams.prompt_class_names,
+            "prompt_class_names_file": self.hparams.prompt_class_names_file,
+            "train_sampling": self.hparams.train_sampling,
+            "prompt_class_sampling_temperature": self.hparams.prompt_class_sampling_temperature,
+            "train_epoch_size": self.hparams.train_epoch_size,
+            "curriculum_schedule": self.hparams.curriculum_schedule,
+            "curriculum_epoch": self._curriculum_epoch,
+            "curriculum_stage": self._curriculum_stage,
         }

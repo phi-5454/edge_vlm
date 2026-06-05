@@ -4,15 +4,18 @@ import argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any
+
+os.environ["MPLBACKEND"] = "Agg"
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_CACHE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl")
-DEFAULT_CLASSES = Path("data/tallyqa_cauldron_target_mobilenet224/classes.json")
+DEFAULT_CACHE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl")
+DEFAULT_CLASSES = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox/classes.json")
 DEFAULT_OUTPUT_DIR = Path("artifacts/reports/tallyqa_teacher_accuracy")
 
 
@@ -30,6 +33,12 @@ def parse_args() -> argparse.Namespace:
         help="Collapse true/predicted output classes >= this value into a '<n>+' class.",
     )
     parser.add_argument("--min-heatmap-count", type=int, default=1)
+    parser.add_argument(
+        "--min-prompt-accuracy",
+        type=float,
+        default=None,
+        help="Only include prompt classes with overall prompt accuracy at least this value.",
+    )
     return parser.parse_args()
 
 
@@ -228,6 +237,14 @@ def main() -> None:
     answers = answer_classes(args.answer_min, args.answer_max, args.collapse_at)
     stats = stream_accuracy(args.cache, args.collapse_at)
     overall_accuracy = accuracy(stats["overall"])
+    full_prompt_count = len(class_rows)
+    if args.min_prompt_accuracy is not None:
+        class_rows = [
+            row
+            for row in class_rows
+            if accuracy(stats["by_prompt"].get(str(row["item"]), Counter()))
+            >= args.min_prompt_accuracy
+        ]
 
     heatmap, heatmap_counts, row_labels, col_labels = build_heatmap(
         class_rows,
@@ -316,6 +333,9 @@ def main() -> None:
         "collapse_at": args.collapse_at,
         "output_classes": [str(answer) for answer in answers],
         "min_heatmap_count": args.min_heatmap_count,
+        "min_prompt_accuracy": args.min_prompt_accuracy,
+        "prompt_classes_before_filter": full_prompt_count,
+        "prompt_classes_after_filter": len(class_rows),
         "figures": {
             "prompt_by_output_heatmap": str(
                 args.output_dir / "teacher_accuracy_prompt_by_output_heatmap.png"

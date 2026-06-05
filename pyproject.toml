@@ -15,6 +15,7 @@ dependencies = [
     "pillow>=10.4",
     "python-dotenv>=1.0",
     "torch>=2.3",
+    "torchinfo>=1.8",
     "torchvision>=0.18",
     "transformers>=4.49",
     "wandb>=0.17",

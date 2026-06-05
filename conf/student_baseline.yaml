@@ -15,8 +15,15 @@ teacher:
 
 model:
   freeze_embeddings: true
+  freeze_image_features: false
   image_pretrained: true
   image_backbone: mobilenet_v3_large
+  image_feature_cutoff: auto
+  image_token_mode: spatial
+  fusion_mode: transformer
+  use_prompt_identity: true
+  use_image_positional_embeddings: true
+  image_position_tokens: 196
   image_size: 224
   query_dim: 128
   image_dim: 128

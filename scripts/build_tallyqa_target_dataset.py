@@ -22,6 +22,7 @@ from tqdm.auto import tqdm
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from eda_tallyqa import load_pruned_suffixes, match_frontier_suffix, normalize_tokens
 from eda_tallyqa_cauldron import clean_question, parse_answer
 
@@ -29,8 +30,12 @@ from eda_tallyqa_cauldron import clean_question, parse_answer
 DEFAULT_DATASET = Path("data/the_cauldron/tallyqa")
 DEFAULT_SUFFIXES = Path("artifacts/reports/tallyqa_cauldron_eda/frontier_suffixes_pruned.txt")
 DEFAULT_ITEMS = Path("artifacts/reports/tallyqa_cauldron_eda/template_items_top200_pruned.txt")
-DEFAULT_OUTPUT_ROOT = Path("data/tallyqa_cauldron_target_mobilenet224")
-DEFAULT_REPORT = Path("artifacts/reports/tallyqa_cauldron_target_mobilenet224_summary.json")
+DEFAULT_OUTPUT_ROOT = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
+DEFAULT_REPORT = Path(
+    "artifacts/reports/tallyqa_cauldron_target_mobilenet224_letterbox_summary.json"
+)
+IMAGENET_MEAN_RGB = [0.485, 0.456, 0.406]
+IMAGENET_MEAN_UINT8_RGB = [round(channel * 255) for channel in IMAGENET_MEAN_RGB]
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,10 +169,36 @@ def collect_examples(
     return examples, item_counter, answer_counter, suffix_counter
 
 
-def image_tensor(image: Image.Image, image_size: int) -> np.ndarray:
-    tensor = TF.pil_to_tensor(image.convert("RGB"))
-    tensor = TF.resize(tensor, [image_size, image_size], antialias=True)
-    return tensor.numpy()
+def image_tensor(image: Image.Image, image_size: int) -> tuple[np.ndarray, dict[str, Any]]:
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    scale = image_size / max(width, height)
+    resized_width = max(1, round(width * scale))
+    resized_height = max(1, round(height * scale))
+    tensor = TF.pil_to_tensor(rgb)
+    tensor = TF.resize(tensor, [resized_height, resized_width], antialias=True)
+    output = np.empty((3, image_size, image_size), dtype=np.uint8)
+    output[:] = np.asarray(IMAGENET_MEAN_UINT8_RGB, dtype=np.uint8).reshape(3, 1, 1)
+    pad_left = (image_size - resized_width) // 2
+    pad_top = (image_size - resized_height) // 2
+    output[
+        :,
+        pad_top : pad_top + resized_height,
+        pad_left : pad_left + resized_width,
+    ] = tensor.numpy()
+    return output, {
+        "original_size": [width, height],
+        "resized_size": [resized_width, resized_height],
+        "scale": scale,
+        "padding_ltrb": [
+            pad_left,
+            pad_top,
+            image_size - resized_width - pad_left,
+            image_size - resized_height - pad_top,
+        ],
+        "padding_value_rgb": IMAGENET_MEAN_UINT8_RGB,
+        "padding_value_normalization_space": "ImageNet mean, zero after PyTorch MobileNet normalization",
+    }
 
 
 def write_images(
@@ -193,13 +224,15 @@ def write_images(
             if not isinstance(images, list) or not images:
                 raise ValueError(f"Missing image list for dataset row {row_index}")
             image_index = row_to_image_index[row_index]
-            tensors[image_index] = image_tensor(images[0], image_size)
+            tensor, preprocessing = image_tensor(images[0], image_size)
+            tensors[image_index] = tensor
             index_handle.write(
                 json.dumps(
                     {
                         "image_id": f"tallyqa:{row_index}",
                         "image_index": image_index,
                         "source_row_index": row_index,
+                        **preprocessing,
                     }
                 )
                 + "\n"
@@ -210,7 +243,9 @@ def write_images(
         "shape": [len(ordered_indices), 3, image_size, image_size],
         "layout": "CHW",
         "dtype": "uint8",
-        "resize": "torchvision.transforms.functional.resize to square with antialias=True",
+        "resize": "letterbox: resize longest side to image_size with antialias=True, then center-pad to square",
+        "padding_value_rgb": IMAGENET_MEAN_UINT8_RGB,
+        "padding_value_normalization_space": "ImageNet mean, zero after PyTorch MobileNet normalization",
         "normalization": "deferred; convert to float32 and apply MobileNet/ImageNet normalization during training",
         "tensor_file": "images.uint8.bin",
         "index_file": "images.index.jsonl",
@@ -356,7 +391,7 @@ def main() -> None:
     )
     update_example_image_indices(examples, args.output_root)
     write_examples(examples, args.output_root, args.compression)
-    figures_dir = args.report.parent / "tallyqa_cauldron_target_mobilenet224"
+    figures_dir = args.report.parent / args.output_root.name
     answer_figure_paths = plot_answer_histograms(answer_counter, figures_dir)
     answer_text_figure_paths = plot_answer_text_histograms(
         Counter(str(row["answer_text"]) for row in examples),

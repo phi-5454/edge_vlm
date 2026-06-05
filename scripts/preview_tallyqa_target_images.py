@@ -12,8 +12,8 @@ import numpy as np
 import pyarrow.parquet as pq
 
 
-DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224")
-DEFAULT_OUTPUT = Path("artifacts/reports/tallyqa_target_preview/preview.png")
+DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
+DEFAULT_OUTPUT = Path("artifacts/reports/tallyqa_target_preview/letterbox_preview.png")
 
 
 def parse_args() -> argparse.Namespace:
