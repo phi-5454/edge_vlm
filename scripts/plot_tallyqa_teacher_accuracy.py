@@ -218,6 +218,42 @@ def plot_bar(
     plt.close(fig)
 
 
+def plot_histogram(
+    accuracies: list[float],
+    counts: list[int],
+    overall_accuracy: float,
+    title: str,
+    output: Path,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bins = np.linspace(0, 1, 11)
+    ax.hist(accuracies, bins=bins, color="#4c78a8", edgecolor="white")
+    ax.axvline(overall_accuracy, color="black", linewidth=1.2, linestyle="--", label="Overall")
+    ax.set_title(title)
+    ax.set_xlabel("Accuracy")
+    ax.set_ylabel("Number of classes")
+    ax.set_xlim(0, 1)
+    ax.legend(loc="upper left")
+
+    non_empty = [accuracy for accuracy, count in zip(accuracies, counts, strict=True) if count > 0]
+    if non_empty:
+        ax.text(
+            0.98,
+            0.95,
+            f"n={len(non_empty)}\nmean={np.mean(non_empty):.3f}\nmedian={np.median(non_empty):.3f}",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=9,
+            bbox={"facecolor": "white", "edgecolor": "#cccccc", "alpha": 0.85},
+        )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(output, dpi=220)
+    plt.close(fig)
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
@@ -318,6 +354,20 @@ def main() -> None:
         output=args.output_dir / "teacher_accuracy_by_output_class_bar.png",
         horizontal=False,
     )
+    plot_histogram(
+        accuracies=[float(row["accuracy"]) for row in prompt_rows],
+        counts=[int(row["count"]) for row in prompt_rows],
+        overall_accuracy=overall_accuracy,
+        title="SmolVLM TallyQA Prompt-Class Accuracy Distribution",
+        output=args.output_dir / "teacher_accuracy_by_prompt_class_histogram.png",
+    )
+    plot_histogram(
+        accuracies=[float(row["accuracy"]) for row in answer_rows],
+        counts=[int(row["count"]) for row in answer_rows],
+        overall_accuracy=overall_accuracy,
+        title="SmolVLM TallyQA Output-Class Accuracy Distribution",
+        output=args.output_dir / "teacher_accuracy_by_output_class_histogram.png",
+    )
 
     write_csv(args.output_dir / "teacher_accuracy_by_prompt_class.csv", prompt_rows)
     write_csv(args.output_dir / "teacher_accuracy_by_output_class.csv", answer_rows)
@@ -342,6 +392,12 @@ def main() -> None:
             ),
             "by_prompt_class_bar": str(args.output_dir / "teacher_accuracy_by_prompt_class_bar.png"),
             "by_output_class_bar": str(args.output_dir / "teacher_accuracy_by_output_class_bar.png"),
+            "by_prompt_class_histogram": str(
+                args.output_dir / "teacher_accuracy_by_prompt_class_histogram.png"
+            ),
+            "by_output_class_histogram": str(
+                args.output_dir / "teacher_accuracy_by_output_class_histogram.png"
+            ),
         },
         "tables": {
             "by_prompt_class": str(args.output_dir / "teacher_accuracy_by_prompt_class.csv"),

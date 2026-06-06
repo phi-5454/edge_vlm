@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from datasets import load_from_disk
 import numpy as np
 from PIL import Image
 import pyarrow.parquet as pq
@@ -33,6 +34,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--image-source",
+        choices=["target", "original"],
+        default="target",
+        help="Use packed 224x224 target images or original Cauldron TallyQA images.",
+    )
+    parser.add_argument(
+        "--source-dataset",
+        type=Path,
+        default=Path("data/the_cauldron/tallyqa"),
+        help="Original Cauldron TallyQA dataset used when --image-source=original.",
+    )
     parser.add_argument("--image-processor-backend", choices=["torchvision", "pil"], default="pil")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -336,6 +349,27 @@ class Uint8ImageStore:
             "image_layout": "CHW",
             "image_tensor_file": str(self.tensor_path),
             "image_index_file": str(self.index_path),
+        }
+
+
+class OriginalImageStore:
+    def __init__(self, source_dataset_path: Path) -> None:
+        if not source_dataset_path.exists():
+            raise FileNotFoundError(f"{source_dataset_path} not found")
+        self.source_dataset_path = source_dataset_path
+        self.source_dataset = load_from_disk(str(source_dataset_path))
+
+    def get(self, row: dict[str, Any]) -> tuple[Image.Image, dict[str, Any]]:
+        source_row_index = int(row["source_row_index"])
+        source_row = self.source_dataset[source_row_index]
+        image = source_row["images"][0].convert("RGB")
+        return image, {
+            "image_source": "original-cauldron-tallyqa",
+            "source_dataset": str(self.source_dataset_path),
+            "source_row_index": source_row_index,
+            "image_slot": 0,
+            "image_size": list(image.size),
+            "image_mode": image.mode,
         }
 
 
@@ -716,14 +750,17 @@ def numeric_answer_metrics(
 def prepare_batch(
     batch_indices: list[int],
     examples: list[dict[str, Any]],
-    image_store: Uint8ImageStore,
+    image_store: Uint8ImageStore | OriginalImageStore,
     processor: Any,
     decode_executor: ThreadPoolExecutor,
 ) -> dict[str, Any]:
     rows = [examples[index] for index in batch_indices]
-    images_and_identities = list(
-        decode_executor.map(lambda row: image_store.get(int(row["image_index"])), rows)
-    )
+    if isinstance(image_store, OriginalImageStore):
+        images_and_identities = list(decode_executor.map(image_store.get, rows))
+    else:
+        images_and_identities = list(
+            decode_executor.map(lambda row: image_store.get(int(row["image_index"])), rows)
+        )
     images = [image for image, _ in images_and_identities]
     teacher_prompts = [str(row["teacher_prompt"]) for row in rows]
     chat_texts = [chat_prompt(processor, teacher_prompt) for teacher_prompt in teacher_prompts]
@@ -742,7 +779,7 @@ def submit_prepare_batch(
     executor: ThreadPoolExecutor,
     batch_indices: list[int],
     examples: list[dict[str, Any]],
-    image_store: Uint8ImageStore,
+    image_store: Uint8ImageStore | OriginalImageStore,
     processor: Any,
     decode_executor: ThreadPoolExecutor,
 ) -> Future[dict[str, Any]]:
@@ -855,7 +892,10 @@ def main() -> None:
     model.eval()
 
     model_revision = cached_model_revision(args.model)
-    image_store = Uint8ImageStore(args.dataset, metadata)
+    if args.image_source == "original":
+        image_store: Uint8ImageStore | OriginalImageStore = OriginalImageStore(args.source_dataset)
+    else:
+        image_store = Uint8ImageStore(args.dataset, metadata)
 
     records_written = 0
     selected_examples = len(selected_indices)

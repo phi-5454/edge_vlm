@@ -167,6 +167,11 @@ def build_module(cfg: DictConfig, data: TallyQAStudentDataModule) -> TallyQAStud
         image_learning_rate_scale=float(cfg.optimizer.get("image_learning_rate_scale", 1.0)),
         temperature=float(cfg.distillation.temperature),
         class_weights=class_weights_from_config(cfg, data),
+        kl_class_weights=(
+            [float(weight) for weight in cfg.distillation.kl_class_weights]
+            if cfg.distillation.get("kl_class_weights", None) is not None
+            else None
+        ),
         validation_plot_samples=0,
     )
 

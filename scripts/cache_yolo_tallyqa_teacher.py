@@ -11,52 +11,224 @@ from typing import Any
 
 os.environ["MPLBACKEND"] = "Agg"
 
-import torch
 from tqdm.auto import tqdm
-from torchvision.models.detection import (
-    FCOS_ResNet50_FPN_Weights,
-    FasterRCNN_ResNet50_FPN_V2_Weights,
-    RetinaNet_ResNet50_FPN_V2_Weights,
-    fcos_resnet50_fpn,
-    fasterrcnn_resnet50_fpn_v2,
-    retinanet_resnet50_fpn_v2,
-)
-from torchvision.transforms import functional as TF
 
 from scripts.cache_smolvlm_tallyqa_teacher import (
     Uint8ImageStore,
     load_examples,
     load_metadata,
 )
-from scripts.cache_yolo_tallyqa_teacher import prompt_targets
 
 
 DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
-DEFAULT_OUTPUT = Path(
-    "artifacts/teacher_cache/torchvision_coco_tallyqa_target_mobilenet224_letterbox.jsonl"
-)
+DEFAULT_OUTPUT = Path("artifacts/teacher_cache/yolo11n_tallyqa_coco_letterbox.jsonl")
 VERY_LOW_LOG_LIKELIHOOD = -1.0e9
+
+COCO_ALIASES = {
+    "people": "person",
+    "persons": "person",
+    "chairs": "chair",
+    "cars": "car",
+    "giraffes": "giraffe",
+    "zebras": "zebra",
+    "elephants": "elephant",
+    "dogs": "dog",
+    "cups": "cup",
+    "trains": "train",
+    "buses": "bus",
+    "cats": "cat",
+    "bowls": "bowl",
+    "birds": "bird",
+    "umbrellas": "umbrella",
+    "cows": "cow",
+    "motorcycles": "motorcycle",
+    "boats": "boat",
+    "trucks": "truck",
+    "benches": "bench",
+    "sheep": "sheep",
+    "pizzas": "pizza",
+    "bottles": "bottle",
+    "couches": "couch",
+    "clocks": "clock",
+    "bears": "bear",
+    "bananas": "banana",
+    "airplanes": "airplane",
+    "books": "book",
+    "laptops": "laptop",
+    "sinks": "sink",
+    "toilets": "toilet",
+    "suitcases": "suitcase",
+    "beds": "bed",
+    "cakes": "cake",
+    "planes": "airplane",
+    "potted plants": "potted plant",
+    "sandwiches": "sandwich",
+    "broccolis": "broccoli",
+    "tvs": "tv",
+    "donuts": "donut",
+    "bicycles": "bicycle",
+    "vases": "vase",
+    "apples": "apple",
+    "oranges": "orange",
+    "carrots": "carrot",
+    "kites": "kite",
+    "surfboards": "surfboard",
+    "wine glasses": "wine glass",
+    "bikes": "bicycle",
+    "skateboards": "skateboard",
+    "handbags": "handbag",
+    "traffic lights": "traffic light",
+    "keyboards": "keyboard",
+    "backpacks": "backpack",
+    "hot dogs": "hot dog",
+    "ovens": "oven",
+    "tennis rackets": "tennis racket",
+    "forks": "fork",
+    "knives": "knife",
+    "refrigerators": "refrigerator",
+    "cell phones": "cell phone",
+    "ties": "tie",
+    "stop signs": "stop sign",
+    "spoons": "spoon",
+    "remotes": "remote",
+    "fire hydrants": "fire hydrant",
+    "microwaves": "microwave",
+    "toothbrushes": "toothbrush",
+    "snowboards": "snowboard",
+    "frisbees": "frisbee",
+    "parking meters": "parking meter",
+    "glasses": "wine glass",
+    "scissors": "scissors",
+    "balls": "sports ball",
+    "phones": "cell phone",
+    "monitors": "tv",
+    "tables": "dining table",
+    "dining tables": "dining table",
+    "animals": [
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+    ],
+    "vehicles": [
+        "bicycle",
+        "car",
+        "motorcycle",
+        "airplane",
+        "bus",
+        "train",
+        "truck",
+        "boat",
+    ],
+}
+
+COCO_LABELS = {
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "airplane",
+    "bus",
+    "train",
+    "truck",
+    "boat",
+    "traffic light",
+    "fire hydrant",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+    "backpack",
+    "umbrella",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "couch",
+    "potted plant",
+    "bed",
+    "dining table",
+    "toilet",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "book",
+    "clock",
+    "vase",
+    "scissors",
+    "teddy bear",
+    "hair drier",
+    "toothbrush",
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Cache a torchvision COCO detector counting baseline for TallyQA."
+        description="Cache a YOLO COCO detector counting baseline for TallyQA."
     )
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument(
-        "--model",
-        choices=["fasterrcnn_resnet50_fpn_v2", "retinanet_resnet50_fpn_v2", "fcos_resnet50_fpn"],
-        default="fasterrcnn_resnet50_fpn_v2",
-    )
+    parser.add_argument("--model", default="yolo11n.pt")
     parser.add_argument("--prompt", default=None, help="Optional single TallyQA prompt class.")
     parser.add_argument("--prompt-class-names-file", type=Path, default=None)
     parser.add_argument("--include-groups", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--score-threshold", type=float, default=0.5)
+    parser.add_argument("--score-threshold", type=float, default=0.25)
+    parser.add_argument("--iou-threshold", type=float, default=0.7)
+    parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--answer-min", type=int, default=0)
     parser.add_argument("--answer-max", type=int, default=15)
     parser.add_argument("--collapse-at", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--end-index", type=int, default=None)
@@ -71,31 +243,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def device_from_arg(value: str, require_cuda: bool) -> torch.device:
+def load_yolo(model_name: str) -> Any:
+    try:
+        from ultralytics import YOLO
+    except ImportError as exc:
+        raise ImportError(
+            "Package `ultralytics` is required for YOLO baselines. "
+            "Run with `uv run --with ultralytics python scripts/cache_yolo_tallyqa_teacher.py ...` "
+            "or install it into the environment with `uv pip install ultralytics`."
+        ) from exc
+    return YOLO(model_name)
+
+
+def yolo_device_arg(value: str, require_cuda: bool) -> str:
     if value == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(value)
-    if require_cuda and device.type != "cuda":
+        import torch
+
+        value = "0" if torch.cuda.is_available() else "cpu"
+    if require_cuda and value == "cpu":
         raise RuntimeError("--require-cuda was set, but CUDA is not available/selected.")
-    return device
-
-
-def load_detector(name: str, device: torch.device) -> tuple[torch.nn.Module, list[str]]:
-    if name == "fasterrcnn_resnet50_fpn_v2":
-        weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT
-        model = fasterrcnn_resnet50_fpn_v2(weights=weights)
-    elif name == "retinanet_resnet50_fpn_v2":
-        weights = RetinaNet_ResNet50_FPN_V2_Weights.DEFAULT
-        model = retinanet_resnet50_fpn_v2(weights=weights)
-    elif name == "fcos_resnet50_fpn":
-        weights = FCOS_ResNet50_FPN_Weights.DEFAULT
-        model = fcos_resnet50_fpn(weights=weights)
-    else:
-        raise ValueError(f"Unsupported model: {name}")
-    model.to(device)
-    model.eval()
-    return model, [str(category) for category in weights.meta["categories"]]
+    if value == "cuda":
+        return "0"
+    return value
 
 
 def prompt_filter(args: argparse.Namespace) -> set[str] | None:
@@ -111,7 +280,18 @@ def prompt_filter(args: argparse.Namespace) -> set[str] | None:
     return prompts or None
 
 
-def selected_indices(examples: list[dict[str, Any]], args: argparse.Namespace) -> list[int]:
+def prompt_targets(prompt: str, include_groups: bool) -> list[str] | None:
+    target = COCO_ALIASES.get(prompt)
+    if target is None and prompt in COCO_LABELS:
+        target = prompt
+    if target is None:
+        return None
+    if isinstance(target, list):
+        return target if include_groups else None
+    return [target]
+
+
+def validate_args(args: argparse.Namespace) -> None:
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
     if args.shard_count <= 0:
@@ -127,6 +307,9 @@ def selected_indices(examples: list[dict[str, Any]], args: argparse.Namespace) -
     if args.answer_min > args.answer_max:
         raise ValueError("--answer-min must be <= --answer-max")
 
+
+def selected_indices(examples: list[dict[str, Any]], args: argparse.Namespace) -> list[int]:
+    validate_args(args)
     allowed_prompts = prompt_filter(args)
     stop = len(examples) if args.end_index is None else min(len(examples), args.end_index)
     selected: list[int] = []
@@ -157,43 +340,6 @@ def completed_indices(path: Path) -> set[int]:
             except json.JSONDecodeError:
                 continue
     return completed
-
-
-def target_label_ids(targets: list[str], categories: list[str]) -> set[int]:
-    category_to_id = {category: index for index, category in enumerate(categories)}
-    missing = [target for target in targets if target not in category_to_id]
-    if missing:
-        raise ValueError(f"COCO targets absent from torchvision metadata: {missing}")
-    return {category_to_id[target] for target in targets}
-
-
-def detector_count(
-    output: dict[str, torch.Tensor],
-    targets: list[str],
-    categories: list[str],
-    threshold: float,
-) -> tuple[int, list[dict[str, Any]]]:
-    labels = output["labels"].detach().cpu()
-    scores = output["scores"].detach().cpu()
-    boxes = output["boxes"].detach().cpu()
-    target_ids = target_label_ids(targets, categories)
-    keep = torch.tensor(
-        [
-            int(label) in target_ids and float(score) >= threshold
-            for label, score in zip(labels, scores, strict=True)
-        ],
-        dtype=torch.bool,
-    )
-    detections = [
-        {
-            "box_xyxy": [float(value) for value in box.tolist()],
-            "score": float(score),
-            "label": int(label),
-            "label_name": categories[int(label)],
-        }
-        for box, score, label in zip(boxes[keep], scores[keep], labels[keep], strict=True)
-    ]
-    return len(detections), detections
 
 
 def candidate_scores(prediction: int, answer_min: int, answer_max: int) -> list[dict[str, Any]]:
@@ -230,6 +376,29 @@ def accuracy_block(stats: Counter, key: str) -> dict[str, Any]:
     }
 
 
+def count_result(result: Any, target_names: list[str], names: dict[int, str], threshold: float) -> tuple[int, list[dict[str, Any]]]:
+    boxes = result.boxes
+    if boxes is None:
+        return 0, []
+    target_set = set(target_names)
+    detections: list[dict[str, Any]] = []
+    for xyxy, conf, cls in zip(boxes.xyxy.cpu(), boxes.conf.cpu(), boxes.cls.cpu(), strict=True):
+        class_id = int(cls.item())
+        label_name = names[class_id]
+        score = float(conf.item())
+        if label_name not in target_set or score < threshold:
+            continue
+        detections.append(
+            {
+                "box_xyxy": [float(value) for value in xyxy.tolist()],
+                "score": score,
+                "label": class_id,
+                "label_name": label_name,
+            }
+        )
+    return len(detections), detections
+
+
 def main() -> None:
     args = parse_args()
     if args.force and args.output.exists():
@@ -240,24 +409,26 @@ def main() -> None:
 
     metadata = load_metadata(args.dataset)
     examples = load_examples(args.dataset)
-    selected = selected_indices(examples, args)
+    all_selected = selected_indices(examples, args)
     completed = completed_indices(args.output) if args.resume else set()
-    indices = [index for index in selected if index not in completed]
-    device = device_from_arg(args.device, args.require_cuda)
+    indices = [index for index in all_selected if index not in completed]
+    device = yolo_device_arg(args.device, args.require_cuda)
 
     if args.dry_run:
-        prompt_counts = Counter(str(examples[index]["student_prompt"]) for index in selected)
+        prompt_counts = Counter(str(examples[index]["student_prompt"]) for index in all_selected)
         print(
             json.dumps(
                 {
                     "dataset": str(args.dataset),
-                    "selected_records": len(selected),
+                    "selected_records": len(all_selected),
                     "remaining_records": len(indices),
                     "selected_prompt_classes": len(prompt_counts),
                     "top_prompt_classes": prompt_counts.most_common(20),
                     "model": args.model,
                     "score_threshold": args.score_threshold,
-                    "device": str(device),
+                    "iou_threshold": args.iou_threshold,
+                    "imgsz": args.imgsz,
+                    "device": device,
                     "output": str(args.output),
                 },
                 indent=2,
@@ -265,7 +436,8 @@ def main() -> None:
         )
         return
 
-    model, categories = load_detector(args.model, device)
+    model = load_yolo(args.model)
+    names = {int(key): str(value) for key, value in model.names.items()}
     image_store = Uint8ImageStore(args.dataset, metadata)
     output_mode = "a" if args.resume else "w"
     stats: Counter = Counter()
@@ -273,28 +445,29 @@ def main() -> None:
 
     with args.output.open(output_mode, encoding="utf-8") as handle:
         progress = tqdm(
-            total=len(selected),
+            total=len(all_selected),
             initial=len(completed),
-            desc="Caching torchvision detector counts",
+            desc="Caching YOLO detector counts",
             unit="example",
         )
         for start in range(0, len(indices), args.batch_size):
             batch_indices = indices[start : start + args.batch_size]
             rows = [examples[index] for index in batch_indices]
-            images_and_identities = [
-                image_store.get(int(row["image_index"])) for row in rows
-            ]
-            tensors = [
-                TF.convert_image_dtype(TF.pil_to_tensor(image), torch.float32).to(device)
-                for image, _identity in images_and_identities
-            ]
-            with torch.inference_mode():
-                outputs = model(tensors)
-            for dataset_index, row, (_image, image_identity), output in zip(
+            images_and_identities = [image_store.get(int(row["image_index"])) for row in rows]
+            images = [image for image, _identity in images_and_identities]
+            results = model.predict(
+                images,
+                conf=args.score_threshold,
+                iou=args.iou_threshold,
+                imgsz=args.imgsz,
+                device=device,
+                verbose=False,
+            )
+            for dataset_index, row, (_image, image_identity), result in zip(
                 batch_indices,
                 rows,
                 images_and_identities,
-                outputs,
+                results,
                 strict=True,
             ):
                 prompt = str(row["student_prompt"])
@@ -302,12 +475,7 @@ def main() -> None:
                 if targets is None:
                     raise RuntimeError(f"Unexpected unsupported prompt in selected data: {prompt}")
                 by_prompt_target[prompt] = targets
-                prediction, detections = detector_count(
-                    output,
-                    targets,
-                    categories,
-                    args.score_threshold,
-                )
+                prediction, detections = count_result(result, targets, names, args.score_threshold)
                 answer = int(row["answer"])
                 update_stats(stats, prompt, answer, prediction, args.collapse_at)
                 record = {
@@ -321,8 +489,10 @@ def main() -> None:
                     "answer": answer,
                     "teacher_model": {
                         "name": args.model,
-                        "family": "torchvision-detection-coco",
+                        "family": "ultralytics-yolo-coco",
                         "score_threshold": args.score_threshold,
+                        "iou_threshold": args.iou_threshold,
+                        "imgsz": args.imgsz,
                         "coco_targets": targets,
                     },
                     "teacher_metrics": {
@@ -350,38 +520,30 @@ def main() -> None:
             progress.update(len(batch_indices))
         progress.close()
 
-    total = int(stats[("overall", "total")])
-    prompt_keys = sorted(
-        key.removeprefix("prompt::")
-        for key, metric in stats
-        if metric == "total" and key.startswith("prompt::")
-    )
+    prompt_keys = sorted(key.removeprefix("prompt::") for key, metric in stats if metric == "total" and key.startswith("prompt::"))
     summary = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "dataset": str(args.dataset),
         "output": str(args.output),
         "model": args.model,
+        "selected_records": len(all_selected),
+        "written_records_this_invocation": int(stats[("overall", "total")]),
         "include_groups": args.include_groups,
         "score_threshold": args.score_threshold,
-        "selected_records": len(selected),
-        "written_records_this_invocation": total,
+        "iou_threshold": args.iou_threshold,
+        "imgsz": args.imgsz,
         **accuracy_block(stats, "overall"),
         "by_prompt": {
             prompt: {
                 **accuracy_block(stats, f"prompt::{prompt}"),
-                "coco_targets": by_prompt_target.get(
-                    prompt,
-                    prompt_targets(prompt, args.include_groups),
-                ),
+                "coco_targets": by_prompt_target.get(prompt, prompt_targets(prompt, args.include_groups)),
             }
             for prompt in prompt_keys
         },
         "runtime": {
             "python": platform.python_version(),
-            "torch": torch.__version__,
-            "torchvision": __import__("torchvision").__version__,
-            "device": str(device),
-            "cuda": torch.version.cuda,
+            "ultralytics": __import__("ultralytics").__version__,
+            "device": device,
         },
     }
     manifest_path = args.output.with_suffix(".manifest.json")

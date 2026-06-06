@@ -32,6 +32,12 @@ multirun/
 # Generated datasets, checkpoints, and model exports
 data/
 datasets/
+external-models/*
+!external-models/
+!external-models/README.md
+external_models/*
+!external_models/
+!external_models/README.md
 artifacts/**
 !artifacts/
 !artifacts/**/

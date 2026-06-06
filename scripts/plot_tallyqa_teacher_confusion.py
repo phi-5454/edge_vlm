@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Only include records from prompt classes with overall prompt accuracy at least this value.",
     )
+    parser.add_argument(
+        "--prompt-class-names-file",
+        type=Path,
+        default=None,
+        help="Optional newline-delimited prompt class names to include.",
+    )
     parser.add_argument("--title", default="SmolVLM2-2.2B TallyQA Output Confusion Matrix")
     return parser.parse_args()
 
@@ -96,6 +102,14 @@ def eligible_prompts(
         prompt
         for prompt, counter in by_prompt.items()
         if counter["total"] and counter["correct"] / counter["total"] >= min_accuracy
+    }
+
+
+def load_prompt_names(path: Path) -> set[str]:
+    return {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
     }
 
 
@@ -210,6 +224,9 @@ def main() -> None:
     labels = output_classes(args.answer_min, args.answer_max, args.collapse_at)
     all_records = stream_records(args.cache, args.collapse_at)
     prompts = eligible_prompts(all_records, args.min_prompt_accuracy)
+    if args.prompt_class_names_file is not None:
+        file_prompts = load_prompt_names(args.prompt_class_names_file)
+        prompts = file_prompts if prompts is None else prompts & file_prompts
     confusion, records, correct = build_confusion(all_records, prompts)
     counts, normalized = build_matrices(confusion, labels)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -229,6 +246,9 @@ def main() -> None:
         "answer_max": args.answer_max,
         "collapse_at": args.collapse_at,
         "min_prompt_accuracy": args.min_prompt_accuracy,
+        "prompt_class_names_file": (
+            str(args.prompt_class_names_file) if args.prompt_class_names_file is not None else None
+        ),
         "prompt_classes_after_filter": len(prompts) if prompts is not None else None,
         "output_classes": [str(label) for label in labels],
         "figure": str(figure_path),

@@ -219,6 +219,7 @@ class TallyQAStudentModule(L.LightningModule):
         image_learning_rate_scale: float = 1.0,
         temperature: float = 2.0,
         class_weights: list[float] | None = None,
+        kl_class_weights: list[float] | None = None,
         target_distribution: str = "hard",
         local_soft_sigma: float = 1.0,
         local_soft_radius: int = 1,
@@ -249,6 +250,11 @@ class TallyQAStudentModule(L.LightningModule):
                 raise ValueError("class_weights must not be empty.")
             if any(weight < 0 for weight in class_weights):
                 raise ValueError("class_weights must be non-negative.")
+        if kl_class_weights is not None:
+            if not kl_class_weights:
+                raise ValueError("kl_class_weights must not be empty.")
+            if any(weight < 0 for weight in kl_class_weights):
+                raise ValueError("kl_class_weights must be non-negative.")
         if target_distribution not in {"hard", "local_soft"}:
             raise ValueError("target_distribution must be 'hard' or 'local_soft'.")
         if local_soft_sigma <= 0:
@@ -262,6 +268,8 @@ class TallyQAStudentModule(L.LightningModule):
         self.model = model
         weights = torch.tensor(class_weights or [], dtype=torch.float32)
         self.register_buffer("class_weights", weights, persistent=False)
+        kl_weights = torch.tensor(kl_class_weights or [], dtype=torch.float32)
+        self.register_buffer("kl_class_weights", kl_weights, persistent=False)
         self.save_hyperparameters(ignore=["model"])
         self._totals = {stage: MulticlassTotals() for stage in ("train", "val", "test")}
         self.num_outputs = int(getattr(model, "num_outputs", 0))
@@ -278,17 +286,29 @@ class TallyQAStudentModule(L.LightningModule):
     def forward(self, token_ids: torch.Tensor, attention_mask: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
         return self.model(token_ids, attention_mask, images)
 
-    def _distill_loss(self, logits: torch.Tensor, teacher_probs: torch.Tensor) -> torch.Tensor:
+    def _distill_loss(
+        self,
+        logits: torch.Tensor,
+        teacher_probs: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
         if torch.isnan(teacher_probs).any():
             raise ValueError("Teacher cache is incomplete, but beta > 0 requires every teacher distribution.")
         temperature = float(self.hparams.temperature)
         teacher_probs = teacher_probs.clamp_min(1e-8)
         teacher_probs = teacher_probs / teacher_probs.sum(dim=1, keepdim=True)
         student_log_probs = nn.functional.log_softmax(logits / temperature, dim=1)
-        return (
-            nn.functional.kl_div(student_log_probs, teacher_probs, reduction="batchmean")
-            * temperature**2
-        )
+        per_example_kl = nn.functional.kl_div(
+            student_log_probs,
+            teacher_probs,
+            reduction="none",
+        ).sum(dim=1)
+        if self.kl_class_weights.numel():
+            if self.kl_class_weights.numel() != logits.shape[1]:
+                raise ValueError("kl_class_weights length must match the number of output classes.")
+            weights = self.kl_class_weights.to(per_example_kl.device)[labels]
+            per_example_kl = per_example_kl * weights
+        return per_example_kl.mean() * temperature**2
 
     def _target_distribution(self, labels: torch.Tensor, num_classes: int) -> torch.Tensor:
         if self.hparams.target_distribution == "hard":
@@ -318,7 +338,7 @@ class TallyQAStudentModule(L.LightningModule):
         else:
             hard_loss = unweighted_hard_loss
         if self.hparams.beta > 0:
-            distill_loss = self._distill_loss(logits, batch["teacher_probs"])
+            distill_loss = self._distill_loss(logits, batch["teacher_probs"], batch["labels"])
         else:
             distill_loss = torch.zeros((), device=logits.device)
         loss = self.hparams.alpha * hard_loss + self.hparams.beta * distill_loss

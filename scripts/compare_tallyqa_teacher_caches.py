@@ -45,18 +45,26 @@ def output_class(answer: int, collapse_at: int | None) -> int | str:
     return answer
 
 
-def read_cache(path: Path) -> dict[int, dict[str, Any]]:
+def read_cache(
+    path: Path,
+    keep_indices: set[int] | None = None,
+) -> tuple[dict[int, dict[str, Any]], int]:
     rows: dict[int, dict[str, Any]] = {}
+    total_records = 0
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
+            total_records += 1
             try:
                 row = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSON at {path}:{line_number}") from exc
-            rows[int(row["dataset_index"])] = row
-    return rows
+            dataset_index = int(row["dataset_index"])
+            if keep_indices is not None and dataset_index not in keep_indices:
+                continue
+            rows[dataset_index] = row
+    return rows, total_records
 
 
 def init_counter() -> Counter:
@@ -226,6 +234,75 @@ def plot_delta_bar(
     plt.close(fig)
 
 
+def plot_accuracy_pair_bar(
+    rows: list[dict[str, Any]],
+    label_key: str,
+    baseline_name: str,
+    candidate_name: str,
+    title: str,
+    output: Path,
+    min_count: int,
+    horizontal: bool,
+) -> None:
+    filtered = [row for row in rows if int(row["count"]) >= min_count]
+    if not filtered:
+        return
+    filtered = sorted(
+        filtered,
+        key=lambda row: float(row["candidate_accuracy"]) - float(row["baseline_accuracy"]),
+    )
+    if horizontal:
+        fig_height = max(8, len(filtered) * 0.25)
+        fig, ax = plt.subplots(figsize=(13, fig_height))
+        y = np.arange(len(filtered))
+        bar_height = 0.38
+        ax.barh(
+            y - bar_height / 2,
+            [float(row["baseline_accuracy"]) for row in filtered],
+            height=bar_height,
+            color="#4c78a8",
+            label=baseline_name,
+        )
+        ax.barh(
+            y + bar_height / 2,
+            [float(row["candidate_accuracy"]) for row in filtered],
+            height=bar_height,
+            color="#f58518",
+            label=candidate_name,
+        )
+        ax.set_yticks(y, labels=[str(row[label_key]) for row in filtered], fontsize=6)
+        ax.set_xlabel("Accuracy")
+        ax.set_xlim(0, 1)
+        fig.subplots_adjust(left=0.24, right=0.96, top=0.95, bottom=0.05)
+    else:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        x = np.arange(len(filtered))
+        bar_width = 0.38
+        ax.bar(
+            x - bar_width / 2,
+            [float(row["baseline_accuracy"]) for row in filtered],
+            width=bar_width,
+            color="#4c78a8",
+            label=baseline_name,
+        )
+        ax.bar(
+            x + bar_width / 2,
+            [float(row["candidate_accuracy"]) for row in filtered],
+            width=bar_width,
+            color="#f58518",
+            label=candidate_name,
+        )
+        ax.set_xticks(x, labels=[str(row[label_key]) for row in filtered])
+        ax.set_ylabel("Accuracy")
+        ax.set_ylim(0, 1)
+        fig.subplots_adjust(left=0.08, right=0.98, top=0.9, bottom=0.14)
+    ax.set_title(title)
+    ax.legend(loc="lower right")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=220)
+    plt.close(fig)
+
+
 def table_rows(grouped: dict[str, dict[str, Any]], label_key: str) -> list[dict[str, Any]]:
     rows = []
     for label, summary in grouped.items():
@@ -235,8 +312,8 @@ def table_rows(grouped: dict[str, dict[str, Any]], label_key: str) -> list[dict[
 
 def main() -> None:
     args = parse_args()
-    baseline = read_cache(args.baseline_cache)
-    candidate = read_cache(args.candidate_cache)
+    candidate, candidate_total_records = read_cache(args.candidate_cache)
+    baseline, baseline_total_records = read_cache(args.baseline_cache, keep_indices=set(candidate))
     comparison = compare(baseline, candidate, args.collapse_at)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -265,6 +342,26 @@ def main() -> None:
         min_count=args.min_group_count,
         horizontal=False,
     )
+    plot_accuracy_pair_bar(
+        prompt_rows,
+        label_key="student_prompt",
+        baseline_name=args.baseline_name,
+        candidate_name=args.candidate_name,
+        title=f"{args.candidate_name} vs {args.baseline_name}: Accuracy by Prompt",
+        output=args.output_dir / "teacher_cache_comparison_by_prompt_side_by_side.png",
+        min_count=args.min_group_count,
+        horizontal=True,
+    )
+    plot_accuracy_pair_bar(
+        output_rows,
+        label_key="answer",
+        baseline_name=args.baseline_name,
+        candidate_name=args.candidate_name,
+        title=f"{args.candidate_name} vs {args.baseline_name}: Accuracy by Output",
+        output=args.output_dir / "teacher_cache_comparison_by_output_side_by_side.png",
+        min_count=args.min_group_count,
+        horizontal=False,
+    )
 
     summary = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -272,8 +369,10 @@ def main() -> None:
         "candidate_cache": str(args.candidate_cache),
         "baseline_name": args.baseline_name,
         "candidate_name": args.candidate_name,
-        "baseline_records": len(baseline),
-        "candidate_records": len(candidate),
+        "baseline_records": baseline_total_records,
+        "candidate_records": candidate_total_records,
+        "baseline_records_loaded": len(baseline),
+        "candidate_records_loaded": len(candidate),
         "intersecting_records": len(comparison["common_indices"]),
         "collapse_at": args.collapse_at,
         "min_group_count": args.min_group_count,
@@ -281,6 +380,12 @@ def main() -> None:
         "figures": {
             "by_prompt_delta": str(args.output_dir / "teacher_cache_comparison_by_prompt_delta.png"),
             "by_output_delta": str(args.output_dir / "teacher_cache_comparison_by_output_delta.png"),
+            "by_prompt_side_by_side": str(
+                args.output_dir / "teacher_cache_comparison_by_prompt_side_by_side.png"
+            ),
+            "by_output_side_by_side": str(
+                args.output_dir / "teacher_cache_comparison_by_output_side_by_side.png"
+            ),
         },
         "tables": {
             "by_prompt": str(args.output_dir / "teacher_cache_comparison_by_prompt.csv"),

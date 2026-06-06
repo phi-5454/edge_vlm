@@ -28,6 +28,7 @@ TRAIN_EPOCH_SIZE="null"
 IMAGE_LEARNING_RATE_SCALE="0.1"
 CLASS_WEIGHTS="null"
 BALANCED_LOSS="true"
+KL_CLASS_WEIGHTS="null"
 PROMPT_CLASS_FILTER_CSV="null"
 MIN_PROMPT_ACCURACY="null"
 PROMPT_CLASS_NAMES="null"
@@ -57,6 +58,7 @@ VALIDATION_PLOTS_ENABLED="true"
 VALIDATION_PLOTS_SAMPLES="4"
 VALIDATION_PLOTS_EVERY_N_EPOCHS="1"
 REQUIRE_TEACHER_CACHE="true"
+TEACHER_CACHE="artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl"
 
 usage() {
   cat <<'EOF'
@@ -87,6 +89,7 @@ Options:
   --train-epoch-size N|null
   --image-learning-rate-scale FLOAT
   --class-weights '[w0,w1,w2,w3,w4,w5]'
+  --kl-class-weights '[w0,w1,w2,w3,w4,w5]'
   --balanced-loss
   --unbalanced-loss
   --prompt-class-filter-csv PATH|null
@@ -118,6 +121,7 @@ Options:
   --validation-plot-samples N
   --validation-plot-every-n-epochs N
   --no-validation-plots
+  --teacher-cache PATH
   --no-teacher-cache
   -h, --help
 EOF
@@ -219,6 +223,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --class-weights)
       CLASS_WEIGHTS="$2"
+      shift 2
+      ;;
+    --kl-class-weights)
+      KL_CLASS_WEIGHTS="$2"
       shift 2
       ;;
     --balanced-loss)
@@ -348,6 +356,11 @@ while [[ $# -gt 0 ]]; do
       VALIDATION_PLOTS_ENABLED="false"
       shift
       ;;
+    --teacher-cache)
+      TEACHER_CACHE="$2"
+      REQUIRE_TEACHER_CACHE="true"
+      shift 2
+      ;;
     --no-teacher-cache)
       REQUIRE_TEACHER_CACHE="false"
       DISTILLATION_BETA="0.0"
@@ -401,6 +414,7 @@ uv run python scripts/train_tallyqa_student.py \
   "data.train_epoch_size=${TRAIN_EPOCH_SIZE}" \
   "distillation.class_weights=${CLASS_WEIGHTS}" \
   "distillation.class_weight_mode=${CLASS_WEIGHT_MODE}" \
+  "distillation.kl_class_weights=${KL_CLASS_WEIGHTS}" \
   "distillation.alpha=${DISTILLATION_ALPHA}" \
   "distillation.beta=${DISTILLATION_BETA}" \
   "distillation.target_distribution=${TARGET_DISTRIBUTION}" \
@@ -424,6 +438,7 @@ uv run python scripts/train_tallyqa_student.py \
   "validation_plots.enabled=${VALIDATION_PLOTS_ENABLED}" \
   "validation_plots.samples=${VALIDATION_PLOTS_SAMPLES}" \
   "validation_plots.every_n_epochs=${VALIDATION_PLOTS_EVERY_N_EPOCHS}" \
+  "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.require_teacher_cache=${REQUIRE_TEACHER_CACHE}" \
   "data.prompt_class_filter_csv=${PROMPT_CLASS_FILTER_CSV}" \
   "data.min_prompt_accuracy=${MIN_PROMPT_ACCURACY}" \

@@ -230,6 +230,11 @@ def main(cfg: DictConfig) -> None:
         image_learning_rate_scale=float(cfg.optimizer.get("image_learning_rate_scale", 1.0)),
         temperature=float(cfg.distillation.temperature),
         class_weights=class_weights,
+        kl_class_weights=(
+            [float(weight) for weight in cfg.distillation.kl_class_weights]
+            if cfg.distillation.get("kl_class_weights", None) is not None
+            else None
+        ),
         target_distribution=str(cfg.distillation.target_distribution),
         local_soft_sigma=float(cfg.distillation.local_soft_sigma),
         local_soft_radius=int(cfg.distillation.local_soft_radius),
