@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_CACHE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl")
+DEFAULT_CACHE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl")
 DEFAULT_CLASSES = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox/classes.json")
 DEFAULT_OUTPUT_DIR = Path("artifacts/reports/tallyqa_teacher_accuracy")
 

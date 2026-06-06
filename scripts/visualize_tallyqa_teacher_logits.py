@@ -15,7 +15,7 @@ import numpy as np
 
 
 DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
-DEFAULT_CACHE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl")
+DEFAULT_CACHE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl")
 DEFAULT_OUTPUT = Path("artifacts/reports/tallyqa_teacher_logit_examples/letterbox_examples.png")
 
 

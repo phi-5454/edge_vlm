@@ -25,8 +25,8 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolVLM-256M-Instruct"
-DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
-DEFAULT_OUTPUT = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl")
+DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224")
+DEFAULT_OUTPUT = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl")
 
 
 def parse_args() -> argparse.Namespace:

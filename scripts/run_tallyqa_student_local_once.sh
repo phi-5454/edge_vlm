@@ -58,7 +58,7 @@ VALIDATION_PLOTS_ENABLED="true"
 VALIDATION_PLOTS_SAMPLES="4"
 VALIDATION_PLOTS_EVERY_N_EPOCHS="1"
 REQUIRE_TEACHER_CACHE="true"
-TEACHER_CACHE="artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl"
+TEACHER_CACHE="artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl"
 
 usage() {
   cat <<'EOF'

@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_BASELINE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl")
+DEFAULT_BASELINE = Path("artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl")
 DEFAULT_OUTPUT_DIR = Path("artifacts/reports/tallyqa_teacher_cache_comparison")
 
 

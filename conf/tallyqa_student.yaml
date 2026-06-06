@@ -2,7 +2,7 @@ seed: 42
 
 paths:
   dataset_root: data/tallyqa_cauldron_target_mobilenet224_letterbox
-  teacher_cache: artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224_letterbox.jsonl
+  teacher_cache: artifacts/teacher_cache/smolvlm_tallyqa_target_mobilenet224.jsonl
   prompt_embeddings: artifacts/models/tallyqa_smolvlm_prompt_embeddings_letterbox.pt
   report_dir: artifacts/reports/tallyqa_student
   checkpoint_dir: artifacts/models/tallyqa_student
