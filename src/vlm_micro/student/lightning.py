@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import textwrap
 from typing import Any
 
@@ -190,19 +190,74 @@ class StudentBaselineModule(L.LightningModule):
 class MulticlassTotals:
     correct: int = 0
     within_one: int = 0
+    absolute_error: int = 0
     total: int = 0
+    class_correct: dict[int, int] = field(default_factory=dict)
+    class_within_one: dict[int, int] = field(default_factory=dict)
+    class_absolute_error: dict[int, int] = field(default_factory=dict)
+    class_total: dict[int, int] = field(default_factory=dict)
 
     def update(self, logits: torch.Tensor, labels: torch.Tensor) -> None:
         predicted = torch.argmax(logits.detach(), dim=1)
         expected = labels.detach()
         self.correct += int((predicted == expected).sum().cpu())
-        self.within_one += int((predicted - expected).abs().le(1).sum().cpu())
+        absolute_errors = (predicted - expected).abs()
+        self.within_one += int(absolute_errors.le(1).sum().cpu())
+        self.absolute_error += int(absolute_errors.sum().cpu())
         self.total += int(expected.numel())
+        for true_label, predicted_label in zip(
+            expected.cpu().tolist(),
+            predicted.cpu().tolist(),
+            strict=True,
+        ):
+            label = int(true_label)
+            self.class_total[label] = self.class_total.get(label, 0) + 1
+            self.class_correct[label] = self.class_correct.get(label, 0) + int(
+                int(predicted_label) == label
+            )
+            absolute_error = abs(int(predicted_label) - label)
+            self.class_within_one[label] = self.class_within_one.get(label, 0) + int(
+                absolute_error <= 1
+            )
+            self.class_absolute_error[label] = (
+                self.class_absolute_error.get(label, 0) + absolute_error
+            )
 
     def metrics(self) -> dict[str, float]:
+        supported_labels = [
+            label for label, count in sorted(self.class_total.items()) if count > 0
+        ]
+        class_weighted_accuracy = (
+            sum(self.class_correct.get(label, 0) / self.class_total[label] for label in supported_labels)
+            / len(supported_labels)
+            if supported_labels
+            else 0.0
+        )
+        class_weighted_within_one = (
+            sum(
+                self.class_within_one.get(label, 0) / self.class_total[label]
+                for label in supported_labels
+            )
+            / len(supported_labels)
+            if supported_labels
+            else 0.0
+        )
+        class_weighted_mae = (
+            sum(
+                self.class_absolute_error.get(label, 0) / self.class_total[label]
+                for label in supported_labels
+            )
+            / len(supported_labels)
+            if supported_labels
+            else 0.0
+        )
         return {
             "accuracy": self.correct / self.total if self.total else 0.0,
             "within_1_accuracy": self.within_one / self.total if self.total else 0.0,
+            "mae": self.absolute_error / self.total if self.total else 0.0,
+            "class_weighted_accuracy": class_weighted_accuracy,
+            "class_weighted_within_1_accuracy": class_weighted_within_one,
+            "class_weighted_mae": class_weighted_mae,
         }
 
 

@@ -184,6 +184,9 @@ def main(cfg: DictConfig) -> None:
         ),
         prompt_class_names_file=prompt_class_names_file,
         curriculum_schedule=curriculum_schedule,
+        teacher_probability_temperature=float(
+            cfg.data.get("teacher_probability_temperature", 1.0)
+        ),
     )
     if beta > 0 and missing_teacher_policy == "keep":
         raise ValueError(
@@ -276,10 +279,12 @@ def main(cfg: DictConfig) -> None:
             log_graph=bool(cfg.wandb.watch.get("log_graph", False)),
         )
 
+    checkpoint_monitor = str(cfg.trainer.early_stopping.get("monitor", "val/loss"))
+    checkpoint_mode = str(cfg.trainer.early_stopping.get("mode", "min"))
     checkpoint = ModelCheckpoint(
         dirpath=absolute_path(cfg.paths.checkpoint_dir) / run_name,
-        monitor="val/loss",
-        mode="min",
+        monitor=checkpoint_monitor,
+        mode=checkpoint_mode,
         save_top_k=1,
         filename="{epoch:02d}",
         auto_insert_metric_name=False,
@@ -288,8 +293,8 @@ def main(cfg: DictConfig) -> None:
     if bool(cfg.trainer.get("early_stopping", {}).get("enabled", False)):
         callbacks.append(
             EarlyStopping(
-                monitor=str(cfg.trainer.early_stopping.get("monitor", "val/loss")),
-                mode=str(cfg.trainer.early_stopping.get("mode", "min")),
+                monitor=checkpoint_monitor,
+                mode=checkpoint_mode,
                 patience=int(cfg.trainer.early_stopping.get("patience", 3)),
                 min_delta=float(cfg.trainer.early_stopping.get("min_delta", 0.0)),
                 verbose=True,
@@ -319,6 +324,8 @@ def main(cfg: DictConfig) -> None:
     result = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_name": run_name,
+        "best_model_monitor": checkpoint_monitor,
+        "best_model_mode": checkpoint_mode,
         "best_model_path": checkpoint.best_model_path,
         "best_model_score": (
             float(checkpoint.best_model_score.detach().cpu())

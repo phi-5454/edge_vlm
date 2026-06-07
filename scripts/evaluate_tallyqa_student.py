@@ -109,6 +109,9 @@ def build_data(cfg: DictConfig) -> TallyQAStudentDataModule:
         ),
         prompt_class_names_file=prompt_class_names_file,
         curriculum_schedule=curriculum_schedule,
+        teacher_probability_temperature=float(
+            cfg.data.get("teacher_probability_temperature", 1.0)
+        ),
     )
 
 

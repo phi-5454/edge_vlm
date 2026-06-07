@@ -45,6 +45,15 @@ def output_class(answer: int, collapse_at: int | None) -> int | str:
     return answer
 
 
+def comparison_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dataset_index": int(row["dataset_index"]),
+        "student_prompt": str(row["student_prompt"]),
+        "answer": int(row["answer"]),
+        "prediction": int(row["teacher_metrics"]["numeric_answer"]["prediction"]),
+    }
+
+
 def read_cache(
     path: Path,
     keep_indices: set[int] | None = None,
@@ -63,7 +72,7 @@ def read_cache(
             dataset_index = int(row["dataset_index"])
             if keep_indices is not None and dataset_index not in keep_indices:
                 continue
-            rows[dataset_index] = row
+            rows[dataset_index] = comparison_row(row)
     return rows, total_records
 
 
@@ -138,14 +147,8 @@ def compare(
         baseline = baseline_rows[index]
         candidate = candidate_rows[index]
         true_answer = output_class(int(baseline["answer"]), collapse_at)
-        baseline_prediction = output_class(
-            int(baseline["teacher_metrics"]["numeric_answer"]["prediction"]),
-            collapse_at,
-        )
-        candidate_prediction = output_class(
-            int(candidate["teacher_metrics"]["numeric_answer"]["prediction"]),
-            collapse_at,
-        )
+        baseline_prediction = output_class(int(baseline["prediction"]), collapse_at)
+        candidate_prediction = output_class(int(candidate["prediction"]), collapse_at)
         baseline_correct = baseline_prediction == true_answer
         candidate_correct = candidate_prediction == true_answer
         update_counter(overall, baseline_correct, candidate_correct)

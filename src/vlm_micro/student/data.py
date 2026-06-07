@@ -201,9 +201,12 @@ def load_tallyqa_teacher_targets(
     path: Path | None,
     num_classes: int = 6,
     collapse_at: int = 5,
+    probability_temperature: float = 1.0,
 ) -> dict[int, torch.Tensor]:
     if path is None:
         return {}
+    if probability_temperature <= 0:
+        raise ValueError("teacher probability temperature must be positive.")
     targets: dict[int, torch.Tensor] = {}
 
     def load_line(line: str, line_number: int, allow_truncated: bool) -> None:
@@ -218,6 +221,13 @@ def load_tallyqa_teacher_targets(
             total = float(probabilities.sum().item())
             if total <= 0:
                 raise ValueError("teacher candidate probabilities sum to zero")
+            if probability_temperature != 1.0:
+                probabilities = torch.where(
+                    probabilities > 0,
+                    probabilities.pow(1.0 / probability_temperature),
+                    probabilities,
+                )
+                total = float(probabilities.sum().item())
             targets[int(payload["dataset_index"])] = probabilities / total
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             if allow_truncated:
@@ -659,6 +669,7 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         prompt_class_names_file: Path | None = None,
         curriculum_schedule: Path | None = None,
         train_example_limit: int | None = None,
+        teacher_probability_temperature: float = 1.0,
     ):
         super().__init__()
         if missing_teacher_policy not in {"filter", "keep"}:
@@ -673,6 +684,8 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             raise ValueError("prompt_class_sampling_temperature must be non-negative.")
         if train_epoch_size is not None and train_epoch_size <= 0:
             raise ValueError("train_epoch_size must be positive when provided.")
+        if teacher_probability_temperature <= 0:
+            raise ValueError("teacher_probability_temperature must be positive.")
         self.save_hyperparameters()
         self.hparams.dataset_root = str(dataset_root)
         self.hparams.prompt_embeddings = str(prompt_embeddings)
@@ -698,6 +711,7 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             teacher_cache,
             num_classes=num_classes,
             collapse_at=collapse_at,
+            probability_temperature=teacher_probability_temperature,
         )
         prompt_filters = [
             prompt_filter
@@ -908,6 +922,7 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             "prompt_class_names_file": self.hparams.prompt_class_names_file,
             "train_sampling": self.hparams.train_sampling,
             "prompt_class_sampling_temperature": self.hparams.prompt_class_sampling_temperature,
+            "teacher_probability_temperature": self.hparams.teacher_probability_temperature,
             "train_epoch_size": self.hparams.train_epoch_size,
             "curriculum_schedule": self.hparams.curriculum_schedule,
             "curriculum_epoch": self._curriculum_epoch,

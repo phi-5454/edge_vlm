@@ -14,7 +14,7 @@ CHECK_VAL_EVERY_N_EPOCH="1"
 RELOAD_DATALOADERS_EVERY_N_EPOCHS="0"
 EARLY_STOPPING_ENABLED="true"
 EARLY_STOPPING_PATIENCE="3"
-EARLY_STOPPING_MONITOR="val/loss"
+EARLY_STOPPING_MONITOR="val/class_weighted_mae"
 EARLY_STOPPING_MODE="min"
 EARLY_STOPPING_MIN_DELTA="0.0"
 GRADIENT_CLIP_VAL="1.0"
@@ -34,6 +34,7 @@ MIN_PROMPT_ACCURACY="null"
 PROMPT_CLASS_NAMES="null"
 PROMPT_CLASS_NAMES_FILE="null"
 CURRICULUM_SCHEDULE="null"
+TEACHER_PROBABILITY_TEMPERATURE="1.0"
 DISTILLATION_ALPHA="1.0"
 DISTILLATION_BETA="0.5"
 TARGET_DISTRIBUTION="hard"
@@ -97,6 +98,8 @@ Options:
   --prompt-class-names NAME[,NAME]
   --prompt-class-names-file PATH|null
   --curriculum-schedule PATH|null
+  --teacher-probability-temperature FLOAT
+  --no-teacher-probability-calibration
   --distillation-alpha FLOAT
   --distillation-beta FLOAT
   --target-distribution hard|local_soft
@@ -259,6 +262,14 @@ while [[ $# -gt 0 ]]; do
         RELOAD_DATALOADERS_EVERY_N_EPOCHS="1"
       fi
       shift 2
+      ;;
+    --teacher-probability-temperature)
+      TEACHER_PROBABILITY_TEMPERATURE="$2"
+      shift 2
+      ;;
+    --no-teacher-probability-calibration)
+      TEACHER_PROBABILITY_TEMPERATURE="1.0"
+      shift
       ;;
     --distillation-alpha)
       DISTILLATION_ALPHA="$2"
@@ -444,4 +455,5 @@ uv run python scripts/train_tallyqa_student.py \
   "data.min_prompt_accuracy=${MIN_PROMPT_ACCURACY}" \
   "data.prompt_class_names=${PROMPT_CLASS_NAMES}" \
   "data.prompt_class_names_file=${PROMPT_CLASS_NAMES_FILE}" \
-  "data.curriculum_schedule=${CURRICULUM_SCHEDULE}"
+  "data.curriculum_schedule=${CURRICULUM_SCHEDULE}" \
+  "data.teacher_probability_temperature=${TEACHER_PROBABILITY_TEMPERATURE}"

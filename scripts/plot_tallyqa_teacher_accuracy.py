@@ -39,6 +39,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Only include prompt classes with overall prompt accuracy at least this value.",
     )
+    parser.add_argument(
+        "--prompt-class-names-file",
+        type=Path,
+        default=None,
+        help="Optional newline-delimited prompt class names to include.",
+    )
     return parser.parse_args()
 
 
@@ -47,13 +53,25 @@ def load_class_rows(path: Path) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: int(row["class_id"]))
 
 
+def load_prompt_names(path: Path) -> set[str]:
+    return {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
 def output_class(answer: int, collapse_at: int | None) -> int | str:
     if collapse_at is not None and answer >= collapse_at:
         return f"{collapse_at}+"
     return answer
 
 
-def stream_accuracy(cache_path: Path, collapse_at: int | None) -> dict[str, Any]:
+def stream_accuracy(
+    cache_path: Path,
+    collapse_at: int | None,
+    prompt_filter: set[str] | None = None,
+) -> dict[str, Any]:
     overall = Counter()
     by_prompt: dict[str, Counter] = defaultdict(Counter)
     by_answer: dict[int | str, Counter] = defaultdict(Counter)
@@ -68,6 +86,8 @@ def stream_accuracy(cache_path: Path, collapse_at: int | None) -> dict[str, Any]
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSON at {cache_path}:{line_number}") from exc
             prompt = str(row["student_prompt"])
+            if prompt_filter is not None and prompt not in prompt_filter:
+                continue
             answer = output_class(int(row["answer"]), collapse_at)
             prediction = output_class(
                 int(row["teacher_metrics"]["numeric_answer"]["prediction"]),
@@ -269,9 +289,14 @@ def main() -> None:
     args = parse_args()
     if args.collapse_at is not None and args.collapse_at < args.answer_min:
         raise ValueError("--collapse-at must be >= --answer-min")
+    prompt_names = (
+        load_prompt_names(args.prompt_class_names_file)
+        if args.prompt_class_names_file is not None
+        else None
+    )
     class_rows = load_class_rows(args.classes)
     answers = answer_classes(args.answer_min, args.answer_max, args.collapse_at)
-    stats = stream_accuracy(args.cache, args.collapse_at)
+    stats = stream_accuracy(args.cache, args.collapse_at, prompt_names)
     overall_accuracy = accuracy(stats["overall"])
     full_prompt_count = len(class_rows)
     if args.min_prompt_accuracy is not None:
@@ -281,6 +306,8 @@ def main() -> None:
             if accuracy(stats["by_prompt"].get(str(row["item"]), Counter()))
             >= args.min_prompt_accuracy
         ]
+    if args.prompt_class_names_file is not None:
+        class_rows = [row for row in class_rows if str(row["item"]) in prompt_names]
 
     heatmap, heatmap_counts, row_labels, col_labels = build_heatmap(
         class_rows,
@@ -384,6 +411,9 @@ def main() -> None:
         "output_classes": [str(answer) for answer in answers],
         "min_heatmap_count": args.min_heatmap_count,
         "min_prompt_accuracy": args.min_prompt_accuracy,
+        "prompt_class_names_file": (
+            str(args.prompt_class_names_file) if args.prompt_class_names_file is not None else None
+        ),
         "prompt_classes_before_filter": full_prompt_count,
         "prompt_classes_after_filter": len(class_rows),
         "figures": {

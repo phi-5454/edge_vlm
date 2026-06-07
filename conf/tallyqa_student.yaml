@@ -64,6 +64,9 @@ data:
   prompt_class_names: null
   prompt_class_names_file: null
   curriculum_schedule: null
+  # Applies p_i -> p_i ** (1 / T), renormalized, when loading teacher-cache distributions.
+  # T=1 leaves cache probabilities unchanged; T>1 softens overconfident teacher targets.
+  teacher_probability_temperature: 1.0
 
 optimizer:
   learning_rate: 0.001
@@ -87,7 +90,7 @@ trainer:
   reload_dataloaders_every_n_epochs: 0
   early_stopping:
     enabled: true
-    monitor: val/loss
+    monitor: val/class_weighted_mae
     mode: min
     patience: 3
     min_delta: 0.0
