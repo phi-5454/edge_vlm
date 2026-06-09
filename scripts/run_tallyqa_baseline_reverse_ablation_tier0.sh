@@ -51,7 +51,7 @@ run_one() {
 }
 
 # 00: minimal baseline. Frozen MobileNetV3-large + transformer fusion, hard labels only.
-run_one "tallyqa-tier0-00-frozen-large-hard-no-reg" \
+run_one "tallyqa-tier0-00-small-frozen-hard-no-reg" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=natural" \
@@ -62,7 +62,7 @@ run_one "tallyqa-tier0-00-frozen-large-hard-no-reg" \
   "model.dropout=0.0" \
   "optimizer.weight_decay=0.0" \
   "optimizer.warmup_steps=0" \
-  "optimizer.warmup_start_learning_rate=null"
+  "optimizer.warmup_start_learning_rate=0.0001"
 
 # 01: add dropout.
 run_one "tallyqa-tier0-01-plus-dropout" \
@@ -76,7 +76,7 @@ run_one "tallyqa-tier0-01-plus-dropout" \
   "model.dropout=0.1" \
   "optimizer.weight_decay=0.0" \
   "optimizer.warmup_steps=0" \
-  "optimizer.warmup_start_learning_rate=null"
+  "optimizer.warmup_start_learning_rate=0.0001"
 
 # 02: add weight decay.
 run_one "tallyqa-tier0-02-plus-weight-decay" \
@@ -90,7 +90,7 @@ run_one "tallyqa-tier0-02-plus-weight-decay" \
   "model.dropout=0.1" \
   "optimizer.weight_decay=0.01" \
   "optimizer.warmup_steps=0" \
-  "optimizer.warmup_start_learning_rate=null"
+  "optimizer.warmup_start_learning_rate=0.0001"
 
 # 03: add the existing LR warmup schedule.
 run_one "tallyqa-tier0-03-plus-lr-warmup" \
