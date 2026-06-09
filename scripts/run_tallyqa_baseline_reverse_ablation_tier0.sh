@@ -20,7 +20,7 @@ COMMON_OVERRIDES=(
   "data.batch_size=${BATCH_SIZE}"
   "data.prompt_class_names_file=${TIER_FILE}"
   "data.shuffle_train=true"
-  "model.image_backbone=mobilenet_v3_large"
+  "model.image_backbone=mobilenet_v3_small"
   "model.image_feature_cutoff=auto"
   "model.image_token_mode=spatial"
   "model.fusion_mode=transformer"
@@ -151,6 +151,25 @@ run_one "tallyqa-tier0-06-plus-composite-teacher-kl" \
   "distillation.target_distribution=local_soft" \
   "distillation.local_soft_sigma=0.5" \
   "distillation.local_soft_radius=1" \
+  "model.dropout=0.1" \
+  "optimizer.weight_decay=0.01" \
+  "optimizer.warmup_steps=1000" \
+  "optimizer.warmup_start_learning_rate=0.0001"
+
+# 07: same as 06, but switch the image encoder to MobileNetV3-large.
+run_one "tallyqa-tier0-07-large-backbone-full-baseline" \
+  "data.require_teacher_cache=true" \
+  "paths.teacher_cache=${TEACHER_CACHE}" \
+  "data.teacher_probability_temperature=1.0" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.5" \
+  "data.train_epoch_size=43626" \
+  "distillation.alpha=1.0" \
+  "distillation.beta=0.25" \
+  "distillation.target_distribution=local_soft" \
+  "distillation.local_soft_sigma=0.5" \
+  "distillation.local_soft_radius=1" \
+  "model.image_backbone=mobilenet_v3_large" \
   "model.dropout=0.1" \
   "optimizer.weight_decay=0.01" \
   "optimizer.warmup_steps=1000" \
