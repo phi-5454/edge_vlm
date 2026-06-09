@@ -8,6 +8,8 @@ Runbooks:
   from model artifact to Coral camera inference and serial capture.
 - [Keras TFLite Student Pipeline](keras-tflite-student.md): Keras distillation
   path with explicit PTQ versus QAT comparison.
+- [MAX78000 Preview And Profiling](max78000-preview-and-profiling.md): serial
+  preview protocol plus static and on-board profiling summary.
 
 Minimum comparison table for each serious experiment:
 

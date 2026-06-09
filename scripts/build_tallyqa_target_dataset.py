@@ -45,6 +45,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--suffixes", type=Path, default=DEFAULT_SUFFIXES)
     parser.add_argument("--items", type=Path, default=DEFAULT_ITEMS)
+    parser.add_argument("--split-manifest", type=Path, default=None)
+    parser.add_argument("--include-split", choices=["all", "trainval", "test"], default="all")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--image-size", type=int, default=224)
@@ -89,6 +91,23 @@ def load_item_classes(path: Path) -> list[dict[str, Any]]:
     return classes
 
 
+def load_split_indices(path: Path | None, include_split: str) -> set[int] | None:
+    if path is None or include_split == "all":
+        return None
+    indices: set[int] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON at {path}:{line_number}") from exc
+            if str(row["split"]) == include_split:
+                indices.add(int(row["source_row_index"]))
+    return indices
+
+
 def write_classes(classes: list[dict[str, Any]], output_root: Path) -> None:
     (output_root / "classes.json").write_text(
         json.dumps(classes, indent=2, ensure_ascii=False) + "\n",
@@ -122,6 +141,7 @@ def collect_examples(
     dataset_path: Path,
     suffixes: list[tuple[str, ...]],
     item_to_class: dict[str, int],
+    include_image_indices: set[int] | None,
 ) -> tuple[list[dict[str, Any]], Counter[str], Counter[int], Counter[str]]:
     dataset = load_from_disk(str(dataset_path)).select_columns(["texts"])
     examples: list[dict[str, Any]] = []
@@ -129,6 +149,8 @@ def collect_examples(
     answer_counter: Counter[int] = Counter()
     suffix_counter: Counter[str] = Counter()
     for image_row_index, sample in enumerate(tqdm(dataset, desc="Filtering prompts", unit="image")):
+        if include_image_indices is not None and image_row_index not in include_image_indices:
+            continue
         texts = sample.get("texts")
         if not isinstance(texts, list):
             continue
@@ -375,11 +397,13 @@ def main() -> None:
 
     prepare_output_root(args.output_root, args.force)
     write_classes(classes, args.output_root)
+    include_image_indices = load_split_indices(args.split_manifest, args.include_split)
 
     examples, item_counter, answer_counter, suffix_counter = collect_examples(
         args.dataset,
         suffixes,
         item_to_class,
+        include_image_indices,
     )
     if not examples:
         raise ValueError("No examples matched the requested suffix and item filters.")
@@ -407,6 +431,8 @@ def main() -> None:
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "command": sys.argv,
         "source_dataset": str(args.dataset),
+        "split_manifest": str(args.split_manifest) if args.split_manifest is not None else None,
+        "include_split": args.include_split,
         "suffixes": str(args.suffixes),
         "items": str(args.items),
         "output_root": str(args.output_root),

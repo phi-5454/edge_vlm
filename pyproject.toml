@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=1.26",
     "omegaconf>=2.3",
     "pillow>=10.4",
+    "pyarrow>=15",
     "python-dotenv>=1.0",
     "torch>=2.3",
     "torchinfo>=1.8",
@@ -28,6 +29,9 @@ coral = [
     "requests>=2.32",
     "tensorflow>=2.16",
     "tf-keras>=2.16",
+]
+max78000 = [
+    "pyserial>=3.5",
 ]
 qat = [
     "tensorflow-model-optimization>=0.8",

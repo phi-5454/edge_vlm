@@ -26,6 +26,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run TallyQA EDA on the Cauldron-formatted subset.")
     parser.add_argument("--dataset", type=Path, default=Path("data/the_cauldron/tallyqa"))
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/reports/tallyqa_cauldron_eda"))
+    parser.add_argument("--split-manifest", type=Path, default=None)
+    parser.add_argument("--include-split", choices=["all", "trainval", "test"], default="all")
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument(
         "--coverage-points",
@@ -62,13 +64,37 @@ def parse_answer(answer: Any) -> int | None:
     return int(match.group(0)) if match else None
 
 
-def load_cauldron_rows(dataset_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def load_split_indices(path: Path | None, include_split: str) -> set[int] | None:
+    if path is None or include_split == "all":
+        return None
+    indices: set[int] = set()
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON at {path}:{line_number}") from exc
+            if str(row["split"]) == include_split:
+                indices.add(int(row["source_row_index"]))
+    return indices
+
+
+def load_cauldron_rows(
+    dataset_path: Path,
+    include_image_indices: set[int] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     dataset = load_from_disk(str(dataset_path)).select_columns(["texts"])
     rows: list[dict[str, Any]] = []
     image_rows = 0
+    included_image_rows = 0
     skipped_messages = 0
     for image_index, sample in enumerate(dataset):
         image_rows += 1
+        if include_image_indices is not None and image_index not in include_image_indices:
+            continue
+        included_image_rows += 1
         texts = sample.get("texts")
         if not isinstance(texts, list):
             continue
@@ -93,6 +119,7 @@ def load_cauldron_rows(dataset_path: Path) -> tuple[list[dict[str, Any]], dict[s
             )
     metadata = {
         "image_rows": image_rows,
+        "included_image_rows": included_image_rows,
         "qa_pairs": len(rows),
         "skipped_messages": skipped_messages,
         "question_cleaning": f"removed trailing '{BRIEF_ANSWER_INSTRUCTION}' instruction line",
@@ -133,7 +160,8 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    rows, dataset_metadata = load_cauldron_rows(args.dataset)
+    include_image_indices = load_split_indices(args.split_manifest, args.include_split)
+    rows, dataset_metadata = load_cauldron_rows(args.dataset, include_image_indices)
     pruned_suffixes = load_pruned_suffixes(args.pruned_suffixes)
     filter_suffix_source = str(args.pruned_suffixes) if pruned_suffixes else "auto_frontier_covering_suffixes"
 
@@ -170,6 +198,8 @@ def main() -> None:
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "command": "uv run python scripts/eda_tallyqa_cauldron.py",
         "dataset_path": str(args.dataset),
+        "split_manifest": str(args.split_manifest) if args.split_manifest is not None else None,
+        "include_split": args.include_split,
         "dataset_metadata": dataset_metadata,
         "splits": {"train": strip_plot_data(summary)},
         "combined": strip_plot_data(combined),

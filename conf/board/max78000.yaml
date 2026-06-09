@@ -15,6 +15,8 @@ max78000:
     simulation_log: artifacts/profiles/max78000/sim.log
     synthesis_log: artifacts/profiles/max78000/ai8xize.log
     serial_log: artifacts/profiles/max78000/serial.log
+    preview_jsonl: artifacts/profiles/max78000/preview.jsonl
+    preview_serial_log: artifacts/profiles/max78000/preview_serial.log
     report: artifacts/profiles/max78000/report.json
     metrics:
       - accuracy_fp32
@@ -22,7 +24,13 @@ max78000:
       - checkpoint_bytes
       - generated_flash_bytes
       - cnn_weight_bytes
+      - cnn_bias_bytes
       - cnn_data_memory_bytes
+      - hardware_ops
+      - hardware_macc
+      - software_ops
+      - per_layer_ops
+      - per_layer_processor_map
       - latency_cycles
       - latency_us
       - energy_uj

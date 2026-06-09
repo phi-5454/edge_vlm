@@ -223,6 +223,21 @@ class MulticlassTotals:
                 self.class_absolute_error.get(label, 0) + absolute_error
             )
 
+    def update_prediction(self, label: int, predicted_label: int) -> None:
+        absolute_error = abs(predicted_label - label)
+        self.correct += int(predicted_label == label)
+        self.within_one += int(absolute_error <= 1)
+        self.absolute_error += absolute_error
+        self.total += 1
+        self.class_total[label] = self.class_total.get(label, 0) + 1
+        self.class_correct[label] = self.class_correct.get(label, 0) + int(predicted_label == label)
+        self.class_within_one[label] = self.class_within_one.get(label, 0) + int(
+            absolute_error <= 1
+        )
+        self.class_absolute_error[label] = (
+            self.class_absolute_error.get(label, 0) + absolute_error
+        )
+
     def metrics(self) -> dict[str, float]:
         supported_labels = [
             label for label, count in sorted(self.class_total.items()) if count > 0
@@ -258,6 +273,70 @@ class MulticlassTotals:
             "class_weighted_accuracy": class_weighted_accuracy,
             "class_weighted_within_1_accuracy": class_weighted_within_one,
             "class_weighted_mae": class_weighted_mae,
+        }
+
+
+class PromptClassTotals:
+    def __init__(self) -> None:
+        self.by_prompt: dict[str, MulticlassTotals] = {}
+
+    def update(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        prompts: list[str] | tuple[str, ...] | None,
+    ) -> None:
+        if prompts is None:
+            return
+        predicted = torch.argmax(logits.detach(), dim=1).cpu()
+        expected = labels.detach().cpu()
+        if len(prompts) != int(expected.numel()):
+            return
+        for prompt, true_label, predicted_label in zip(
+            prompts,
+            expected.tolist(),
+            predicted.tolist(),
+            strict=True,
+        ):
+            prompt_totals = self.by_prompt.setdefault(str(prompt), MulticlassTotals())
+            prompt_totals.update_prediction(int(true_label), int(predicted_label))
+
+    def metrics(self) -> dict[str, float]:
+        prompt_metrics = [
+            totals.metrics() for totals in self.by_prompt.values() if totals.total > 0
+        ]
+        if not prompt_metrics:
+            return {
+                "prompt_class_weighted_accuracy": 0.0,
+                "prompt_class_weighted_within_1_accuracy": 0.0,
+                "prompt_class_weighted_mae": 0.0,
+                "prompt_class_output_weighted_accuracy": 0.0,
+                "prompt_class_output_weighted_within_1_accuracy": 0.0,
+                "prompt_class_output_weighted_mae": 0.0,
+            }
+        return {
+            "prompt_class_weighted_accuracy": sum(
+                metrics["accuracy"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
+            "prompt_class_weighted_within_1_accuracy": sum(
+                metrics["within_1_accuracy"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
+            "prompt_class_weighted_mae": sum(metrics["mae"] for metrics in prompt_metrics)
+            / len(prompt_metrics),
+            "prompt_class_output_weighted_accuracy": sum(
+                metrics["class_weighted_accuracy"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
+            "prompt_class_output_weighted_within_1_accuracy": sum(
+                metrics["class_weighted_within_1_accuracy"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
+            "prompt_class_output_weighted_mae": sum(
+                metrics["class_weighted_mae"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
         }
 
 
@@ -327,6 +406,7 @@ class TallyQAStudentModule(L.LightningModule):
         self.register_buffer("kl_class_weights", kl_weights, persistent=False)
         self.save_hyperparameters(ignore=["model"])
         self._totals = {stage: MulticlassTotals() for stage in ("train", "val", "test")}
+        self._prompt_totals = {stage: PromptClassTotals() for stage in ("train", "val", "test")}
         self.num_outputs = int(getattr(model, "num_outputs", 0))
         if self.num_outputs <= 0 and hasattr(model, "logits"):
             self.num_outputs = int(model.logits.shape[-1])
@@ -429,6 +509,11 @@ class TallyQAStudentModule(L.LightningModule):
             batch_size=batch_size,
         )
         self._totals[stage].update(logits, batch["labels"])
+        self._prompt_totals[stage].update(
+            logits,
+            batch["labels"],
+            batch.get("student_prompts"),  # type: ignore[arg-type]
+        )
         self._update_confusion(stage, logits, batch["labels"])
         return loss
 
@@ -474,9 +559,13 @@ class TallyQAStudentModule(L.LightningModule):
         self._shared_step(batch, "test")
 
     def _log_epoch_metrics(self, stage: str) -> None:
-        metrics = self._totals[stage].metrics()
+        metrics = {
+            **self._totals[stage].metrics(),
+            **self._prompt_totals[stage].metrics(),
+        }
         self.log_dict({f"{stage}/{name}": value for name, value in metrics.items()}, sync_dist=True)
         self._totals[stage] = MulticlassTotals()
+        self._prompt_totals[stage] = PromptClassTotals()
 
     def _update_confusion(
         self,

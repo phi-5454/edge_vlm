@@ -67,6 +67,11 @@ python scripts/coral_micro_stage_detection_app.py --force
 Then build/flash from `../coralmicro` and capture serial output as documented in
 `docs/performance/coral-detection-bringup.md`.
 
+MAX78000 preview/profiling host tooling is documented in
+`docs/performance/max78000-preview-and-profiling.md`. The host preview consumes
+newline-delimited serial JSON from the board and the profiler summarizes
+`ai8xize.py` hardware mapping logs plus board timing records.
+
 Train the Keras/TFLite-prior student with post-training quantization:
 
 ```bash

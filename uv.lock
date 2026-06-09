@@ -1850,6 +1850,7 @@ dependencies = [
     { name = "numpy" },
     { name = "omegaconf" },
     { name = "pillow" },
+    { name = "pyarrow" },
     { name = "python-dotenv" },
     { name = "torch" },
     { name = "torchinfo" },
@@ -1870,6 +1871,9 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+max78000 = [
+    { name = "pyserial" },
+]
 qat = [
     { name = "tensorflow-model-optimization" },
 ]
@@ -1884,7 +1888,9 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "omegaconf", specifier = ">=2.3" },
     { name = "pillow", specifier = ">=10.4" },
+    { name = "pyarrow", specifier = ">=15" },
     { name = "pyserial", marker = "extra == 'coral'", specifier = ">=3.5" },
+    { name = "pyserial", marker = "extra == 'max78000'", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "requests", marker = "extra == 'coral'", specifier = ">=2.32" },
@@ -1899,7 +1905,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.49" },
     { name = "wandb", specifier = ">=0.17" },
 ]
-provides-extras = ["coral", "qat", "dev"]
+provides-extras = ["coral", "max78000", "qat", "dev"]
 
 [[package]]
 name = "wandb"

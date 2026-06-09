@@ -190,6 +190,8 @@ def parse_serial_jsonl(path: Path) -> dict[str, Any]:
                 if isinstance(value, int | float):
                     timings.setdefault(key, []).append(float(value))
             primary = row.get("primary_detection") or row.get("prediction")
+            if primary is None and row.get("detections"):
+                primary = row["detections"][0]
             if isinstance(primary, dict):
                 label = str(primary.get("name") or primary.get("id") or primary.get("class_id"))
                 predictions[label] = predictions.get(label, 0) + 1
