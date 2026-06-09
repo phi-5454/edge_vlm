@@ -58,6 +58,24 @@ Summarize exported artifacts:
 uv run vlm-micro artifact-report artifacts/models/example.pt artifacts/exports/example.tflite
 ```
 
+Run the current Coral TFLite detection bring-up:
+
+```bash
+python scripts/coral_micro_stage_detection_app.py --force
+```
+
+Then build/flash from `../coralmicro` and capture serial output as documented in
+`docs/performance/coral-detection-bringup.md`.
+
+Train the Keras/TFLite-prior student with post-training quantization:
+
+```bash
+uv run --extra coral python scripts/train_tallyqa_keras_student.py export.quantization.mode=ptq
+```
+
+Use `export.quantization.mode=qat` with `uv sync --extra coral --extra qat` for
+the QAT comparison path.
+
 ## Main Warnings
 
 Coral and MAX78000 are not interchangeable deployment backends. A model that is

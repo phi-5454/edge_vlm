@@ -2,6 +2,13 @@
 
 Keep raw logs under `artifacts/profiles/` and summarize conclusions here.
 
+Runbooks:
+
+- [Coral Detection Bringup](coral-detection-bringup.md): TFLite object detector
+  from model artifact to Coral camera inference and serial capture.
+- [Keras TFLite Student Pipeline](keras-tflite-student.md): Keras distillation
+  path with explicit PTQ versus QAT comparison.
+
 Minimum comparison table for each serious experiment:
 
 | Stage | Accuracy | Size | Latency | Energy/Power | Notes |

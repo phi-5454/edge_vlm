@@ -1,0 +1,42 @@
+defaults:
+  - tallyqa_student
+  - _self_
+
+paths:
+  report_dir: artifacts/reports/tallyqa_keras_student
+  checkpoint_dir: artifacts/models/tallyqa_keras_student
+
+keras_model:
+  image_size: 224
+  image_channels: 3
+  prompt_dim: 64
+  image_dim: 64
+  fusion_dim: 96
+  conv_channels: [16, 32, 64]
+  dropout: 0.1
+  activation: relu
+  use_batch_norm: true
+
+export:
+  saved_model_dir: artifacts/exports/coral/keras_tallyqa_saved_model
+  tflite_float: artifacts/exports/coral/keras_tallyqa_float.tflite
+  tflite_quantized: artifacts/exports/coral/keras_tallyqa_quantized.tflite
+  export_tflite: true
+  quantization:
+    # none: export float TFLite only.
+    # ptq: train float model, then representative-dataset post-training quantization.
+    # qat: wrap the Keras student with TensorFlow Model Optimization before training.
+    mode: ptq
+    representative_samples: 128
+
+trainer:
+  max_epochs: 10
+  log_every_n_steps: 25
+  early_stopping:
+    monitor: val_loss
+
+wandb:
+  tags: [student, tallyqa, keras, tflite-prior, distillation, count-5plus]
+
+experiment:
+  run_name: tallyqa-keras-student-a${distillation.alpha}-b${distillation.beta}-t${distillation.temperature}

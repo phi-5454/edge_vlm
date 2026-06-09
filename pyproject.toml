@@ -17,13 +17,20 @@ dependencies = [
     "torch>=2.3",
     "torchinfo>=1.8",
     "torchvision>=0.18",
+    "tqdm>=4.66",
     "transformers>=4.49",
     "wandb>=0.17",
 ]
 
 [project.optional-dependencies]
 coral = [
+    "pyserial>=3.5",
+    "requests>=2.32",
     "tensorflow>=2.16",
+    "tf-keras>=2.16",
+]
+qat = [
+    "tensorflow-model-optimization>=0.8",
 ]
 dev = [
     "pytest>=8.2",
