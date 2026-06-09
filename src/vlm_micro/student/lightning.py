@@ -790,6 +790,14 @@ class TallyQAStudentModule(L.LightningModule):
 
     def _log_validation_plots(self) -> None:
         if not self._validation_plot_rows or self.logger is None:
+            if self.logger is not None:
+                self.log(
+                    "validation_plots/image_encoding_count",
+                    0,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
             return
         if int(getattr(self, "global_rank", 0)) != 0:
             return
@@ -801,6 +809,7 @@ class TallyQAStudentModule(L.LightningModule):
                 "validation_plots/image_encoding": [
                     self._validation_plot(row) for row in self._validation_plot_rows
                 ],
+                "validation_plots/image_encoding_count": len(self._validation_plot_rows),
                 "trainer/epoch": int(self.current_epoch),
             }
         )
