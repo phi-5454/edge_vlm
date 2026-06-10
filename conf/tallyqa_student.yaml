@@ -40,6 +40,7 @@ distillation:
   temperature: 2.0
   class_weights: null
   class_weight_mode: balanced
+  # If null, KL uses the same weights as the supervised class loss.
   kl_class_weights: null
   target_distribution: hard
   local_soft_sigma: 1.0

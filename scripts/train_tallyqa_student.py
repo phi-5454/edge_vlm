@@ -271,7 +271,7 @@ def main(cfg: DictConfig) -> None:
         kl_class_weights=(
             [float(weight) for weight in cfg.distillation.kl_class_weights]
             if cfg.distillation.get("kl_class_weights", None) is not None
-            else None
+            else class_weights
         ),
         target_distribution=str(cfg.distillation.target_distribution),
         local_soft_sigma=float(cfg.distillation.local_soft_sigma),

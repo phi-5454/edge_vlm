@@ -276,9 +276,10 @@ run_one "06" "tallyqa-tier0-06-plus-sampling-curriculum" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=prompt_class_tempered" \
-  "data.prompt_class_sampling_temperature=0.5" \
-  "data.prompt_class_sampling_end_temperature=0.0" \
-  "data.prompt_class_sampling_decay_steps=${SAMPLING_DECAY_STEPS}" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
@@ -297,10 +298,14 @@ run_one "06" "tallyqa-tier0-06-plus-sampling-curriculum" \
 run_one "07" "tallyqa-tier0-07-plus-local-soft-targets" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
-  "data.train_sampling=natural" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
-  "trainer.reload_dataloaders_every_n_epochs=0" \
+  "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.0" \
   "distillation.target_distribution=local_soft" \
@@ -319,10 +324,14 @@ run_one "08" "tallyqa-tier0-08-plus-composite-teacher-kl" \
   "data.require_teacher_cache=true" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.teacher_probability_temperature=1.0" \
-  "data.train_sampling=natural" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
-  "trainer.reload_dataloaders_every_n_epochs=0" \
+  "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.25" \
   "distillation.target_distribution=local_soft" \
@@ -341,10 +350,14 @@ run_one "09" "tallyqa-tier0-09-composite-teacher-kl-hard-targets" \
   "data.require_teacher_cache=true" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.teacher_probability_temperature=1.0" \
-  "data.train_sampling=natural" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
-  "trainer.reload_dataloaders_every_n_epochs=0" \
+  "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.25" \
   "distillation.target_distribution=hard" \
@@ -356,20 +369,22 @@ run_one "09" "tallyqa-tier0-09-composite-teacher-kl-hard-targets" \
   "optimizer.warmup_steps=1000" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
-# 10: same as 08, but switch the image encoder to MobileNetV3-large.
+# 10: same as 09, but switch the image encoder to MobileNetV3-large.
 run_one "10" "tallyqa-tier0-10-large-backbone-full-baseline" \
   "data.require_teacher_cache=true" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.teacher_probability_temperature=1.0" \
-  "data.train_sampling=natural" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
-  "trainer.reload_dataloaders_every_n_epochs=0" \
+  "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.25" \
-  "distillation.target_distribution=local_soft" \
-  "distillation.local_soft_sigma=0.5" \
-  "distillation.local_soft_radius=1" \
+  "distillation.target_distribution=hard" \
   "model.image_backbone=mobilenet_v3_large" \
   "model.dropout=0.1" \
   "optimizer.weight_decay=0.01" \
@@ -394,6 +409,57 @@ run_one "11" "tallyqa-tier0-11-sampling-p025-ramp-after-2000" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.0" \
   "distillation.target_distribution=hard" \
+  "model.dropout=0.1" \
+  "optimizer.weight_decay=0.01" \
+  "optimizer.lr_schedule=warmup_plateau_decay" \
+  "optimizer.lr_decay_start_step=1500" \
+  "optimizer.lr_final_learning_rate=0.0001" \
+  "optimizer.warmup_steps=1000" \
+  "optimizer.warmup_start_learning_rate=0.0001"
+
+# 12: same as 09, with FiLM after small MobileNet's last 28x28 and 14x14x40 blocks.
+run_one "12" "tallyqa-tier0-12-small-film-28-last-14-last-hard-teacher" \
+  "data.require_teacher_cache=true" \
+  "paths.teacher_cache=${TEACHER_CACHE}" \
+  "data.teacher_probability_temperature=1.0" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
+  "data.train_epoch_size=null" \
+  "data.curriculum_schedule=null" \
+  "trainer.reload_dataloaders_every_n_epochs=1" \
+  "distillation.alpha=1.0" \
+  "distillation.beta=0.25" \
+  "distillation.target_distribution=hard" \
+  "model.image_film_at='3,6'" \
+  "model.dropout=0.1" \
+  "optimizer.weight_decay=0.01" \
+  "optimizer.lr_schedule=warmup_plateau_decay" \
+  "optimizer.lr_decay_start_step=1500" \
+  "optimizer.lr_final_learning_rate=0.0001" \
+  "optimizer.warmup_steps=1000" \
+  "optimizer.warmup_start_learning_rate=0.0001"
+
+# 13: same as 10, with FiLM after large MobileNet's last 28x28 and 14x14x80 blocks.
+run_one "13" "tallyqa-tier0-13-large-film-28-last-14x14x80-hard-teacher" \
+  "data.require_teacher_cache=true" \
+  "paths.teacher_cache=${TEACHER_CACHE}" \
+  "data.teacher_probability_temperature=1.0" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
+  "data.train_epoch_size=null" \
+  "data.curriculum_schedule=null" \
+  "trainer.reload_dataloaders_every_n_epochs=1" \
+  "distillation.alpha=1.0" \
+  "distillation.beta=0.25" \
+  "distillation.target_distribution=hard" \
+  "model.image_backbone=mobilenet_v3_large" \
+  "model.image_film_at='6,10'" \
   "model.dropout=0.1" \
   "optimizer.weight_decay=0.01" \
   "optimizer.lr_schedule=warmup_plateau_decay" \

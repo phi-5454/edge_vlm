@@ -163,17 +163,20 @@ class StudentBaseline(nn.Module):
                 parameter.requires_grad = False
         self.image_pool = backbone.avgpool
         image_feature_channels = self._image_feature_channels(image_backbone, resolved_cutoff)
-        if self.image_film_at is not None:
-            if resolved_cutoff is not None and self.image_film_at >= resolved_cutoff:
-                raise ValueError(
-                    f"image_film_at={self.image_film_at} must be before "
-                    f"image_feature_cutoff={resolved_cutoff}."
+        if self.image_film_at:
+            film_layers: dict[str, FeatureFiLM] = {}
+            for feature_index in self.image_film_at:
+                if resolved_cutoff is not None and feature_index >= resolved_cutoff:
+                    raise ValueError(
+                        f"image_film_at={feature_index} must be before "
+                        f"image_feature_cutoff={resolved_cutoff}."
+                    )
+                film_channels = self._image_feature_channels_after_index(
+                    image_backbone,
+                    feature_index,
                 )
-            film_channels = self._image_feature_channels_after_index(
-                image_backbone,
-                self.image_film_at,
-            )
-            self.image_film = FeatureFiLM(query_dim, film_channels)
+                film_layers[str(feature_index)] = FeatureFiLM(query_dim, film_channels)
+            self.image_film = nn.ModuleDict(film_layers)
         else:
             self.image_film = None
         self.image_projection = nn.Sequential(
@@ -233,8 +236,8 @@ class StudentBaseline(nn.Module):
         features = images
         for index, block in enumerate(self.image_features):
             features = block(features)
-            if index == self.image_film_at:
-                features = self.image_film(features, query)
+            if str(index) in self.image_film:
+                features = self.image_film[str(index)](features, query)
         return features
 
     def forward(
@@ -328,16 +331,20 @@ class StudentBaseline(nn.Module):
         return image_feature_cutoff
 
     @staticmethod
-    def _resolve_image_film_at(image_film_at: int | str | None) -> int | None:
+    def _resolve_image_film_at(image_film_at: int | str | None) -> tuple[int, ...]:
         if image_film_at is None:
-            return None
+            return ()
         if isinstance(image_film_at, str):
             if image_film_at == "none":
-                return None
-            image_film_at = int(image_film_at)
-        if image_film_at < 0:
-            raise ValueError("image_film_at must be non-negative, 'none', or null.")
-        return image_film_at
+                return ()
+            values = tuple(int(value.strip()) for value in image_film_at.split(",") if value.strip())
+        else:
+            values = (int(image_film_at),)
+        if any(value < 0 for value in values):
+            raise ValueError("image_film_at values must be non-negative, 'none', or null.")
+        if len(set(values)) != len(values):
+            raise ValueError("image_film_at must not contain duplicate indices.")
+        return values
 
     @staticmethod
     def _image_feature_channels(image_backbone: str, image_feature_cutoff: int | None) -> int:
