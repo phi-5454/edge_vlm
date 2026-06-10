@@ -297,13 +297,10 @@ run_one "06" "tallyqa-tier0-06-plus-sampling-curriculum" \
 run_one "07" "tallyqa-tier0-07-plus-local-soft-targets" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
-  "data.train_sampling=prompt_class_tempered" \
-  "data.prompt_class_sampling_temperature=0.5" \
-  "data.prompt_class_sampling_end_temperature=0.0" \
-  "data.prompt_class_sampling_decay_steps=${SAMPLING_DECAY_STEPS}" \
+  "data.train_sampling=natural" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
-  "trainer.reload_dataloaders_every_n_epochs=1" \
+  "trainer.reload_dataloaders_every_n_epochs=0" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.0" \
   "distillation.target_distribution=local_soft" \
@@ -322,13 +319,10 @@ run_one "08" "tallyqa-tier0-08-plus-composite-teacher-kl" \
   "data.require_teacher_cache=true" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.teacher_probability_temperature=1.0" \
-  "data.train_sampling=prompt_class_tempered" \
-  "data.prompt_class_sampling_temperature=0.5" \
-  "data.prompt_class_sampling_end_temperature=0.0" \
-  "data.prompt_class_sampling_decay_steps=${SAMPLING_DECAY_STEPS}" \
+  "data.train_sampling=natural" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
-  "trainer.reload_dataloaders_every_n_epochs=1" \
+  "trainer.reload_dataloaders_every_n_epochs=0" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.25" \
   "distillation.target_distribution=local_soft" \
@@ -342,18 +336,35 @@ run_one "08" "tallyqa-tier0-08-plus-composite-teacher-kl" \
   "optimizer.warmup_steps=1000" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
-# 09: same as 08, but switch the image encoder to MobileNetV3-large.
-run_one "09" "tallyqa-tier0-09-large-backbone-full-baseline" \
+# 09: same teacher KL as 08, but keep hard targets instead of local soft targets.
+run_one "09" "tallyqa-tier0-09-composite-teacher-kl-hard-targets" \
   "data.require_teacher_cache=true" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.teacher_probability_temperature=1.0" \
-  "data.train_sampling=prompt_class_tempered" \
-  "data.prompt_class_sampling_temperature=0.5" \
-  "data.prompt_class_sampling_end_temperature=0.0" \
-  "data.prompt_class_sampling_decay_steps=${SAMPLING_DECAY_STEPS}" \
+  "data.train_sampling=natural" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
-  "trainer.reload_dataloaders_every_n_epochs=1" \
+  "trainer.reload_dataloaders_every_n_epochs=0" \
+  "distillation.alpha=1.0" \
+  "distillation.beta=0.25" \
+  "distillation.target_distribution=hard" \
+  "model.dropout=0.1" \
+  "optimizer.weight_decay=0.01" \
+  "optimizer.lr_schedule=warmup_plateau_decay" \
+  "optimizer.lr_decay_start_step=1500" \
+  "optimizer.lr_final_learning_rate=0.0001" \
+  "optimizer.warmup_steps=1000" \
+  "optimizer.warmup_start_learning_rate=0.0001"
+
+# 10: same as 08, but switch the image encoder to MobileNetV3-large.
+run_one "10" "tallyqa-tier0-10-large-backbone-full-baseline" \
+  "data.require_teacher_cache=true" \
+  "paths.teacher_cache=${TEACHER_CACHE}" \
+  "data.teacher_probability_temperature=1.0" \
+  "data.train_sampling=natural" \
+  "data.train_epoch_size=null" \
+  "data.curriculum_schedule=null" \
+  "trainer.reload_dataloaders_every_n_epochs=0" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.25" \
   "distillation.target_distribution=local_soft" \
