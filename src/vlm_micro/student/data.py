@@ -800,12 +800,8 @@ class TallyQAStudentDataModule(L.LightningDataModule):
 
     def _train_sampling(self) -> str:
         if self._curriculum_stage is not None:
-            train_sampling = str(self._curriculum_stage.get("train_sampling", self.hparams.train_sampling))
-        else:
-            train_sampling = str(self.hparams.train_sampling)
-        if train_sampling == "prompt_class_tempered" and self._prompt_sampling_temperature() <= 0:
-            return "natural"
-        return train_sampling
+            return str(self._curriculum_stage.get("train_sampling", self.hparams.train_sampling))
+        return str(self.hparams.train_sampling)
 
     def _prompt_sampling_temperature(self) -> float:
         if self._curriculum_stage is not None:
