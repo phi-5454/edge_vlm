@@ -521,6 +521,18 @@ run_large_soft_teacher \
   "model.use_prompt_identity=false" \
   "model.use_image_positional_embeddings=false"
 
+# 14pu: same as 14p, but unfreeze the MobileNet image encoder at 0.1x LR.
+run_large_soft_teacher \
+  "14pu" \
+  "tallyqa-tier0-14pu-large-prompt-patch-mlp-unfrozen-image" \
+  "${TIER_FILE}" \
+  "prompt_patch_mlp" \
+  "model.image_film_at=null" \
+  "model.use_prompt_identity=false" \
+  "model.use_image_positional_embeddings=false" \
+  "model.freeze_image_features=false" \
+  "optimizer.image_learning_rate_scale=0.1"
+
 # 14u: same as 14, but unfreeze the MobileNet image encoder at 0.1x LR.
 run_large_soft_teacher \
   "14u" \
