@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import warnings
 import csv
 from collections import OrderedDict
@@ -658,6 +659,8 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         shuffle_train: bool = True,
         train_sampling: str = "natural",
         prompt_class_sampling_temperature: float = 0.5,
+        prompt_class_sampling_end_temperature: float | None = None,
+        prompt_class_sampling_decay_steps: int | None = None,
         train_epoch_size: int | None = None,
         shuffle_block_size: int = 256,
         missing_teacher_policy: str = "filter",
@@ -682,6 +685,13 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             raise ValueError("train_sampling must be 'natural' or 'prompt_class_tempered'.")
         if prompt_class_sampling_temperature < 0:
             raise ValueError("prompt_class_sampling_temperature must be non-negative.")
+        if (
+            prompt_class_sampling_end_temperature is not None
+            and prompt_class_sampling_end_temperature < 0
+        ):
+            raise ValueError("prompt_class_sampling_end_temperature must be non-negative.")
+        if prompt_class_sampling_decay_steps is not None and prompt_class_sampling_decay_steps <= 0:
+            raise ValueError("prompt_class_sampling_decay_steps must be positive when provided.")
         if train_epoch_size is not None and train_epoch_size <= 0:
             raise ValueError("train_epoch_size must be positive when provided.")
         if teacher_probability_temperature <= 0:
@@ -762,16 +772,17 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         return set.intersection(*filters) if filters else None
 
     def set_train_epoch(self, zero_based_epoch: int) -> None:
-        if not self._curriculum_schedule:
-            return
         one_based_epoch = int(zero_based_epoch) + 1
+        self._curriculum_epoch = one_based_epoch
+        if not self._curriculum_schedule:
+            self._curriculum_stage = None
+            return
         active = self._curriculum_schedule[0]
         for stage in self._curriculum_schedule:
             if int(stage["start_epoch"]) <= one_based_epoch:
                 active = stage
             else:
                 break
-        self._curriculum_epoch = one_based_epoch
         self._curriculum_stage = active
 
     def _train_indices(self) -> list[int]:
@@ -789,18 +800,35 @@ class TallyQAStudentDataModule(L.LightningDataModule):
 
     def _train_sampling(self) -> str:
         if self._curriculum_stage is not None:
-            return str(self._curriculum_stage.get("train_sampling", self.hparams.train_sampling))
-        return str(self.hparams.train_sampling)
+            train_sampling = str(self._curriculum_stage.get("train_sampling", self.hparams.train_sampling))
+        else:
+            train_sampling = str(self.hparams.train_sampling)
+        if train_sampling == "prompt_class_tempered" and self._prompt_sampling_temperature() <= 0:
+            return "natural"
+        return train_sampling
 
     def _prompt_sampling_temperature(self) -> float:
         if self._curriculum_stage is not None:
-            return float(
+            start_temperature = float(
                 self._curriculum_stage.get(
                     "prompt_class_sampling_temperature",
                     self.hparams.prompt_class_sampling_temperature,
                 )
             )
-        return float(self.hparams.prompt_class_sampling_temperature)
+        else:
+            start_temperature = float(self.hparams.prompt_class_sampling_temperature)
+        if (
+            self.hparams.prompt_class_sampling_end_temperature is None
+            or self.hparams.prompt_class_sampling_decay_steps is None
+        ):
+            return start_temperature
+        end_temperature = float(self.hparams.prompt_class_sampling_end_temperature)
+        decay_steps = int(self.hparams.prompt_class_sampling_decay_steps)
+        train_size = len(self._train_indices())
+        steps_per_epoch = max(1, math.ceil(train_size / int(self.hparams.batch_size)))
+        elapsed_steps = max(0, int(self._curriculum_epoch) - 1) * steps_per_epoch
+        progress = min(1.0, elapsed_steps / decay_steps)
+        return start_temperature + (end_temperature - start_temperature) * progress
 
     def _train_epoch_size(self, dataset: TallyQAStudentDataset) -> int:
         if self.hparams.train_epoch_size is not None:

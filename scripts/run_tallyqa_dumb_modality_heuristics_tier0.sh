@@ -14,8 +14,8 @@ PATIENCE="${PATIENCE:-6}"
 CHECK_VAL_EVERY_N_EPOCH="${CHECK_VAL_EVERY_N_EPOCH:-1}"
 TEACHER_CACHE="${TEACHER_CACHE:-artifacts/teacher_cache/composite_ece_temp_smol1p1_frcnn2p2_beta12p968_tallyqa_target_mobilenet224.jsonl}"
 TRAIN_EPOCH_SIZE="${TRAIN_EPOCH_SIZE:-null}"
-SAMPLING_CURRICULUM="${SAMPLING_CURRICULUM:-}"
 USE_SAMPLING_CURRICULUM="${USE_SAMPLING_CURRICULUM:-false}"
+SAMPLING_DECAY_STEPS="${SAMPLING_DECAY_STEPS:-1500}"
 _POSITIONAL_INDEX=0
 
 while [[ $# -gt 0 ]]; do
@@ -80,9 +80,8 @@ while [[ $# -gt 0 ]]; do
       USE_SAMPLING_CURRICULUM=false
       shift
       ;;
-    --sampling-curriculum)
-      SAMPLING_CURRICULUM="$2"
-      USE_SAMPLING_CURRICULUM=true
+    --sampling-decay-steps)
+      SAMPLING_DECAY_STEPS="$2"
       shift 2
       ;;
     -*)
@@ -103,31 +102,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-if [[ -n "${SAMPLING_CURRICULUM}" ]]; then
-  USE_SAMPLING_CURRICULUM=true
-fi
-
-make_sampling_curriculum() {
-  if [[ -n "${SAMPLING_CURRICULUM}" ]]; then
-    echo "${SAMPLING_CURRICULUM}"
-    return 0
-  fi
-  local schedule_path
-  schedule_path="$(mktemp /tmp/tallyqa_sampling_curriculum.XXXXXX.json)"
-  printf '[\n' > "${schedule_path}"
-  printf '  {\n' >> "${schedule_path}"
-  printf '    "start_epoch": 1,\n' >> "${schedule_path}"
-  printf '    "train_sampling": "prompt_class_tempered",\n' >> "${schedule_path}"
-  printf '    "prompt_class_sampling_temperature": 0.5\n' >> "${schedule_path}"
-  printf '  },\n' >> "${schedule_path}"
-  printf '  {\n' >> "${schedule_path}"
-  printf '    "start_epoch": 2,\n' >> "${schedule_path}"
-  printf '    "train_sampling": "natural"\n' >> "${schedule_path}"
-  printf '  }\n' >> "${schedule_path}"
-  printf ']\n' >> "${schedule_path}"
-  echo "${schedule_path}"
-}
 
 COMMON_OVERRIDES=(
   "trainer.max_epochs=${MAX_EPOCHS}"
@@ -180,9 +154,11 @@ COMMON_OVERRIDES=(
 )
 
 if [[ "${USE_SAMPLING_CURRICULUM}" == "1" || "${USE_SAMPLING_CURRICULUM}" == "true" ]]; then
-  SAMPLING_CURRICULUM_PATH="$(make_sampling_curriculum)"
   COMMON_OVERRIDES+=(
-    "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}"
+    "data.train_sampling=prompt_class_tempered"
+    "data.prompt_class_sampling_temperature=0.5"
+    "data.prompt_class_sampling_end_temperature=0.0"
+    "data.prompt_class_sampling_decay_steps=${SAMPLING_DECAY_STEPS}"
     "trainer.reload_dataloaders_every_n_epochs=1"
   )
 fi

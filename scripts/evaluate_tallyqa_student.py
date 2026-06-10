@@ -82,6 +82,16 @@ def build_data(cfg: DictConfig) -> TallyQAStudentDataModule:
         prompt_class_sampling_temperature=float(
             cfg.data.get("prompt_class_sampling_temperature", 0.5)
         ),
+        prompt_class_sampling_end_temperature=(
+            float(cfg.data.prompt_class_sampling_end_temperature)
+            if cfg.data.get("prompt_class_sampling_end_temperature", None) is not None
+            else None
+        ),
+        prompt_class_sampling_decay_steps=(
+            int(cfg.data.prompt_class_sampling_decay_steps)
+            if cfg.data.get("prompt_class_sampling_decay_steps", None) is not None
+            else None
+        ),
         train_epoch_size=(
             int(cfg.data.train_epoch_size)
             if cfg.data.get("train_epoch_size", None) is not None

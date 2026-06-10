@@ -532,6 +532,11 @@ class TallyQAStudentModule(L.LightningModule):
     def training_step(self, batch: dict[str, torch.Tensor], batch_index: int) -> torch.Tensor:
         return self._shared_step(batch, "train")
 
+    def on_train_epoch_start(self) -> None:
+        datamodule = getattr(getattr(self, "trainer", None), "datamodule", None)
+        if datamodule is not None and hasattr(datamodule, "set_train_epoch"):
+            datamodule.set_train_epoch(int(self.current_epoch))
+
     def _log_learning_rate(self, stage: str, batch_size: int) -> None:
         trainer = getattr(self, "_trainer", None)
         if stage != "train" or trainer is None or not trainer.optimizers:
