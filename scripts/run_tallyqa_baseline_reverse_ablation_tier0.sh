@@ -379,21 +379,20 @@ run_one "10" "tallyqa-tier0-10-large-backbone-full-baseline" \
   "optimizer.warmup_steps=1000" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
-# 11: same as 06, but ramp teacher KL from 0 after step 2000 to 0.25 at train end.
-run_one "11" "tallyqa-tier0-11-composite-teacher-kl-ramp-after-2000" \
-  "data.require_teacher_cache=true" \
+# 11: same as 06, but ramp prompt sampling from natural after step 2000 to p=0.25 at train end.
+run_one "11" "tallyqa-tier0-11-sampling-p025-ramp-after-2000" \
+  "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
-  "data.teacher_probability_temperature=1.0" \
   "data.train_sampling=prompt_class_tempered" \
-  "data.prompt_class_sampling_temperature=0.5" \
-  "data.prompt_class_sampling_end_temperature=0.0" \
-  "data.prompt_class_sampling_decay_steps=${SAMPLING_DECAY_STEPS}" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
   "data.train_epoch_size=null" \
   "data.curriculum_schedule=null" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
-  "distillation.beta=0.25" \
-  "distillation.beta_ramp_start_step=2000" \
+  "distillation.beta=0.0" \
   "distillation.target_distribution=hard" \
   "model.dropout=0.1" \
   "optimizer.weight_decay=0.01" \

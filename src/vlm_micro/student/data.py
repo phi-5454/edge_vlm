@@ -758,6 +758,7 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         prompt_class_sampling_temperature: float = 0.5,
         prompt_class_sampling_end_temperature: float | None = None,
         prompt_class_sampling_decay_steps: int | None = None,
+        prompt_class_sampling_ramp_start_step: int | None = None,
         train_epoch_size: int | None = None,
         shuffle_block_size: int = 256,
         missing_teacher_policy: str = "filter",
@@ -770,6 +771,7 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         curriculum_schedule: Path | None = None,
         train_example_limit: int | None = None,
         teacher_probability_temperature: float = 1.0,
+        max_epochs: int | None = None,
     ):
         super().__init__()
         if missing_teacher_policy not in {"filter", "keep"}:
@@ -789,8 +791,12 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             raise ValueError("prompt_class_sampling_end_temperature must be non-negative.")
         if prompt_class_sampling_decay_steps is not None and prompt_class_sampling_decay_steps <= 0:
             raise ValueError("prompt_class_sampling_decay_steps must be positive when provided.")
+        if prompt_class_sampling_ramp_start_step is not None and prompt_class_sampling_ramp_start_step < 0:
+            raise ValueError("prompt_class_sampling_ramp_start_step must be non-negative when provided.")
         if train_epoch_size is not None and train_epoch_size <= 0:
             raise ValueError("train_epoch_size must be positive when provided.")
+        if max_epochs is not None and max_epochs <= 0:
+            raise ValueError("max_epochs must be positive when provided.")
         if teacher_probability_temperature <= 0:
             raise ValueError("teacher_probability_temperature must be positive.")
         self.save_hyperparameters()
@@ -912,15 +918,21 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             start_temperature = float(self.hparams.prompt_class_sampling_temperature)
         if (
             self.hparams.prompt_class_sampling_end_temperature is None
-            or self.hparams.prompt_class_sampling_decay_steps is None
         ):
             return start_temperature
         end_temperature = float(self.hparams.prompt_class_sampling_end_temperature)
-        decay_steps = int(self.hparams.prompt_class_sampling_decay_steps)
         train_size = len(self._train_indices())
         steps_per_epoch = max(1, math.ceil(train_size / int(self.hparams.batch_size)))
         elapsed_steps = max(0, int(self._curriculum_epoch) - 1) * steps_per_epoch
-        progress = min(1.0, elapsed_steps / decay_steps)
+        ramp_start_step = int(self.hparams.prompt_class_sampling_ramp_start_step or 0)
+        if elapsed_steps <= ramp_start_step:
+            return start_temperature
+        if self.hparams.prompt_class_sampling_decay_steps is not None:
+            ramp_steps = int(self.hparams.prompt_class_sampling_decay_steps)
+        else:
+            max_epochs = int(self.hparams.max_epochs or self._curriculum_epoch)
+            ramp_steps = max(1, max_epochs * steps_per_epoch - ramp_start_step)
+        progress = min(1.0, (elapsed_steps - ramp_start_step) / ramp_steps)
         return start_temperature + (end_temperature - start_temperature) * progress
 
     def _train_epoch_size(self, dataset: TallyQAStudentDataset) -> int:

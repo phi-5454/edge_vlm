@@ -59,6 +59,7 @@ data:
   prompt_class_sampling_temperature: 0.5
   prompt_class_sampling_end_temperature: null
   prompt_class_sampling_decay_steps: null
+  prompt_class_sampling_ramp_start_step: null
   train_epoch_size: null
   train_example_limit: null
   shuffle_block_size: 256

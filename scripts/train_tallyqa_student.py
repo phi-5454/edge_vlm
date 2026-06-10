@@ -167,6 +167,11 @@ def main(cfg: DictConfig) -> None:
             if cfg.data.get("prompt_class_sampling_decay_steps", None) is not None
             else None
         ),
+        prompt_class_sampling_ramp_start_step=(
+            int(cfg.data.prompt_class_sampling_ramp_start_step)
+            if cfg.data.get("prompt_class_sampling_ramp_start_step", None) is not None
+            else None
+        ),
         train_epoch_size=(
             int(cfg.data.train_epoch_size)
             if cfg.data.get("train_epoch_size", None) is not None
@@ -197,6 +202,7 @@ def main(cfg: DictConfig) -> None:
         teacher_probability_temperature=float(
             cfg.data.get("teacher_probability_temperature", 1.0)
         ),
+        max_epochs=int(cfg.trainer.max_epochs),
     )
     if beta > 0 and missing_teacher_policy == "keep":
         raise ValueError(
