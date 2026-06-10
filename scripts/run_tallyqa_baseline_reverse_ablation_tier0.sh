@@ -253,11 +253,11 @@ run_one "04" "tallyqa-tier0-04-plus-warmup-plateau-decay" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 05: add sqrt prompt-class sampling. Epoch size is held near the natural tier size.
-run_one "05" "tallyqa-tier0-05-plus-sqrt-prompt-sampling" \
+run_one "05" "tallyqa-tier0-05-plus-p025-prompt-sampling" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=prompt_class_tempered" \
-  "data.prompt_class_sampling_temperature=0.5" \
+  "data.prompt_class_sampling_temperature=0.25" \
   "data.train_epoch_size=null" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.0" \
