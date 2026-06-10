@@ -115,8 +115,11 @@ class StudentBaseline(nn.Module):
             raise ValueError("query_dim and image_dim must equal fusion_dim for token fusion.")
         if image_token_mode not in {"spatial", "pooled"}:
             raise ValueError("image_token_mode must be 'spatial' or 'pooled'.")
-        if fusion_mode not in {"transformer", "concat_mlp", "film_mlp"}:
-            raise ValueError("fusion_mode must be one of {'transformer', 'concat_mlp', 'film_mlp'}.")
+        if fusion_mode not in {"transformer", "concat_mlp", "film_mlp", "prompt_patch_mlp"}:
+            raise ValueError(
+                "fusion_mode must be one of "
+                "{'transformer', 'concat_mlp', 'film_mlp', 'prompt_patch_mlp'}."
+            )
         if image_film_position not in {"post_block", "pre_depthwise"}:
             raise ValueError("image_film_position must be one of {'post_block', 'pre_depthwise'}.")
         self.num_outputs = num_outputs
@@ -168,6 +171,7 @@ class StudentBaseline(nn.Module):
                 parameter.requires_grad = False
         self.image_pool = backbone.avgpool
         image_feature_channels = self._image_feature_channels(image_backbone, resolved_cutoff)
+        self.image_feature_channels = image_feature_channels
         if self.image_film_indices:
             film_layers: dict[str, FeatureFiLM] = {}
             for feature_index in self.image_film_indices:
@@ -229,6 +233,18 @@ class StudentBaseline(nn.Module):
                 nn.GELU(),
                 nn.Linear(fusion_dim, num_outputs),
             )
+        elif fusion_mode == "prompt_patch_mlp":
+            self.fusion = nn.Identity()
+            patch_hidden_dim = fusion_dim * fusion_mlp_ratio
+            self.patch_mlp = nn.Sequential(
+                nn.Conv2d(image_feature_channels + query_dim, patch_hidden_dim, kernel_size=1),
+                nn.ReLU(inplace=True),
+                nn.Dropout2d(dropout),
+                nn.Conv2d(patch_hidden_dim, fusion_dim, kernel_size=1),
+                nn.ReLU(inplace=True),
+                nn.AvgPool2d(kernel_size=2, stride=2),
+            )
+            self.classifier = nn.Linear(fusion_dim * 7 * 7, num_outputs)
         else:
             self.fusion = nn.Identity()
             self.classifier = nn.Sequential(
@@ -271,6 +287,25 @@ class StudentBaseline(nn.Module):
             if film is not None and self.image_film_position == "post_block":
                 features = film(features, query)
         return features
+
+    def prompt_patch_mlp_features(
+        self,
+        image_features: torch.Tensor,
+        query: torch.Tensor,
+    ) -> torch.Tensor:
+        if image_features.shape[-2:] != (14, 14):
+            raise ValueError(
+                "prompt_patch_mlp expects 14x14 image features before 2x2 average pooling; "
+                f"got spatial shape {tuple(image_features.shape[-2:])}."
+            )
+        query_map = query[:, :, None, None].expand(
+            -1,
+            -1,
+            image_features.shape[-2],
+            image_features.shape[-1],
+        )
+        conditioned = torch.cat([image_features, query_map], dim=1)
+        return self.patch_mlp(conditioned).flatten(1)
 
     @staticmethod
     def _forward_block_with_pre_depthwise_film(
@@ -316,6 +351,7 @@ class StudentBaseline(nn.Module):
         else:
             query = self.encode_query(token_ids, attention_mask)
 
+        image_features = None
         if self.zero_image_tokens:
             image_token_count = 1 if self.image_token_mode == "pooled" else self.image_position_tokens
             image_tokens = torch.zeros(
@@ -325,7 +361,9 @@ class StudentBaseline(nn.Module):
             )
         else:
             image_features = self.encode_image_features(images, query)
-            if self.image_token_mode == "pooled":
+            if self.fusion_mode == "prompt_patch_mlp":
+                image_tokens = None
+            elif self.image_token_mode == "pooled":
                 image = self.image_pool(image_features)
                 image_tokens = self.image_projection(torch.flatten(image, 1)).unsqueeze(1)
             else:
@@ -346,7 +384,15 @@ class StudentBaseline(nn.Module):
         if self.zero_query_token:
             query_token = torch.zeros_like(query_token)
 
-        if self.fusion_mode == "concat_mlp":
+        if self.fusion_mode == "prompt_patch_mlp":
+            if image_features is None:
+                image_features = torch.zeros(
+                    (images.shape[0], self.image_feature_channels, 14, 14),
+                    device=query.device,
+                    dtype=query.dtype,
+                )
+            fused = self.prompt_patch_mlp_features(image_features, query_token.squeeze(1))
+        elif self.fusion_mode == "concat_mlp":
             image = image_tokens.mean(dim=1)
             query = query_token.squeeze(1)
             fused = torch.cat([query, image], dim=1)

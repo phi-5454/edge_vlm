@@ -276,6 +276,36 @@ def test_student_baseline_concat_mlp_fusion_has_no_transformer_blocks() -> None:
     assert logits.shape == (1, 6)
 
 
+def test_student_baseline_prompt_patch_mlp_uses_image_query_map() -> None:
+    model = StudentBaseline(
+        embedding_rows=torch.randn(2, 16),
+        image_pretrained=False,
+        query_dim=16,
+        image_dim=16,
+        fusion_dim=16,
+        fusion_depth=4,
+        fusion_heads=4,
+        fusion_mlp_ratio=2,
+        image_backbone="mobilenet_v3_large",
+        image_feature_cutoff="auto",
+        fusion_mode="prompt_patch_mlp",
+        use_prompt_identity=False,
+        use_image_positional_embeddings=False,
+        num_outputs=6,
+    )
+    logits = model(
+        torch.tensor([[1, 2]]),
+        torch.tensor([[True, True]]),
+        torch.randn(1, 3, 224, 224),
+    )
+
+    assert isinstance(model.fusion, torch.nn.Identity)
+    assert isinstance(model.patch_mlp[0], torch.nn.Conv2d)
+    assert model.patch_mlp[0].in_channels == model.image_feature_channels + model.query_dim
+    assert model.classifier.in_features == 16 * 7 * 7
+    assert logits.shape == (1, 6)
+
+
 def test_alpha_one_does_not_require_teacher_targets() -> None:
     model = StudentBaseline(
         embedding_rows=torch.randn(2, 16),

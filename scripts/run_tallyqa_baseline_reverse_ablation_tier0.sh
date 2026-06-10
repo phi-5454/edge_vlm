@@ -511,6 +511,29 @@ run_large_soft_teacher \
   "model.use_prompt_identity=false" \
   "model.use_image_positional_embeddings=false"
 
+# 14p: same as 14, but use per-patch prompt concat plus 1x1 Conv MLP fusion.
+run_large_soft_teacher \
+  "14p" \
+  "tallyqa-tier0-14p-large-prompt-patch-mlp" \
+  "${TIER_FILE}" \
+  "prompt_patch_mlp" \
+  "model.image_film_at=null" \
+  "model.use_prompt_identity=false" \
+  "model.use_image_positional_embeddings=false"
+
+# 14u: same as 14, but unfreeze the MobileNet image encoder at 0.1x LR.
+run_large_soft_teacher \
+  "14u" \
+  "tallyqa-tier0-14u-large-predepthwise-film-mlp-unfrozen-image" \
+  "${TIER_FILE}" \
+  "film_mlp" \
+  "model.image_film_at='7,11'" \
+  "model.image_film_position=pre_depthwise" \
+  "model.use_prompt_identity=false" \
+  "model.use_image_positional_embeddings=false" \
+  "model.freeze_image_features=false" \
+  "optimizer.image_learning_rate_scale=0.1"
+
 # 15: same as 10, but unfreeze the MobileNet image encoder at the configured lower image LR.
 run_large_soft_teacher \
   "15" \
