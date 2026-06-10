@@ -7,7 +7,7 @@ TIER_1_FILE="${TIER_1_FILE:-${TIER_ROOT}/tier_1_acc_ge_0p60_n_ge_500/prompt_clas
 TIER_2_FILE="${TIER_2_FILE:-${TIER_ROOT}/tier_2_acc_ge_0p60/prompt_classes.txt}"
 TIER_3_FILE="${TIER_3_FILE:-${TIER_ROOT}/tier_3_acc_ge_0p55/prompt_classes.txt}"
 TIER_4_FILE="${TIER_4_FILE:-${TIER_ROOT}/tier_4_acc_ge_0p40/prompt_classes.txt}"
-TIER_FUSION_MODE="${TIER_FUSION_MODE:-transformer}"
+TIER_FUSION_MODE="${TIER_FUSION_MODE:-prompt_patch_mlp}"
 RUNS="${RUNS:-all}"
 DRY_RUN="${DRY_RUN:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:-20}"
@@ -152,7 +152,7 @@ run_selected() {
     if [[ "${run_spec}" == "${run_id}" || "${run_spec}" == "${run_id#0}" ]]; then
       return 0
     fi
-    if [[ "${run_spec}" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+    if [[ "${run_id}" =~ ^[0-9]+$ && "${run_spec}" =~ ^([0-9]+)-([0-9]+)$ ]]; then
       range_start=$((10#${BASH_REMATCH[1]}))
       range_end=$((10#${BASH_REMATCH[2]}))
       if (( 10#${run_id} >= range_start && 10#${run_id} <= range_end )); then
@@ -583,28 +583,47 @@ run_one "16" "tallyqa-tier0-16-small-transformer-unfrozen-image" \
   "optimizer.warmup_steps=1000" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
-# 17-20: same recipe as 10, but grow the prompt-class tier.
-# Set --tier-fusion-mode concat_mlp after run 14 if the MLP wins.
+# 17-20: 14pu winner recipe, but grow the prompt-class tier.
 run_large_soft_teacher \
   "17" \
   "tallyqa-tier1-17-large-${TIER_FUSION_MODE}-soft-teacher" \
   "${TIER_1_FILE}" \
-  "${TIER_FUSION_MODE}"
+  "${TIER_FUSION_MODE}" \
+  "model.image_film_at=null" \
+  "model.use_prompt_identity=false" \
+  "model.use_image_positional_embeddings=false" \
+  "model.freeze_image_features=false" \
+  "optimizer.image_learning_rate_scale=0.1"
 
 run_large_soft_teacher \
   "18" \
   "tallyqa-tier2-18-large-${TIER_FUSION_MODE}-soft-teacher" \
   "${TIER_2_FILE}" \
-  "${TIER_FUSION_MODE}"
+  "${TIER_FUSION_MODE}" \
+  "model.image_film_at=null" \
+  "model.use_prompt_identity=false" \
+  "model.use_image_positional_embeddings=false" \
+  "model.freeze_image_features=false" \
+  "optimizer.image_learning_rate_scale=0.1"
 
 run_large_soft_teacher \
   "19" \
   "tallyqa-tier3-19-large-${TIER_FUSION_MODE}-soft-teacher" \
   "${TIER_3_FILE}" \
-  "${TIER_FUSION_MODE}"
+  "${TIER_FUSION_MODE}" \
+  "model.image_film_at=null" \
+  "model.use_prompt_identity=false" \
+  "model.use_image_positional_embeddings=false" \
+  "model.freeze_image_features=false" \
+  "optimizer.image_learning_rate_scale=0.1"
 
 run_large_soft_teacher \
   "20" \
   "tallyqa-tier4-20-large-${TIER_FUSION_MODE}-soft-teacher" \
   "${TIER_4_FILE}" \
-  "${TIER_FUSION_MODE}"
+  "${TIER_FUSION_MODE}" \
+  "model.image_film_at=null" \
+  "model.use_prompt_identity=false" \
+  "model.use_image_positional_embeddings=false" \
+  "model.freeze_image_features=false" \
+  "optimizer.image_learning_rate_scale=0.1"
