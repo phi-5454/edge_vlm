@@ -668,9 +668,17 @@ def build_tflite_prior_model(
     fusion_dim = int(cfg.keras_model.fusion_dim)
     activation = str(cfg.keras_model.activation)
 
-    token_ids = tf.keras.Input(shape=(prompt_length,), dtype=tf.int32, name="token_ids")
+    batch_size = cfg.keras_model.get("batch_size", None)
+    batch_size = None if batch_size is None else int(batch_size)
+    token_ids = tf.keras.Input(
+        shape=(prompt_length,),
+        batch_size=batch_size,
+        dtype=tf.int32,
+        name="token_ids",
+    )
     images = tf.keras.Input(
         shape=(int(cfg.keras_model.image_size), int(cfg.keras_model.image_size), 3),
+        batch_size=batch_size,
         dtype=tf.float32,
         name="images",
     )
@@ -799,12 +807,61 @@ def add_prompt_identity(
     return tf.keras.layers.Add(name="prompt_identity_add")([query_token, identity])
 
 
+def apply_feature_film_2d(
+    features: tf.Tensor,
+    query: tf.Tensor,
+    channels: int,
+    name: str,
+) -> tf.Tensor:
+    scale = tf.keras.layers.Dense(
+        channels,
+        kernel_initializer="zeros",
+        bias_initializer="zeros",
+        name=f"{name}_scale",
+    )(query)
+    shift = tf.keras.layers.Dense(
+        channels,
+        kernel_initializer="zeros",
+        bias_initializer="zeros",
+        name=f"{name}_shift",
+    )(query)
+    scale = tf.keras.layers.Reshape((1, 1, channels), name=f"{name}_scale_reshape")(scale)
+    shift = tf.keras.layers.Reshape((1, 1, channels), name=f"{name}_shift_reshape")(shift)
+    delta = tf.keras.layers.Multiply(name=f"{name}_scale_mul")([features, scale])
+    return tf.keras.layers.Add(name=f"{name}_add")([features, delta, shift])
+
+
+def apply_feature_film_tokens(
+    tokens: tf.Tensor,
+    query: tf.Tensor,
+    channels: int,
+    name: str,
+) -> tf.Tensor:
+    scale = tf.keras.layers.Dense(
+        channels,
+        kernel_initializer="zeros",
+        bias_initializer="zeros",
+        name=f"{name}_scale",
+    )(query)
+    shift = tf.keras.layers.Dense(
+        channels,
+        kernel_initializer="zeros",
+        bias_initializer="zeros",
+        name=f"{name}_shift",
+    )(query)
+    scale = tf.keras.layers.Reshape((1, channels), name=f"{name}_scale_reshape")(scale)
+    shift = tf.keras.layers.Reshape((1, channels), name=f"{name}_shift_reshape")(shift)
+    delta = tf.keras.layers.Multiply(name=f"{name}_scale_mul")([tokens, scale])
+    return tf.keras.layers.Add(name=f"{name}_add")([tokens, delta, shift])
+
+
 def normformer_block(
     tokens: tf.Tensor,
     fusion_dim: int,
     heads: int,
     mlp_ratio: int,
     dropout: float,
+    activation: str,
     index: int,
 ) -> tf.Tensor:
     residual = tokens
@@ -821,10 +878,83 @@ def normformer_block(
 
     residual = tokens
     x = tf.keras.layers.LayerNormalization(epsilon=1e-5, name=f"fusion_{index}_mlp_norm")(tokens)
-    x = tf.keras.layers.Dense(fusion_dim * mlp_ratio, activation="gelu", name=f"fusion_{index}_mlp_up")(x)
+    x = tf.keras.layers.Dense(
+        fusion_dim * mlp_ratio,
+        activation=activation,
+        name=f"fusion_{index}_mlp_up",
+    )(x)
     if dropout > 0:
         x = tf.keras.layers.Dropout(dropout, name=f"fusion_{index}_mlp_dropout")(x)
     x = tf.keras.layers.Dense(fusion_dim, name=f"fusion_{index}_mlp_down")(x)
+    tokens = tf.keras.layers.Add(name=f"fusion_{index}_mlp_residual")([residual, x])
+    return tokens
+
+
+def static_normformer_block(
+    tokens: tf.Tensor,
+    token_count: int,
+    fusion_dim: int,
+    heads: int,
+    mlp_ratio: int,
+    dropout: float,
+    activation: str,
+    attention_normalization: str,
+    index: int,
+) -> tf.Tensor:
+    if fusion_dim % heads != 0:
+        raise ValueError("fusion_dim must be divisible by fusion_heads.")
+    key_dim = fusion_dim // heads
+
+    residual = tokens
+    x = tf.keras.layers.LayerNormalization(epsilon=1e-5, name=f"fusion_{index}_attn_norm")(tokens)
+    q = tf.keras.layers.Conv1D(fusion_dim, kernel_size=1, name=f"fusion_{index}_q")(x)
+    k = tf.keras.layers.Conv1D(fusion_dim, kernel_size=1, name=f"fusion_{index}_k")(x)
+    v = tf.keras.layers.Conv1D(fusion_dim, kernel_size=1, name=f"fusion_{index}_v")(x)
+    q = tf.keras.layers.Reshape((token_count, heads, key_dim), name=f"fusion_{index}_q_heads")(q)
+    k = tf.keras.layers.Reshape((token_count, heads, key_dim), name=f"fusion_{index}_k_heads")(k)
+    v = tf.keras.layers.Reshape((token_count, heads, key_dim), name=f"fusion_{index}_v_heads")(v)
+    q = tf.keras.layers.Permute((2, 1, 3), name=f"fusion_{index}_q_permute")(q)
+    k = tf.keras.layers.Permute((2, 1, 3), name=f"fusion_{index}_k_permute")(k)
+    v = tf.keras.layers.Permute((2, 1, 3), name=f"fusion_{index}_v_permute")(v)
+    scores = tf.keras.layers.Lambda(
+        lambda parts: tf.matmul(parts[0], parts[1], transpose_b=True),
+        name=f"fusion_{index}_attention_scores",
+    )([q, k])
+    scores = tf.keras.layers.Rescaling(1.0 / math.sqrt(key_dim), name=f"fusion_{index}_attention_scale")(
+        scores
+    )
+    if attention_normalization == "softmax":
+        weights = tf.keras.layers.Softmax(axis=-1, name=f"fusion_{index}_attention_softmax")(scores)
+    elif attention_normalization == "none":
+        weights = scores
+    else:
+        raise ValueError("attention_normalization must be one of {'softmax', 'none'}.")
+    context = tf.keras.layers.Lambda(
+        lambda parts: tf.matmul(parts[0], parts[1]),
+        name=f"fusion_{index}_attention_context",
+    )([weights, v])
+    context = tf.keras.layers.Permute((2, 1, 3), name=f"fusion_{index}_context_permute")(context)
+    context = tf.keras.layers.Reshape((token_count, fusion_dim), name=f"fusion_{index}_context_flat")(
+        context
+    )
+    x = tf.keras.layers.Conv1D(fusion_dim, kernel_size=1, name=f"fusion_{index}_attention_output")(
+        context
+    )
+    if dropout > 0:
+        x = tf.keras.layers.Dropout(dropout, name=f"fusion_{index}_attn_dropout")(x)
+    tokens = tf.keras.layers.Add(name=f"fusion_{index}_attn_residual")([residual, x])
+
+    residual = tokens
+    x = tf.keras.layers.LayerNormalization(epsilon=1e-5, name=f"fusion_{index}_mlp_norm")(tokens)
+    x = tf.keras.layers.Conv1D(
+        fusion_dim * mlp_ratio,
+        kernel_size=1,
+        activation=activation,
+        name=f"fusion_{index}_mlp_up",
+    )(x)
+    if dropout > 0:
+        x = tf.keras.layers.Dropout(dropout, name=f"fusion_{index}_mlp_dropout")(x)
+    x = tf.keras.layers.Conv1D(fusion_dim, kernel_size=1, name=f"fusion_{index}_mlp_down")(x)
     tokens = tf.keras.layers.Add(name=f"fusion_{index}_mlp_residual")([residual, x])
     return tokens
 
@@ -842,7 +972,11 @@ def build_tallyqa_current_student_model(
     fusion_depth = int(cfg.keras_model.get("fusion_depth", cfg.model.fusion_depth))
     mlp_ratio = int(cfg.keras_model.get("fusion_mlp_ratio", cfg.model.fusion_mlp_ratio))
     dropout = float(cfg.keras_model.get("dropout", cfg.model.dropout))
+    activation = str(cfg.keras_model.get("activation", "gelu"))
     fusion_mode = str(cfg.keras_model.get("fusion_mode", "normformer"))
+    image_film_at = cfg.keras_model.get("image_film_at", None)
+    attention_impl = str(cfg.keras_model.get("attention_impl", "keras"))
+    attention_normalization = str(cfg.keras_model.get("attention_normalization", "softmax"))
     use_prompt_identity = bool(cfg.keras_model.get("use_prompt_identity", cfg.model.use_prompt_identity))
     use_image_positional_embeddings = bool(
         cfg.keras_model.get(
@@ -851,9 +985,17 @@ def build_tallyqa_current_student_model(
         )
     )
 
-    token_ids = tf.keras.Input(shape=(prompt_length,), dtype=tf.int32, name="token_ids")
+    batch_size = cfg.keras_model.get("batch_size", None)
+    batch_size = None if batch_size is None else int(batch_size)
+    token_ids = tf.keras.Input(
+        shape=(prompt_length,),
+        batch_size=batch_size,
+        dtype=tf.int32,
+        name="token_ids",
+    )
     images = tf.keras.Input(
         shape=(int(cfg.keras_model.image_size), int(cfg.keras_model.image_size), 3),
+        batch_size=batch_size,
         dtype=tf.float32,
         name="images",
     )
@@ -865,11 +1007,18 @@ def build_tallyqa_current_student_model(
         output_dim=embedding_init.shape[1],
         embeddings_initializer=tf.keras.initializers.Constant(embedding_init),
         trainable=not bool(cfg.model.freeze_embeddings),
-        mask_zero=True,
+        mask_zero=bool(cfg.keras_model.get("mask_zero_prompt_embeddings", True)),
         name="compact_prompt_embedding",
     )(token_ids)
-    query = tf.keras.layers.GlobalAveragePooling1D(name="mean_prompt_embedding")(embedded)
-    query = tf.keras.layers.Dense(fusion_dim, activation="gelu", name="prompt_projection_dense")(query)
+    if bool(cfg.keras_model.get("static_single_prompt_token", False)):
+        query = tf.keras.layers.Lambda(lambda x: x[:, 0, :], name="first_prompt_embedding")(embedded)
+    else:
+        query = tf.keras.layers.GlobalAveragePooling1D(name="mean_prompt_embedding")(embedded)
+    query = tf.keras.layers.Dense(
+        fusion_dim,
+        activation=activation,
+        name="prompt_projection_dense",
+    )(query)
     query = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="prompt_projection_norm")(query)
     query_token = tf.keras.layers.Reshape((1, fusion_dim), name="prompt_token")(query)
     if use_prompt_identity:
@@ -885,6 +1034,18 @@ def build_tallyqa_current_student_model(
         activation=None,
         name="image_token_projection",
     )(image_features)
+    if image_film_at not in (None, "none", "null", False):
+        if str(image_film_at) not in {"image_tokens", "token_projection"}:
+            raise ValueError(
+                "keras_model.image_film_at currently supports only "
+                "{'image_tokens', 'token_projection', null}."
+            )
+        image_tokens = apply_feature_film_2d(
+            image_tokens,
+            query,
+            fusion_dim,
+            name="image_token_film",
+        )
     height = int(image_tokens.shape[1])
     width = int(image_tokens.shape[2])
     if height <= 0 or width <= 0:
@@ -903,20 +1064,71 @@ def build_tallyqa_current_student_model(
         image = tf.keras.layers.GlobalAveragePooling1D(name="image_token_mean")(image_tokens)
         query_flat = tf.keras.layers.Reshape((fusion_dim,), name="prompt_token_flat")(query_token)
         fused = tf.keras.layers.Concatenate(name="prompt_image_concat")([query_flat, image])
-        fused = tf.keras.layers.Dense(fusion_dim * mlp_ratio, activation="gelu", name="fusion_mlp_0")(fused)
+        fused = tf.keras.layers.Dense(
+            fusion_dim * mlp_ratio,
+            activation=activation,
+            name="fusion_mlp_0",
+        )(fused)
         if dropout > 0:
             fused = tf.keras.layers.Dropout(dropout, name="fusion_mlp_dropout")(fused)
-        fused = tf.keras.layers.Dense(fusion_dim, activation="gelu", name="fusion_mlp_1")(fused)
+        fused = tf.keras.layers.Dense(
+            fusion_dim,
+            activation=activation,
+            name="fusion_mlp_1",
+        )(fused)
+    elif fusion_mode == "film_mlp":
+        image = tf.keras.layers.GlobalAveragePooling1D(name="image_token_mean")(image_tokens)
+        fused = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="fusion_mlp_input_norm")(image)
+        fused = tf.keras.layers.Dense(
+            fusion_dim * mlp_ratio,
+            activation=activation,
+            name="fusion_mlp_0",
+        )(fused)
+        if dropout > 0:
+            fused = tf.keras.layers.Dropout(dropout, name="fusion_mlp_dropout")(fused)
+        fused = tf.keras.layers.Dense(
+            fusion_dim,
+            activation=activation,
+            name="fusion_mlp_1",
+        )(fused)
+        fused = tf.keras.layers.Dense(
+            fusion_dim,
+            activation=activation,
+            name="fusion_mlp_2",
+        )(fused)
     elif fusion_mode == "normformer":
         tokens = tf.keras.layers.Concatenate(axis=1, name="prompt_image_tokens")(
             [query_token, image_tokens]
         )
         for index in range(fusion_depth):
-            tokens = normformer_block(tokens, fusion_dim, heads, mlp_ratio, dropout, index)
+            if attention_impl == "keras":
+                tokens = normformer_block(
+                    tokens,
+                    fusion_dim,
+                    heads,
+                    mlp_ratio,
+                    dropout,
+                    activation,
+                    index,
+                )
+            elif attention_impl == "static":
+                tokens = static_normformer_block(
+                    tokens,
+                    token_count + 1,
+                    fusion_dim,
+                    heads,
+                    mlp_ratio,
+                    dropout,
+                    activation,
+                    attention_normalization,
+                    index,
+                )
+            else:
+                raise ValueError("keras_model.attention_impl must be one of {'keras', 'static'}.")
         fused = tf.keras.layers.GlobalAveragePooling1D(name="fusion_token_mean")(tokens)
         fused = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="fusion_output_norm")(fused)
     else:
-        raise ValueError("keras_model.fusion_mode must be one of {'normformer', 'mlp'}.")
+        raise ValueError("keras_model.fusion_mode must be one of {'normformer', 'mlp', 'film_mlp'}.")
 
     logits = tf.keras.layers.Dense(num_classes, name="logits")(fused)
     return tf.keras.Model(
@@ -1119,7 +1331,11 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
         {
             "component": "MobileViTFusionBlock / nn.TransformerEncoderLayer",
             "reason": "Dynamic multi-head attention and token concat are not Edge-TPU-friendly.",
-            "keras_prior": "Replaced with prompt-image concat plus Dense fusion.",
+            "keras_prior": (
+                "Use keras_model.fusion_mode=film_mlp for prompt-FiLM conditioning "
+                "plus image-only Dense fusion, or fusion_mode=mlp for the older "
+                "prompt-image concat baseline."
+            ),
         },
         {
             "component": "LayerNorm",
@@ -1134,7 +1350,10 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
         {
             "component": "spatial token flatten + positional embeddings",
             "reason": "Creates sequence-style tensor operations instead of conv/pool patterns.",
-            "keras_prior": "Replaced with GlobalAveragePooling2D image branch.",
+            "keras_prior": (
+                "film_mlp keeps the projected image token map, applies prompt FiLM, "
+                "then mean-pools visual tokens before the classifier."
+            ),
         },
         {
             "component": "runtime prompt token embedding lookup",
@@ -1161,6 +1380,7 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
             "BatchNormalization folded at conversion",
             "ReLU",
             "GlobalAveragePooling2D",
+            "prompt-conditioned Add/Mul FiLM on image-token maps",
             "Dense",
             "Concatenate",
         ],

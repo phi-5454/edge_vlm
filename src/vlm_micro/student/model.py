@@ -100,6 +100,7 @@ class StudentBaseline(nn.Module):
         fusion_mode: str = "transformer",
         freeze_image_features: bool = False,
         image_film_at: int | str | None = None,
+        image_film_position: str = "post_block",
         use_prompt_identity: bool = True,
         use_image_positional_embeddings: bool = True,
         image_position_tokens: int = 196,
@@ -114,8 +115,10 @@ class StudentBaseline(nn.Module):
             raise ValueError("query_dim and image_dim must equal fusion_dim for token fusion.")
         if image_token_mode not in {"spatial", "pooled"}:
             raise ValueError("image_token_mode must be 'spatial' or 'pooled'.")
-        if fusion_mode not in {"transformer", "concat_mlp"}:
-            raise ValueError("fusion_mode must be 'transformer' or 'concat_mlp'.")
+        if fusion_mode not in {"transformer", "concat_mlp", "film_mlp"}:
+            raise ValueError("fusion_mode must be one of {'transformer', 'concat_mlp', 'film_mlp'}.")
+        if image_film_position not in {"post_block", "pre_depthwise"}:
+            raise ValueError("image_film_position must be one of {'post_block', 'pre_depthwise'}.")
         self.num_outputs = num_outputs
         self.query_dim = query_dim
         self.fusion_dim = fusion_dim
@@ -147,7 +150,9 @@ class StudentBaseline(nn.Module):
         self.image_feature_cutoff = resolved_cutoff
         self.image_token_mode = image_token_mode
         self.fusion_mode = fusion_mode
-        self.image_film_at = self._resolve_image_film_at(image_film_at)
+        self.image_film_at = image_film_at
+        self.image_film_indices = self._resolve_image_film_at(image_film_at)
+        self.image_film_position = image_film_position
         self.use_prompt_identity = use_prompt_identity
         self.use_image_positional_embeddings = use_image_positional_embeddings
         self.image_position_tokens = image_position_tokens
@@ -163,9 +168,9 @@ class StudentBaseline(nn.Module):
                 parameter.requires_grad = False
         self.image_pool = backbone.avgpool
         image_feature_channels = self._image_feature_channels(image_backbone, resolved_cutoff)
-        if self.image_film_at:
+        if self.image_film_indices:
             film_layers: dict[str, FeatureFiLM] = {}
-            for feature_index in self.image_film_at:
+            for feature_index in self.image_film_indices:
                 if resolved_cutoff is not None and feature_index >= resolved_cutoff:
                     raise ValueError(
                         f"image_film_at={feature_index} must be before "
@@ -174,10 +179,19 @@ class StudentBaseline(nn.Module):
                 film_channels = self._image_feature_channels_after_index(
                     image_backbone,
                     feature_index,
+                ) if image_film_position == "post_block" else self._image_feature_pre_depthwise_channels(
+                    image_backbone,
+                    feature_index,
                 )
                 film_layers[str(feature_index)] = FeatureFiLM(query_dim, film_channels)
-            self.image_film = nn.ModuleDict(film_layers)
+            self.image_film_layers = nn.ModuleDict(film_layers)
+            self.image_film = (
+                next(iter(self.image_film_layers.values()))
+                if len(self.image_film_layers) == 1
+                else self.image_film_layers
+            )
         else:
+            self.image_film_layers = None
             self.image_film = None
         self.image_projection = nn.Sequential(
             nn.Linear(image_feature_channels, image_dim),
@@ -205,12 +219,25 @@ class StudentBaseline(nn.Module):
                 nn.LayerNorm(fusion_dim),
                 nn.Linear(fusion_dim, num_outputs),
             )
+        elif fusion_mode == "concat_mlp":
+            self.fusion = nn.Identity()
+            self.classifier = nn.Sequential(
+                nn.Linear(fusion_dim * 2, fusion_dim * fusion_mlp_ratio),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(fusion_dim * fusion_mlp_ratio, fusion_dim),
+                nn.GELU(),
+                nn.Linear(fusion_dim, num_outputs),
+            )
         else:
             self.fusion = nn.Identity()
             self.classifier = nn.Sequential(
-                nn.Linear(fusion_dim * 2, fusion_dim),
+                nn.LayerNorm(fusion_dim),
+                nn.Linear(fusion_dim, fusion_dim * fusion_mlp_ratio),
                 nn.GELU(),
                 nn.Dropout(dropout),
+                nn.Linear(fusion_dim * fusion_mlp_ratio, fusion_dim),
+                nn.GELU(),
                 nn.Linear(fusion_dim, num_outputs),
             )
 
@@ -229,16 +256,50 @@ class StudentBaseline(nn.Module):
         images: torch.Tensor,
         query: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if self.image_film is None:
+        if self.image_film_layers is None:
             return self.image_features(images)
         if query is None:
             raise ValueError("query is required when image FiLM conditioning is enabled.")
         features = images
         for index, block in enumerate(self.image_features):
-            features = block(features)
-            if str(index) in self.image_film:
-                features = self.image_film[str(index)](features, query)
+            key = str(index)
+            film = self.image_film_layers[key] if key in self.image_film_layers else None
+            if film is not None and self.image_film_position == "pre_depthwise":
+                features = self._forward_block_with_pre_depthwise_film(block, features, query, film)
+            else:
+                features = block(features)
+            if film is not None and self.image_film_position == "post_block":
+                features = film(features, query)
         return features
+
+    @staticmethod
+    def _forward_block_with_pre_depthwise_film(
+        block: nn.Module,
+        features: torch.Tensor,
+        query: torch.Tensor,
+        film: FeatureFiLM,
+    ) -> torch.Tensor:
+        if not hasattr(block, "block") or not isinstance(block.block, nn.Sequential):
+            return block(film(features, query))
+
+        residual = features
+        layers = list(block.block.children())
+        if not layers:
+            return block(features)
+
+        first_conv = layers[0][0] if isinstance(layers[0], nn.Sequential) and layers[0] else None
+        if isinstance(first_conv, nn.Conv2d) and first_conv.groups == first_conv.in_channels:
+            x = film(features, query)
+            start_index = 0
+        else:
+            x = layers[0](features)
+            x = film(x, query)
+            start_index = 1
+        for layer in layers[start_index:]:
+            x = layer(x)
+        if getattr(block, "use_res_connect", False):
+            x = residual + x
+        return x
 
     def forward(
         self,
@@ -289,6 +350,8 @@ class StudentBaseline(nn.Module):
             image = image_tokens.mean(dim=1)
             query = query_token.squeeze(1)
             fused = torch.cat([query, image], dim=1)
+        elif self.fusion_mode == "film_mlp":
+            fused = image_tokens.mean(dim=1)
         else:
             tokens = torch.cat([query_token, image_tokens], dim=1)
             fused = self.fusion(tokens).mean(dim=1)
@@ -420,6 +483,48 @@ class StudentBaseline(nn.Module):
             )
         return channels[image_backbone][feature_index]
 
+    @staticmethod
+    def _image_feature_pre_depthwise_channels(image_backbone: str, feature_index: int) -> int:
+        channels = {
+            "mobilenet_v3_large": {
+                1: 16,
+                2: 64,
+                3: 72,
+                4: 72,
+                5: 120,
+                6: 120,
+                7: 240,
+                8: 200,
+                9: 184,
+                10: 184,
+                11: 480,
+                12: 672,
+                13: 672,
+                14: 960,
+                15: 960,
+            },
+            "mobilenet_v3_small": {
+                1: 16,
+                2: 72,
+                3: 88,
+                4: 96,
+                5: 240,
+                6: 240,
+                7: 120,
+                8: 144,
+                9: 288,
+                10: 576,
+                11: 576,
+            },
+        }
+        if feature_index not in channels[image_backbone]:
+            supported = ", ".join(str(value) for value in channels[image_backbone])
+            raise ValueError(
+                f"Unsupported {image_backbone} pre-depthwise image_film_at={feature_index}. "
+                f"Supported feature indices: {supported}."
+            )
+        return channels[image_backbone][feature_index]
+
 
 def parameter_counts(model: nn.Module) -> dict[str, int]:
     return {
@@ -438,6 +543,8 @@ def architecture_report(model: nn.Module) -> dict[str, Any]:
         "image_token_mode": getattr(model, "image_token_mode", None),
         "fusion_mode": getattr(model, "fusion_mode", None),
         "image_film_at": getattr(model, "image_film_at", None),
+        "image_film_indices": getattr(model, "image_film_indices", None),
+        "image_film_position": getattr(model, "image_film_position", None),
         "use_prompt_identity": getattr(model, "use_prompt_identity", None),
         "use_image_positional_embeddings": getattr(
             model,

@@ -15,6 +15,7 @@ model:
   image_backbone: mobilenet_v3_large
   image_feature_cutoff: auto
   image_film_at: null
+  image_film_position: post_block
   image_token_mode: spatial
   fusion_mode: transformer
   use_prompt_identity: true

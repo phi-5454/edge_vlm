@@ -151,6 +151,7 @@ run_one() {
     "keras_model.fusion_depth=${FUSION_DEPTH}" \
     "keras_model.fusion_heads=${FUSION_HEADS}" \
     "keras_model.fusion_mlp_ratio=${FUSION_MLP_RATIO}" \
+    "keras_model.image_film_at=null" \
     "keras_model.dropout=0.1" \
     "keras_model.use_prompt_identity=true" \
     "keras_model.use_image_positional_embeddings=true" \
@@ -176,4 +177,8 @@ run_one() {
 echo "Selected RUNS=${RUNS}"
 
 run_one "mlp" "tallyqa-keras-tier0-current-mlp-float" "mlp"
+run_one "film_mlp" "tallyqa-keras-tier0-current-film-mlp-float" "film_mlp" \
+  "keras_model.image_film_at=image_tokens" \
+  "keras_model.use_prompt_identity=false" \
+  "keras_model.use_image_positional_embeddings=false"
 run_one "normformer" "tallyqa-keras-tier0-current-normformer-float" "normformer"

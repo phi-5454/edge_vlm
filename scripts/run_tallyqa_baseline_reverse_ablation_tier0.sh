@@ -500,35 +500,76 @@ run_one "13" "tallyqa-tier0-13-large-film-28-last-14x14x80-soft-teacher" \
   "optimizer.warmup_steps=1000" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
-# 14: same as 10, but replace transformer/NormFormer-style fusion with concat MLP fusion.
+# 14: same as 10, but replace token fusion with prompt-FiLM image-only MLP fusion.
 run_large_soft_teacher \
   "14" \
-  "tallyqa-tier0-14-large-backbone-mlp-fusion" \
+  "tallyqa-tier0-14-large-predepthwise-film-mlp" \
   "${TIER_FILE}" \
-  "concat_mlp"
+  "film_mlp" \
+  "model.image_film_at='7,11'" \
+  "model.image_film_position=pre_depthwise" \
+  "model.use_prompt_identity=false" \
+  "model.use_image_positional_embeddings=false"
 
-# 15-18: same recipe as 10, but grow the prompt-class tier.
-# Set --tier-fusion-mode concat_mlp after run 14 if the MLP wins.
+# 15: same as 10, but unfreeze the MobileNet image encoder at the configured lower image LR.
 run_large_soft_teacher \
   "15" \
-  "tallyqa-tier1-15-large-${TIER_FUSION_MODE}-soft-teacher" \
+  "tallyqa-tier0-15-large-transformer-unfrozen-image" \
+  "${TIER_FILE}" \
+  "transformer" \
+  "model.freeze_image_features=false" \
+  "optimizer.image_learning_rate_scale=0.1"
+
+# 16: same as 08, but unfreeze the MobileNetV3-small image encoder at 0.1x LR.
+run_one "16" "tallyqa-tier0-16-small-transformer-unfrozen-image" \
+  "data.require_teacher_cache=true" \
+  "paths.teacher_cache=${TEACHER_CACHE}" \
+  "data.teacher_probability_temperature=1.0" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.0" \
+  "data.prompt_class_sampling_end_temperature=0.25" \
+  "data.prompt_class_sampling_decay_steps=null" \
+  "data.prompt_class_sampling_ramp_start_step=2000" \
+  "data.train_epoch_size=null" \
+  "data.curriculum_schedule=null" \
+  "trainer.reload_dataloaders_every_n_epochs=1" \
+  "distillation.alpha=1.0" \
+  "distillation.beta=0.25" \
+  "distillation.target_distribution=local_soft" \
+  "distillation.local_soft_sigma=0.5" \
+  "distillation.local_soft_radius=1" \
+  "model.dropout=0.1" \
+  "model.freeze_image_features=false" \
+  "optimizer.image_learning_rate_scale=0.1" \
+  "optimizer.weight_decay=0.01" \
+  "optimizer.lr_schedule=warmup_plateau_decay" \
+  "optimizer.lr_decay_start_step=1500" \
+  "optimizer.lr_final_learning_rate=0.0001" \
+  "optimizer.warmup_steps=1000" \
+  "optimizer.warmup_start_learning_rate=0.0001"
+
+# 17-20: same recipe as 10, but grow the prompt-class tier.
+# Set --tier-fusion-mode concat_mlp after run 14 if the MLP wins.
+run_large_soft_teacher \
+  "17" \
+  "tallyqa-tier1-17-large-${TIER_FUSION_MODE}-soft-teacher" \
   "${TIER_1_FILE}" \
   "${TIER_FUSION_MODE}"
 
 run_large_soft_teacher \
-  "16" \
-  "tallyqa-tier2-16-large-${TIER_FUSION_MODE}-soft-teacher" \
+  "18" \
+  "tallyqa-tier2-18-large-${TIER_FUSION_MODE}-soft-teacher" \
   "${TIER_2_FILE}" \
   "${TIER_FUSION_MODE}"
 
 run_large_soft_teacher \
-  "17" \
-  "tallyqa-tier3-17-large-${TIER_FUSION_MODE}-soft-teacher" \
+  "19" \
+  "tallyqa-tier3-19-large-${TIER_FUSION_MODE}-soft-teacher" \
   "${TIER_3_FILE}" \
   "${TIER_FUSION_MODE}"
 
 run_large_soft_teacher \
-  "18" \
-  "tallyqa-tier4-18-large-${TIER_FUSION_MODE}-soft-teacher" \
+  "20" \
+  "tallyqa-tier4-20-large-${TIER_FUSION_MODE}-soft-teacher" \
   "${TIER_4_FILE}" \
   "${TIER_FUSION_MODE}"

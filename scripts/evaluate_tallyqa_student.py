@@ -166,6 +166,7 @@ def build_module(cfg: DictConfig, data: TallyQAStudentDataModule) -> TallyQAStud
         image_backbone=str(cfg.model.image_backbone),
         image_feature_cutoff=cfg.model.get("image_feature_cutoff", "auto"),
         image_film_at=cfg.model.get("image_film_at", None),
+        image_film_position=str(cfg.model.get("image_film_position", "post_block")),
         image_token_mode=str(cfg.model.get("image_token_mode", "spatial")),
         fusion_mode=str(cfg.model.get("fusion_mode", "transformer")),
         use_prompt_identity=bool(cfg.model.get("use_prompt_identity", True)),
