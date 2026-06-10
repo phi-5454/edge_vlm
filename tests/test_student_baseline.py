@@ -301,8 +301,11 @@ def test_student_baseline_prompt_patch_mlp_uses_image_query_map() -> None:
 
     assert isinstance(model.fusion, torch.nn.Identity)
     assert isinstance(model.patch_mlp[0], torch.nn.Conv2d)
+    assert isinstance(model.patch_mlp[3], torch.nn.Conv2d)
     assert model.patch_mlp[0].in_channels == model.image_feature_channels + model.query_dim
-    assert model.classifier.in_features == 16 * 7 * 7
+    assert model.patch_mlp[3].kernel_size == (3, 3)
+    assert model.patch_mlp[3].out_channels == 128
+    assert model.classifier.in_features == 128
     assert logits.shape == (1, 6)
 
 

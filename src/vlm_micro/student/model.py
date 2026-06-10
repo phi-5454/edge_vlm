@@ -236,15 +236,16 @@ class StudentBaseline(nn.Module):
         elif fusion_mode == "prompt_patch_mlp":
             self.fusion = nn.Identity()
             patch_hidden_dim = fusion_dim * fusion_mlp_ratio
+            patch_output_dim = 128
             self.patch_mlp = nn.Sequential(
                 nn.Conv2d(image_feature_channels + query_dim, patch_hidden_dim, kernel_size=1),
                 nn.ReLU(inplace=True),
                 nn.Dropout2d(dropout),
-                nn.Conv2d(patch_hidden_dim, fusion_dim, kernel_size=1),
+                nn.Conv2d(patch_hidden_dim, patch_output_dim, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
-                nn.AvgPool2d(kernel_size=2, stride=2),
+                nn.AdaptiveAvgPool2d((1, 1)),
             )
-            self.classifier = nn.Linear(fusion_dim * 7 * 7, num_outputs)
+            self.classifier = nn.Linear(patch_output_dim, num_outputs)
         else:
             self.fusion = nn.Identity()
             self.classifier = nn.Sequential(
