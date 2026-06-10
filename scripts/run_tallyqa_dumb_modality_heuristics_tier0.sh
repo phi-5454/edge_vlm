@@ -15,7 +15,6 @@ CHECK_VAL_EVERY_N_EPOCH="${CHECK_VAL_EVERY_N_EPOCH:-1}"
 TEACHER_CACHE="${TEACHER_CACHE:-artifacts/teacher_cache/composite_ece_temp_smol1p1_frcnn2p2_beta12p968_tallyqa_target_mobilenet224.jsonl}"
 TRAIN_EPOCH_SIZE="${TRAIN_EPOCH_SIZE:-null}"
 SAMPLING_CURRICULUM="${SAMPLING_CURRICULUM:-}"
-SAMPLING_CURRICULUM_STEPS="${SAMPLING_CURRICULUM_STEPS:-1500}"
 USE_SAMPLING_CURRICULUM="${USE_SAMPLING_CURRICULUM:-false}"
 _POSITIONAL_INDEX=0
 
@@ -86,10 +85,6 @@ while [[ $# -gt 0 ]]; do
       USE_SAMPLING_CURRICULUM=true
       shift 2
       ;;
-    --sampling-curriculum-steps)
-      SAMPLING_CURRICULUM_STEPS="$2"
-      shift 2
-      ;;
     -*)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -119,20 +114,16 @@ make_sampling_curriculum() {
     return 0
   fi
   local schedule_path
-  local first_epoch_size
   schedule_path="$(mktemp /tmp/tallyqa_sampling_curriculum.XXXXXX.json)"
-  first_epoch_size=$((SAMPLING_CURRICULUM_STEPS * BATCH_SIZE))
   printf '[\n' > "${schedule_path}"
   printf '  {\n' >> "${schedule_path}"
   printf '    "start_epoch": 1,\n' >> "${schedule_path}"
   printf '    "train_sampling": "prompt_class_tempered",\n' >> "${schedule_path}"
-  printf '    "prompt_class_sampling_temperature": 0.5,\n' >> "${schedule_path}"
-  printf '    "train_epoch_size": %s\n' "${first_epoch_size}" >> "${schedule_path}"
+  printf '    "prompt_class_sampling_temperature": 0.5\n' >> "${schedule_path}"
   printf '  },\n' >> "${schedule_path}"
   printf '  {\n' >> "${schedule_path}"
   printf '    "start_epoch": 2,\n' >> "${schedule_path}"
-  printf '    "train_sampling": "natural",\n' >> "${schedule_path}"
-  printf '    "train_epoch_size": null\n' >> "${schedule_path}"
+  printf '    "train_sampling": "natural"\n' >> "${schedule_path}"
   printf '  }\n' >> "${schedule_path}"
   printf ']\n' >> "${schedule_path}"
   echo "${schedule_path}"

@@ -803,8 +803,6 @@ class TallyQAStudentDataModule(L.LightningDataModule):
         return float(self.hparams.prompt_class_sampling_temperature)
 
     def _train_epoch_size(self, dataset: TallyQAStudentDataset) -> int:
-        if self._curriculum_stage is not None and self._curriculum_stage.get("train_epoch_size") is not None:
-            return int(self._curriculum_stage["train_epoch_size"])
         if self.hparams.train_epoch_size is not None:
             return int(self.hparams.train_epoch_size)
         return len(dataset)

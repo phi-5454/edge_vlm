@@ -14,7 +14,6 @@ PATIENCE="${PATIENCE:-5}"
 CHECK_VAL_EVERY_N_EPOCH="${CHECK_VAL_EVERY_N_EPOCH:-1}"
 TEACHER_CACHE="${TEACHER_CACHE:-artifacts/teacher_cache/composite_ece_temp_smol1p1_frcnn2p2_beta12p968_tallyqa_target_mobilenet224.jsonl}"
 SAMPLING_CURRICULUM="${SAMPLING_CURRICULUM:-}"
-SAMPLING_CURRICULUM_STEPS="${SAMPLING_CURRICULUM_STEPS:-1500}"
 _POSITIONAL_INDEX=0
 
 while [[ $# -gt 0 ]]; do
@@ -69,10 +68,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sampling-curriculum)
       SAMPLING_CURRICULUM="$2"
-      shift 2
-      ;;
-    --sampling-curriculum-steps)
-      SAMPLING_CURRICULUM_STEPS="$2"
       shift 2
       ;;
     -*)
@@ -136,20 +131,16 @@ make_sampling_curriculum() {
     return 0
   fi
   local schedule_path
-  local first_epoch_size
   schedule_path="$(mktemp /tmp/tallyqa_sampling_curriculum.XXXXXX.json)"
-  first_epoch_size=$((SAMPLING_CURRICULUM_STEPS * BATCH_SIZE))
   printf '[\n' > "${schedule_path}"
   printf '  {\n' >> "${schedule_path}"
   printf '    "start_epoch": 1,\n' >> "${schedule_path}"
   printf '    "train_sampling": "prompt_class_tempered",\n' >> "${schedule_path}"
-  printf '    "prompt_class_sampling_temperature": 0.5,\n' >> "${schedule_path}"
-  printf '    "train_epoch_size": %s\n' "${first_epoch_size}" >> "${schedule_path}"
+  printf '    "prompt_class_sampling_temperature": 0.5\n' >> "${schedule_path}"
   printf '  },\n' >> "${schedule_path}"
   printf '  {\n' >> "${schedule_path}"
   printf '    "start_epoch": 2,\n' >> "${schedule_path}"
-  printf '    "train_sampling": "natural",\n' >> "${schedule_path}"
-  printf '    "train_epoch_size": null\n' >> "${schedule_path}"
+  printf '    "train_sampling": "natural"\n' >> "${schedule_path}"
   printf '  }\n' >> "${schedule_path}"
   printf ']\n' >> "${schedule_path}"
   echo "${schedule_path}"
@@ -290,7 +281,7 @@ run_one "05" "tallyqa-tier0-05-plus-sqrt-prompt-sampling" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
-  "data.train_epoch_size=43626" \
+  "data.train_epoch_size=null" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.0" \
   "distillation.target_distribution=hard" \
@@ -303,14 +294,14 @@ run_one "05" "tallyqa-tier0-05-plus-sqrt-prompt-sampling" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 06: replace fixed sqrt sampling with a short sampling curriculum.
-# The checked-in schedule is epoch-based: sqrt sampling for epoch 1, then natural sampling.
-# With Tier 0 and BATCH_SIZE=32, epoch 1 is roughly 1,500 optimizer steps.
+# The generated schedule is epoch-based: sqrt prompt sampling for epoch 1,
+# then natural sampling. Epoch size follows the active filtered dataset size.
 run_one "06" "tallyqa-tier0-06-plus-sampling-curriculum" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
-  "data.train_epoch_size=43626" \
+  "data.train_epoch_size=null" \
   "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
@@ -330,7 +321,7 @@ run_one "07" "tallyqa-tier0-07-plus-local-soft-targets" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
-  "data.train_epoch_size=43626" \
+  "data.train_epoch_size=null" \
   "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
@@ -353,7 +344,7 @@ run_one "08" "tallyqa-tier0-08-plus-composite-teacher-kl" \
   "data.teacher_probability_temperature=1.0" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
-  "data.train_epoch_size=43626" \
+  "data.train_epoch_size=null" \
   "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
@@ -376,7 +367,7 @@ run_one "09" "tallyqa-tier0-09-large-backbone-full-baseline" \
   "data.teacher_probability_temperature=1.0" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
-  "data.train_epoch_size=43626" \
+  "data.train_epoch_size=null" \
   "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
