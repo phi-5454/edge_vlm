@@ -378,3 +378,27 @@ run_one "10" "tallyqa-tier0-10-large-backbone-full-baseline" \
   "optimizer.lr_final_learning_rate=0.0001" \
   "optimizer.warmup_steps=1000" \
   "optimizer.warmup_start_learning_rate=0.0001"
+
+# 11: same as 06, but ramp teacher KL from 0 after step 2000 to 0.25 at train end.
+run_one "11" "tallyqa-tier0-11-composite-teacher-kl-ramp-after-2000" \
+  "data.require_teacher_cache=true" \
+  "paths.teacher_cache=${TEACHER_CACHE}" \
+  "data.teacher_probability_temperature=1.0" \
+  "data.train_sampling=prompt_class_tempered" \
+  "data.prompt_class_sampling_temperature=0.5" \
+  "data.prompt_class_sampling_end_temperature=0.0" \
+  "data.prompt_class_sampling_decay_steps=${SAMPLING_DECAY_STEPS}" \
+  "data.train_epoch_size=null" \
+  "data.curriculum_schedule=null" \
+  "trainer.reload_dataloaders_every_n_epochs=1" \
+  "distillation.alpha=1.0" \
+  "distillation.beta=0.25" \
+  "distillation.beta_ramp_start_step=2000" \
+  "distillation.target_distribution=hard" \
+  "model.dropout=0.1" \
+  "optimizer.weight_decay=0.01" \
+  "optimizer.lr_schedule=warmup_plateau_decay" \
+  "optimizer.lr_decay_start_step=1500" \
+  "optimizer.lr_final_learning_rate=0.0001" \
+  "optimizer.warmup_steps=1000" \
+  "optimizer.warmup_start_learning_rate=0.0001"

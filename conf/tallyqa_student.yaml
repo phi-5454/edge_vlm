@@ -36,6 +36,7 @@ distillation:
   # Loss = alpha * CE(student, hard count class) + beta * T^2 * KL(teacher || student)
   alpha: 1.0
   beta: 0.5
+  beta_ramp_start_step: null
   temperature: 2.0
   class_weights: null
   class_weight_mode: balanced

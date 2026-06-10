@@ -238,6 +238,11 @@ def main(cfg: DictConfig) -> None:
         model=model,
         alpha=float(cfg.distillation.alpha),
         beta=beta,
+        beta_ramp_start_step=(
+            int(cfg.distillation.beta_ramp_start_step)
+            if cfg.distillation.get("beta_ramp_start_step", None) is not None
+            else None
+        ),
         learning_rate=float(cfg.optimizer.learning_rate),
         warmup_start_learning_rate=float(cfg.optimizer.warmup_start_learning_rate),
         warmup_steps=int(cfg.optimizer.warmup_steps),

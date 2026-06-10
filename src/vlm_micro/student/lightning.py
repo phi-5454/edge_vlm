@@ -348,6 +348,7 @@ class TallyQAStudentModule(L.LightningModule):
         beta: float,
         learning_rate: float,
         weight_decay: float,
+        beta_ramp_start_step: int | None = None,
         warmup_start_learning_rate: float | None = None,
         warmup_steps: int = 0,
         lr_schedule: str = "warmup",
@@ -369,6 +370,8 @@ class TallyQAStudentModule(L.LightningModule):
             raise ValueError("alpha must be non-negative.")
         if beta < 0:
             raise ValueError("beta must be non-negative.")
+        if beta_ramp_start_step is not None and beta_ramp_start_step < 0:
+            raise ValueError("beta_ramp_start_step must be non-negative when provided.")
         if alpha == 0 and beta == 0:
             raise ValueError("At least one of alpha or beta must be positive.")
         if temperature <= 0:
@@ -471,6 +474,18 @@ class TallyQAStudentModule(L.LightningModule):
         targets = targets / targets.sum(dim=1, keepdim=True).clamp_min(1e-8)
         return targets
 
+    def _effective_beta(self) -> float:
+        if self.hparams.beta_ramp_start_step is None:
+            return float(self.hparams.beta)
+        trainer = getattr(self, "trainer", None)
+        current_step = int(getattr(trainer, "global_step", 0))
+        start_step = int(self.hparams.beta_ramp_start_step)
+        if current_step <= start_step:
+            return 0.0
+        total_steps = max(start_step + 1, int(getattr(trainer, "estimated_stepping_batches", start_step + 1)))
+        progress = min(1.0, (current_step - start_step) / max(1, total_steps - start_step))
+        return float(self.hparams.beta) * progress
+
     def _shared_step(self, batch: dict[str, torch.Tensor], stage: str) -> torch.Tensor:
         logits = self(batch["token_ids"], batch["attention_mask"], batch["images"])
         target_distribution = self._target_distribution(batch["labels"], logits.shape[1])
@@ -484,13 +499,22 @@ class TallyQAStudentModule(L.LightningModule):
             hard_loss = (per_example_hard_loss * weights).mean()
         else:
             hard_loss = unweighted_hard_loss
-        if self.hparams.beta > 0:
+        beta = self._effective_beta()
+        if beta > 0:
             distill_loss = self._distill_loss(logits, batch["teacher_probs"], batch["labels"])
         else:
             distill_loss = torch.zeros((), device=logits.device)
-        loss = self.hparams.alpha * hard_loss + self.hparams.beta * distill_loss
+        loss = self.hparams.alpha * hard_loss + beta * distill_loss
         batch_size = batch["labels"].shape[0]
         self._log_learning_rate(stage, batch_size)
+        if stage == "train":
+            self.log(
+                "train/beta",
+                beta,
+                on_step=True,
+                on_epoch=False,
+                batch_size=batch_size,
+            )
         self.log(
             f"{stage}/loss",
             loss,
