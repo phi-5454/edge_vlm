@@ -2,6 +2,8 @@
 set -euo pipefail
 
 TIER_FILE="${1:-artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_0_acc_ge_0p60_n_ge_1000/prompt_classes.txt}"
+RUNS="${RUNS:-${2:-all}}"
+DRY_RUN="${DRY_RUN:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:-20}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 PATIENCE="${PATIENCE:-5}"
@@ -41,9 +43,47 @@ COMMON_OVERRIDES=(
   "wandb.watch.log_freq=100"
 )
 
+run_selected() {
+  local run_id="$1"
+  local run_spec
+  local range_start
+  local range_end
+  if [[ "${RUNS}" == "all" || "${RUNS}" == "*" ]]; then
+    return 0
+  fi
+  IFS=',' read -ra run_specs <<< "${RUNS}"
+  for run_spec in "${run_specs[@]}"; do
+    run_spec="${run_spec//[[:space:]]/}"
+    if [[ -z "${run_spec}" ]]; then
+      continue
+    fi
+    if [[ "${run_spec}" == "${run_id}" || "${run_spec}" == "${run_id#0}" ]]; then
+      return 0
+    fi
+    if [[ "${run_spec}" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      range_start=$((10#${BASH_REMATCH[1]}))
+      range_end=$((10#${BASH_REMATCH[2]}))
+      if (( 10#${run_id} >= range_start && 10#${run_id} <= range_end )); then
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
 run_one() {
-  local run_name="$1"
-  shift
+  local run_id="$1"
+  local run_name="$2"
+  shift 2
+  if ! run_selected "${run_id}"; then
+    echo "Skipping run ${run_id}: ${run_name}"
+    return 0
+  fi
+  echo "Running ${run_id}: ${run_name}"
+  if [[ "${DRY_RUN}" == "1" || "${DRY_RUN}" == "true" ]]; then
+    echo "DRY_RUN: uv run python scripts/train_tallyqa_student.py --config-name tallyqa_student experiment.run_name=${run_name} ..."
+    return 0
+  fi
   uv run python scripts/train_tallyqa_student.py \
     --config-name tallyqa_student \
     "experiment.run_name=${run_name}" \
@@ -51,8 +91,10 @@ run_one() {
     "$@"
 }
 
-# 00: minimal baseline. Frozen MobileNetV3-large + transformer fusion, hard labels only.
-run_one "tallyqa-tier0-00-small-frozen-hard-no-reg" \
+echo "Selected RUNS=${RUNS}"
+
+# 00: minimal baseline. Frozen MobileNetV3-small + transformer fusion, hard labels only.
+run_one "00" "tallyqa-tier0-00-small-frozen-hard-no-reg" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=natural" \
@@ -66,7 +108,7 @@ run_one "tallyqa-tier0-00-small-frozen-hard-no-reg" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 01: add dropout.
-run_one "tallyqa-tier0-01-plus-dropout" \
+run_one "01" "tallyqa-tier0-01-plus-dropout" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=natural" \
@@ -80,7 +122,7 @@ run_one "tallyqa-tier0-01-plus-dropout" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 02: add weight decay.
-run_one "tallyqa-tier0-02-plus-weight-decay" \
+run_one "02" "tallyqa-tier0-02-plus-weight-decay" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=natural" \
@@ -94,7 +136,7 @@ run_one "tallyqa-tier0-02-plus-weight-decay" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 03: add the existing LR warmup schedule.
-run_one "tallyqa-tier0-03-plus-lr-warmup" \
+run_one "03" "tallyqa-tier0-03-plus-lr-warmup" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=natural" \
@@ -108,7 +150,7 @@ run_one "tallyqa-tier0-03-plus-lr-warmup" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 04: add sqrt prompt-class sampling. Epoch size is held near the natural tier size.
-run_one "tallyqa-tier0-04-plus-sqrt-prompt-sampling" \
+run_one "04" "tallyqa-tier0-04-plus-sqrt-prompt-sampling" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=prompt_class_tempered" \
@@ -125,7 +167,7 @@ run_one "tallyqa-tier0-04-plus-sqrt-prompt-sampling" \
 # 05: replace fixed sqrt sampling with a short sampling curriculum.
 # The checked-in schedule is epoch-based: sqrt sampling for epoch 1, then natural sampling.
 # With Tier 0 and BATCH_SIZE=32, epoch 1 is roughly 1,500 optimizer steps.
-run_one "tallyqa-tier0-05-plus-sampling-curriculum" \
+run_one "05" "tallyqa-tier0-05-plus-sampling-curriculum" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=prompt_class_tempered" \
@@ -142,7 +184,7 @@ run_one "tallyqa-tier0-05-plus-sampling-curriculum" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 06: add local soft hard-label targets.
-run_one "tallyqa-tier0-06-plus-local-soft-targets" \
+run_one "06" "tallyqa-tier0-06-plus-local-soft-targets" \
   "data.require_teacher_cache=false" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.train_sampling=prompt_class_tempered" \
@@ -161,7 +203,7 @@ run_one "tallyqa-tier0-06-plus-local-soft-targets" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 07: add composite-teacher KL on top of local soft targets.
-run_one "tallyqa-tier0-07-plus-composite-teacher-kl" \
+run_one "07" "tallyqa-tier0-07-plus-composite-teacher-kl" \
   "data.require_teacher_cache=true" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.teacher_probability_temperature=1.0" \
@@ -181,7 +223,7 @@ run_one "tallyqa-tier0-07-plus-composite-teacher-kl" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 08: same as 07, but switch the image encoder to MobileNetV3-large.
-run_one "tallyqa-tier0-08-large-backbone-full-baseline" \
+run_one "08" "tallyqa-tier0-08-large-backbone-full-baseline" \
   "data.require_teacher_cache=true" \
   "paths.teacher_cache=${TEACHER_CACHE}" \
   "data.teacher_probability_temperature=1.0" \
