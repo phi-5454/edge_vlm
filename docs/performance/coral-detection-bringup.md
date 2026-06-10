@@ -20,7 +20,7 @@ transport, and report generation before we deploy our own models.
 | `scripts/coral_micro_stage_detection_app.py` | Copies the app and model into the adjacent Coral SDK. |
 | `scripts/capture_coral_detection_serial.py` | Captures serial output into raw and normalized artifacts. |
 | `scripts/coral_detection_preview_server.py` | Browser preview for camera frames with detection boxes. |
-| `conf/labels/coco_detection_labels.json` | COCO detection id-to-name mapping for this SSD model family. |
+| `conf/labels/mscoco_label_map.pbtxt` | TensorFlow Object Detection API MS COCO label map for this SSD model family. |
 | `scripts/inspect_tflite.py` | Writes input/output tensor metadata and model hash. |
 | `docs/decisions/0006-coral-tflite-detection-bringup.md` | Decision record for this bring-up path. |
 
@@ -147,7 +147,7 @@ Then from this repo:
 uv run --extra coral python scripts/coral_detection_preview_server.py \
   --coral-host 10.10.10.1 \
   --listen-port 8765 \
-  --labels conf/labels/coco_detection_labels.json \
+  --labels conf/labels/mscoco_label_map.pbtxt \
   --no-show-label-names \
   --display-brightness-gain 1.5 \
   --jsonl artifacts/profiles/coral/preview_detections.jsonl
@@ -158,9 +158,9 @@ camera capture plus inference, draws the returned detection box on the frame,
 and appends normalized metadata to the JSONL log.
 
 The preview logs raw model IDs by default. It can use
-`conf/labels/coco_detection_labels.json` to map IDs to COCO item names, but keep
-names disabled until the model's ID convention is verified against known
-objects:
+`conf/labels/mscoco_label_map.pbtxt`, copied from the TensorFlow Object
+Detection API MS COCO label map, to map IDs to COCO item names. Keep names
+disabled until the model's ID convention is verified against known objects:
 
 ```bash
 uv run --extra coral python scripts/coral_detection_preview_server.py \

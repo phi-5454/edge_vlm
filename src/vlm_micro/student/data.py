@@ -16,7 +16,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset, Sampler, WeightedRandomSampler
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torchvision.transforms import functional as TF
 
 
@@ -506,6 +506,103 @@ class TallyQAImageGroupedBatchSampler(Sampler[list[int]]):
             yield pending
 
 
+class TallyQATemperedPromptClassSampler(Sampler[int]):
+    """Prompt-class sampler with replacement only for oversampled extras."""
+
+    def __init__(
+        self,
+        dataset: TallyQAStudentDataset,
+        temperature: float,
+        seed: int,
+        epoch: int,
+        num_samples: int | None = None,
+    ):
+        self.dataset = dataset
+        self.temperature = max(0.0, float(temperature))
+        self.seed = int(seed)
+        self.epoch = int(epoch)
+        self.num_samples = int(num_samples) if num_samples is not None else len(dataset)
+        if self.num_samples <= 0:
+            raise ValueError("num_samples must be positive.")
+        class_indices: dict[int, list[int]] = {}
+        for local_index, dataset_index in enumerate(dataset.indices):
+            class_id = int(dataset.rows[dataset_index]["item_class_id"])
+            class_indices.setdefault(class_id, []).append(local_index)
+        if not class_indices:
+            raise ValueError("Cannot sample from an empty dataset.")
+        self.class_indices = dict(sorted(class_indices.items()))
+        self.quotas = self._class_quotas()
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def _class_quotas(self) -> dict[int, int]:
+        counts = {class_id: len(indices) for class_id, indices in self.class_indices.items()}
+        if self.temperature <= 0:
+            return self._adjust_quotas(counts)
+        weights = {
+            class_id: count ** (1.0 - self.temperature)
+            for class_id, count in counts.items()
+        }
+        weight_sum = sum(weights.values())
+        raw = {
+            class_id: self.num_samples * weight / weight_sum
+            for class_id, weight in weights.items()
+        }
+        quotas = {
+            class_id: max(1, int(math.floor(value)))
+            for class_id, value in raw.items()
+        }
+        return self._adjust_quotas(
+            quotas,
+            remainders={class_id: raw[class_id] - math.floor(raw[class_id]) for class_id in raw},
+        )
+
+    def _adjust_quotas(
+        self,
+        quotas: dict[int, int],
+        remainders: dict[int, float] | None = None,
+    ) -> dict[int, int]:
+        adjusted = dict(quotas)
+        remainders = remainders or {class_id: 0.0 for class_id in adjusted}
+        delta = self.num_samples - sum(adjusted.values())
+        if delta > 0:
+            order = sorted(adjusted, key=lambda class_id: (-remainders[class_id], class_id))
+            for offset in range(delta):
+                adjusted[order[offset % len(order)]] += 1
+        elif delta < 0:
+            order = sorted(adjusted, key=lambda class_id: (remainders[class_id], class_id))
+            remaining = -delta
+            while remaining > 0:
+                changed = False
+                for class_id in order:
+                    if adjusted[class_id] > 1:
+                        adjusted[class_id] -= 1
+                        remaining -= 1
+                        changed = True
+                        if remaining == 0:
+                            break
+                if not changed:
+                    raise ValueError("Could not allocate at least one sample per prompt class.")
+        return adjusted
+
+    def __iter__(self) -> Iterable[int]:
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        selected: list[int] = []
+        for class_id, local_indices in self.class_indices.items():
+            quota = self.quotas[class_id]
+            permutation = torch.randperm(len(local_indices), generator=generator).tolist()
+            if quota <= len(local_indices):
+                selected.extend(local_indices[index] for index in permutation[:quota])
+                continue
+            selected.extend(local_indices[index] for index in permutation)
+            extra = quota - len(local_indices)
+            draws = torch.randint(len(local_indices), (extra,), generator=generator).tolist()
+            selected.extend(local_indices[index] for index in draws)
+        for index in torch.randperm(len(selected), generator=generator).tolist():
+            yield selected[index]
+
+
 def collate_student_batch(rows: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
     max_length = max(len(row["token_ids"]) for row in rows)
     token_ids = torch.zeros((len(rows), max_length), dtype=torch.long)
@@ -879,13 +976,12 @@ class TallyQAStudentDataModule(L.LightningDataModule):
             return DataLoader(
                 **common,
                 batch_size=self.hparams.batch_size,
-                sampler=WeightedRandomSampler(
-                    weights=self._prompt_class_sampling_weights(dataset),
+                sampler=TallyQATemperedPromptClassSampler(
+                    dataset=dataset,
+                    temperature=self._prompt_sampling_temperature(),
+                    seed=int(self.hparams.seed),
+                    epoch=int(self._curriculum_epoch),
                     num_samples=epoch_size,
-                    replacement=True,
-                    generator=torch.Generator().manual_seed(
-                        int(self.hparams.seed) + int(self._curriculum_epoch)
-                    ),
                 ),
             )
         if split == "train" and self.hparams.group_train_by_image and self.hparams.shuffle_train:

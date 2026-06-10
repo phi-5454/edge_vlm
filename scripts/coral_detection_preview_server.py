@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
 from pathlib import Path
+import re
 import threading
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -124,8 +125,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--labels",
         type=Path,
-        default=Path("conf/labels/coco_detection_labels.json"),
-        help="JSON object mapping detection class id strings to names.",
+        default=Path("conf/labels/mscoco_label_map.pbtxt"),
+        help=(
+            "TensorFlow Object Detection API .pbtxt label map, or JSON object "
+            "mapping detection class id strings to names."
+        ),
     )
     parser.add_argument(
         "--label-offset",
@@ -147,9 +151,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_labels(path: Path) -> dict[int, str]:
+def load_json_labels(path: Path) -> dict[int, str]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     return {int(class_id): str(name) for class_id, name in payload.items()}
+
+
+def load_pbtxt_labels(path: Path) -> dict[int, str]:
+    text = path.read_text(encoding="utf-8")
+    labels: dict[int, str] = {}
+    for block in re.findall(r"item\s*\{(.*?)\}", text, flags=re.DOTALL):
+        id_match = re.search(r"\bid\s*:\s*(\d+)", block)
+        display_match = re.search(r'\bdisplay_name\s*:\s*"([^"]+)"', block)
+        name_match = re.search(r'\bname\s*:\s*"([^"]+)"', block)
+        if id_match is None:
+            continue
+        label_name = display_match.group(1) if display_match else name_match.group(1)
+        labels[int(id_match.group(1))] = label_name
+    if not labels:
+        raise ValueError(f"No label records found in {path}.")
+    return labels
+
+
+def load_labels(path: Path) -> dict[int, str]:
+    if path.suffix == ".pbtxt":
+        return load_pbtxt_labels(path)
+    return load_json_labels(path)
 
 
 def rpc_detect(coral_host: str, timeout_s: float) -> tuple[dict[str, Any], float]:
