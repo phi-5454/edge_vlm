@@ -13,7 +13,7 @@ PIN_MEMORY="${PIN_MEMORY:-true}"
 PATIENCE="${PATIENCE:-5}"
 CHECK_VAL_EVERY_N_EPOCH="${CHECK_VAL_EVERY_N_EPOCH:-1}"
 TEACHER_CACHE="${TEACHER_CACHE:-artifacts/teacher_cache/composite_ece_temp_smol1p1_frcnn2p2_beta12p968_tallyqa_target_mobilenet224.jsonl}"
-SAMPLING_DECAY_STEPS="${SAMPLING_DECAY_STEPS:-1500}"
+SAMPLING_DECAY_STEPS="${SAMPLING_DECAY_STEPS:-2000}"
 _POSITIONAL_INDEX=0
 
 while [[ $# -gt 0 ]]; do
