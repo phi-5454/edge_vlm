@@ -13,8 +13,10 @@ PIN_MEMORY="${PIN_MEMORY:-true}"
 PATIENCE="${PATIENCE:-6}"
 CHECK_VAL_EVERY_N_EPOCH="${CHECK_VAL_EVERY_N_EPOCH:-1}"
 TEACHER_CACHE="${TEACHER_CACHE:-artifacts/teacher_cache/composite_ece_temp_smol1p1_frcnn2p2_beta12p968_tallyqa_target_mobilenet224.jsonl}"
+TRAIN_EPOCH_SIZE="${TRAIN_EPOCH_SIZE:-null}"
 SAMPLING_CURRICULUM="${SAMPLING_CURRICULUM:-}"
 SAMPLING_CURRICULUM_STEPS="${SAMPLING_CURRICULUM_STEPS:-1500}"
+USE_SAMPLING_CURRICULUM="${USE_SAMPLING_CURRICULUM:-false}"
 _POSITIONAL_INDEX=0
 
 while [[ $# -gt 0 ]]; do
@@ -67,8 +69,21 @@ while [[ $# -gt 0 ]]; do
       TEACHER_CACHE="$2"
       shift 2
       ;;
+    --train-epoch-size)
+      TRAIN_EPOCH_SIZE="$2"
+      shift 2
+      ;;
+    --use-sampling-curriculum)
+      USE_SAMPLING_CURRICULUM=true
+      shift
+      ;;
+    --no-sampling-curriculum)
+      USE_SAMPLING_CURRICULUM=false
+      shift
+      ;;
     --sampling-curriculum)
       SAMPLING_CURRICULUM="$2"
+      USE_SAMPLING_CURRICULUM=true
       shift 2
       ;;
     --sampling-curriculum-steps)
@@ -93,6 +108,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "${SAMPLING_CURRICULUM}" ]]; then
+  USE_SAMPLING_CURRICULUM=true
+fi
 
 make_sampling_curriculum() {
   if [[ -n "${SAMPLING_CURRICULUM}" ]]; then
@@ -119,8 +138,6 @@ make_sampling_curriculum() {
   echo "${schedule_path}"
 }
 
-SAMPLING_CURRICULUM_PATH="$(make_sampling_curriculum)"
-
 COMMON_OVERRIDES=(
   "trainer.max_epochs=${MAX_EPOCHS}"
   "trainer.check_val_every_n_epoch=${CHECK_VAL_EVERY_N_EPOCH}"
@@ -130,7 +147,7 @@ COMMON_OVERRIDES=(
   "trainer.early_stopping.mode=min"
   "trainer.gradient_clip_val=1.0"
   "trainer.gradient_clip_algorithm=norm"
-  "trainer.reload_dataloaders_every_n_epochs=1"
+  "trainer.reload_dataloaders_every_n_epochs=0"
   "data.batch_size=${BATCH_SIZE}"
   "data.num_workers=${NUM_WORKERS}"
   "data.prefetch_factor=${PREFETCH_FACTOR}"
@@ -140,10 +157,9 @@ COMMON_OVERRIDES=(
   "data.shuffle_train=true"
   "data.require_teacher_cache=true"
   "data.teacher_probability_temperature=1.0"
-  "data.train_sampling=prompt_class_tempered"
-  "data.prompt_class_sampling_temperature=0.5"
-  "data.train_epoch_size=43626"
-  "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}"
+  "data.train_sampling=natural"
+  "data.train_epoch_size=${TRAIN_EPOCH_SIZE}"
+  "data.curriculum_schedule=null"
   "paths.teacher_cache=${TEACHER_CACHE}"
   "model.image_backbone=mobilenet_v3_small"
   "model.image_feature_cutoff=auto"
@@ -173,6 +189,14 @@ COMMON_OVERRIDES=(
   "wandb.watch.log=all"
   "wandb.watch.log_freq=100"
 )
+
+if [[ "${USE_SAMPLING_CURRICULUM}" == "1" || "${USE_SAMPLING_CURRICULUM}" == "true" ]]; then
+  SAMPLING_CURRICULUM_PATH="$(make_sampling_curriculum)"
+  COMMON_OVERRIDES+=(
+    "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}"
+    "trainer.reload_dataloaders_every_n_epochs=1"
+  )
+fi
 
 run_selected() {
   local run_id="$1"
