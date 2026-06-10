@@ -9,7 +9,8 @@ BATCH_SIZE="${BATCH_SIZE:-256}"
 PATIENCE="${PATIENCE:-5}"
 CHECK_VAL_EVERY_N_EPOCH="${CHECK_VAL_EVERY_N_EPOCH:-1}"
 TEACHER_CACHE="${TEACHER_CACHE:-artifacts/teacher_cache/composite_ece_temp_smol1p1_frcnn2p2_beta12p968_tallyqa_target_mobilenet224.jsonl}"
-SAMPLING_CURRICULUM="${SAMPLING_CURRICULUM:-artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/sqrt_to_natural_sampling_curriculum_approx1500steps_bs32.json}"
+SAMPLING_CURRICULUM="${SAMPLING_CURRICULUM:-}"
+SAMPLING_CURRICULUM_STEPS="${SAMPLING_CURRICULUM_STEPS:-1500}"
 
 COMMON_OVERRIDES=(
   "trainer.max_epochs=${MAX_EPOCHS}"
@@ -42,6 +43,33 @@ COMMON_OVERRIDES=(
   "wandb.watch.log=all"
   "wandb.watch.log_freq=100"
 )
+
+make_sampling_curriculum() {
+  if [[ -n "${SAMPLING_CURRICULUM}" ]]; then
+    echo "${SAMPLING_CURRICULUM}"
+    return 0
+  fi
+  local schedule_path
+  local first_epoch_size
+  schedule_path="$(mktemp /tmp/tallyqa_sampling_curriculum.XXXXXX.json)"
+  first_epoch_size=$((SAMPLING_CURRICULUM_STEPS * BATCH_SIZE))
+  printf '[\n' > "${schedule_path}"
+  printf '  {\n' >> "${schedule_path}"
+  printf '    "start_epoch": 1,\n' >> "${schedule_path}"
+  printf '    "train_sampling": "prompt_class_tempered",\n' >> "${schedule_path}"
+  printf '    "prompt_class_sampling_temperature": 0.5,\n' >> "${schedule_path}"
+  printf '    "train_epoch_size": %s\n' "${first_epoch_size}" >> "${schedule_path}"
+  printf '  },\n' >> "${schedule_path}"
+  printf '  {\n' >> "${schedule_path}"
+  printf '    "start_epoch": 2,\n' >> "${schedule_path}"
+  printf '    "train_sampling": "natural",\n' >> "${schedule_path}"
+  printf '    "train_epoch_size": null\n' >> "${schedule_path}"
+  printf '  }\n' >> "${schedule_path}"
+  printf ']\n' >> "${schedule_path}"
+  echo "${schedule_path}"
+}
+
+SAMPLING_CURRICULUM_PATH="$(make_sampling_curriculum)"
 
 run_selected() {
   local run_id="$1"
@@ -173,7 +201,7 @@ run_one "05" "tallyqa-tier0-05-plus-sampling-curriculum" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
   "data.train_epoch_size=43626" \
-  "data.curriculum_schedule=${SAMPLING_CURRICULUM}" \
+  "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.0" \
@@ -190,7 +218,7 @@ run_one "06" "tallyqa-tier0-06-plus-local-soft-targets" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
   "data.train_epoch_size=43626" \
-  "data.curriculum_schedule=${SAMPLING_CURRICULUM}" \
+  "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.0" \
@@ -210,7 +238,7 @@ run_one "07" "tallyqa-tier0-07-plus-composite-teacher-kl" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
   "data.train_epoch_size=43626" \
-  "data.curriculum_schedule=${SAMPLING_CURRICULUM}" \
+  "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.25" \
@@ -230,7 +258,7 @@ run_one "08" "tallyqa-tier0-08-large-backbone-full-baseline" \
   "data.train_sampling=prompt_class_tempered" \
   "data.prompt_class_sampling_temperature=0.5" \
   "data.train_epoch_size=43626" \
-  "data.curriculum_schedule=${SAMPLING_CURRICULUM}" \
+  "data.curriculum_schedule=${SAMPLING_CURRICULUM_PATH}" \
   "trainer.reload_dataloaders_every_n_epochs=1" \
   "distillation.alpha=1.0" \
   "distillation.beta=0.25" \

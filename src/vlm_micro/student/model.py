@@ -103,6 +103,8 @@ class StudentBaseline(nn.Module):
         use_prompt_identity: bool = True,
         use_image_positional_embeddings: bool = True,
         image_position_tokens: int = 196,
+        zero_image_tokens: bool = False,
+        zero_query_token: bool = False,
         num_outputs: int = 1,
     ):
         super().__init__()
@@ -115,6 +117,8 @@ class StudentBaseline(nn.Module):
         if fusion_mode not in {"transformer", "concat_mlp"}:
             raise ValueError("fusion_mode must be 'transformer' or 'concat_mlp'.")
         self.num_outputs = num_outputs
+        self.query_dim = query_dim
+        self.fusion_dim = fusion_dim
         pad_row = torch.zeros((1, embedding_rows.shape[1]), dtype=embedding_rows.dtype)
         self.token_embedding = nn.Embedding.from_pretrained(
             torch.cat([pad_row, embedding_rows], dim=0),
@@ -147,6 +151,8 @@ class StudentBaseline(nn.Module):
         self.use_prompt_identity = use_prompt_identity
         self.use_image_positional_embeddings = use_image_positional_embeddings
         self.image_position_tokens = image_position_tokens
+        self.zero_image_tokens = zero_image_tokens
+        self.zero_query_token = zero_query_token
         self.image_features = (
             backbone.features
             if resolved_cutoff is None
@@ -237,20 +243,35 @@ class StudentBaseline(nn.Module):
         attention_mask: torch.Tensor,
         images: torch.Tensor,
     ) -> torch.Tensor:
-        query = self.encode_query(token_ids, attention_mask)
-
-        image_features = self.encode_image_features(images, query)
-        if self.image_token_mode == "pooled":
-            image = self.image_pool(image_features)
-            image_tokens = self.image_projection(torch.flatten(image, 1)).unsqueeze(1)
-        else:
-            image_tokens = image_features.flatten(2).transpose(1, 2)
-            image_tokens = self.image_projection(image_tokens)
-            image_tokens = image_tokens + self._image_position_embeddings(
-                image_tokens.shape[1],
-                image_tokens.device,
-                image_tokens.dtype,
+        if self.zero_query_token:
+            query = torch.zeros(
+                (images.shape[0], self.query_dim),
+                device=images.device,
+                dtype=images.dtype,
             )
+        else:
+            query = self.encode_query(token_ids, attention_mask)
+
+        if self.zero_image_tokens:
+            image_token_count = 1 if self.image_token_mode == "pooled" else self.image_position_tokens
+            image_tokens = torch.zeros(
+                (images.shape[0], image_token_count, self.fusion_dim),
+                device=query.device,
+                dtype=query.dtype,
+            )
+        else:
+            image_features = self.encode_image_features(images, query)
+            if self.image_token_mode == "pooled":
+                image = self.image_pool(image_features)
+                image_tokens = self.image_projection(torch.flatten(image, 1)).unsqueeze(1)
+            else:
+                image_tokens = image_features.flatten(2).transpose(1, 2)
+                image_tokens = self.image_projection(image_tokens)
+                image_tokens = image_tokens + self._image_position_embeddings(
+                    image_tokens.shape[1],
+                    image_tokens.device,
+                    image_tokens.dtype,
+                )
 
         query_token = query.unsqueeze(1)
         if self.prompt_identity is not None:
@@ -258,6 +279,8 @@ class StudentBaseline(nn.Module):
                 device=query_token.device,
                 dtype=query_token.dtype,
             )
+        if self.zero_query_token:
+            query_token = torch.zeros_like(query_token)
 
         if self.fusion_mode == "concat_mlp":
             image = image_tokens.mean(dim=1)

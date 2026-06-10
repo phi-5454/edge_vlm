@@ -216,6 +216,8 @@ def main(cfg: DictConfig) -> None:
             cfg.model.get("use_image_positional_embeddings", True)
         ),
         image_position_tokens=int(cfg.model.get("image_position_tokens", 196)),
+        zero_image_tokens=bool(cfg.model.get("zero_image_tokens", False)),
+        zero_query_token=bool(cfg.model.get("zero_query_token", False)),
         num_outputs=int(cfg.model.num_outputs),
     )
     class_weights = class_weights_from_config(cfg, data)

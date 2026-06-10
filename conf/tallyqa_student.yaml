@@ -20,6 +20,8 @@ model:
   use_prompt_identity: true
   use_image_positional_embeddings: true
   image_position_tokens: 196
+  zero_image_tokens: false
+  zero_query_token: false
   image_size: 224
   num_outputs: 6
   query_dim: 128
