@@ -231,6 +231,18 @@ def main(cfg: DictConfig) -> None:
         learning_rate=float(cfg.optimizer.learning_rate),
         warmup_start_learning_rate=float(cfg.optimizer.warmup_start_learning_rate),
         warmup_steps=int(cfg.optimizer.warmup_steps),
+        lr_schedule=str(cfg.optimizer.get("lr_schedule", "warmup")),
+        lr_decay_start_fraction=float(cfg.optimizer.get("lr_decay_start_fraction", 0.5)),
+        lr_decay_start_step=(
+            int(cfg.optimizer.lr_decay_start_step)
+            if cfg.optimizer.get("lr_decay_start_step", None) is not None
+            else None
+        ),
+        lr_final_learning_rate=(
+            float(cfg.optimizer.lr_final_learning_rate)
+            if cfg.optimizer.get("lr_final_learning_rate", None) is not None
+            else None
+        ),
         weight_decay=float(cfg.optimizer.weight_decay),
         image_learning_rate_scale=float(cfg.optimizer.get("image_learning_rate_scale", 1.0)),
         temperature=float(cfg.distillation.temperature),

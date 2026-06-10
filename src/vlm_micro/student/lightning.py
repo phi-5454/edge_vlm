@@ -350,6 +350,10 @@ class TallyQAStudentModule(L.LightningModule):
         weight_decay: float,
         warmup_start_learning_rate: float | None = None,
         warmup_steps: int = 0,
+        lr_schedule: str = "warmup",
+        lr_decay_start_fraction: float = 0.5,
+        lr_decay_start_step: int | None = None,
+        lr_final_learning_rate: float | None = None,
         image_learning_rate_scale: float = 1.0,
         temperature: float = 2.0,
         class_weights: list[float] | None = None,
@@ -379,6 +383,14 @@ class TallyQAStudentModule(L.LightningModule):
             raise ValueError("warmup_steps must be non-negative.")
         if warmup_steps and warmup_start_learning_rate is None:
             raise ValueError("warmup_start_learning_rate is required when warmup_steps is positive.")
+        if lr_schedule not in {"none", "warmup", "warmup_plateau_decay"}:
+            raise ValueError("lr_schedule must be 'none', 'warmup', or 'warmup_plateau_decay'.")
+        if not 0 <= lr_decay_start_fraction <= 1:
+            raise ValueError("lr_decay_start_fraction must be in [0, 1].")
+        if lr_decay_start_step is not None and lr_decay_start_step < 0:
+            raise ValueError("lr_decay_start_step must be non-negative when provided.")
+        if lr_final_learning_rate is not None and lr_final_learning_rate <= 0:
+            raise ValueError("lr_final_learning_rate must be positive when provided.")
         if class_weights is not None:
             if not class_weights:
                 raise ValueError("class_weights must not be empty.")
@@ -626,14 +638,40 @@ class TallyQAStudentModule(L.LightningModule):
             parameter_groups,
             weight_decay=self.hparams.weight_decay,
         )
-        if not self.hparams.warmup_steps:
+        if self.hparams.lr_schedule == "none":
             return optimizer
-        scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            start_factor=self.hparams.warmup_start_learning_rate / self.hparams.learning_rate,
-            end_factor=1.0,
-            total_iters=self.hparams.warmup_steps,
-        )
+        if self.hparams.lr_schedule == "warmup" and not self.hparams.warmup_steps:
+            return optimizer
+        if self.hparams.lr_schedule == "warmup":
+            scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=self.hparams.warmup_start_learning_rate / self.hparams.learning_rate,
+                end_factor=1.0,
+                total_iters=self.hparams.warmup_steps,
+            )
+        else:
+            total_steps = max(1, int(self.trainer.estimated_stepping_batches))
+            warmup_steps = min(int(self.hparams.warmup_steps), total_steps)
+            if self.hparams.lr_decay_start_step is not None:
+                decay_start_step = int(self.hparams.lr_decay_start_step)
+            else:
+                decay_start_step = int(round(total_steps * self.hparams.lr_decay_start_fraction))
+            decay_start_step = max(warmup_steps, min(total_steps, decay_start_step))
+            start_lr = float(self.hparams.warmup_start_learning_rate or self.hparams.learning_rate)
+            final_lr = float(self.hparams.lr_final_learning_rate or start_lr)
+            start_factor = start_lr / float(self.hparams.learning_rate)
+            final_factor = final_lr / float(self.hparams.learning_rate)
+
+            def lr_lambda(step: int) -> float:
+                if warmup_steps > 0 and step < warmup_steps:
+                    progress = step / max(1, warmup_steps)
+                    return start_factor + (1.0 - start_factor) * progress
+                if step < decay_start_step:
+                    return 1.0
+                progress = (step - decay_start_step) / max(1, total_steps - decay_start_step)
+                return 1.0 + (final_factor - 1.0) * min(max(progress, 0.0), 1.0)
+
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
         return {
             "optimizer": optimizer,
             "lr_scheduler": {

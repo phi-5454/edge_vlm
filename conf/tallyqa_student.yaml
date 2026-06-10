@@ -73,6 +73,10 @@ data:
 optimizer:
   learning_rate: 0.001
   image_learning_rate_scale: 0.1
+  lr_schedule: warmup
+  lr_decay_start_fraction: 0.5
+  lr_decay_start_step: null
+  lr_final_learning_rate: null
   warmup_start_learning_rate: 0.0001
   warmup_steps: 1000
   weight_decay: 0.01

@@ -1,16 +1,98 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TIER_FILE="${1:-artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_0_acc_ge_0p60_n_ge_1000/prompt_classes.txt}"
-RUNS="${RUNS:-${2:-all}}"
+TIER_FILE="${TIER_FILE:-artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_0_acc_ge_0p60_n_ge_1000/prompt_classes.txt}"
+RUNS="${RUNS:-all}"
 DRY_RUN="${DRY_RUN:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:-20}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
+NUM_WORKERS="${NUM_WORKERS:-16}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
+PERSISTENT_WORKERS="${PERSISTENT_WORKERS:-true}"
+PIN_MEMORY="${PIN_MEMORY:-true}"
 PATIENCE="${PATIENCE:-6}"
 CHECK_VAL_EVERY_N_EPOCH="${CHECK_VAL_EVERY_N_EPOCH:-1}"
 TEACHER_CACHE="${TEACHER_CACHE:-artifacts/teacher_cache/composite_ece_temp_smol1p1_frcnn2p2_beta12p968_tallyqa_target_mobilenet224.jsonl}"
 SAMPLING_CURRICULUM="${SAMPLING_CURRICULUM:-}"
 SAMPLING_CURRICULUM_STEPS="${SAMPLING_CURRICULUM_STEPS:-1500}"
+_POSITIONAL_INDEX=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tier-file)
+      TIER_FILE="$2"
+      shift 2
+      ;;
+    --runs)
+      RUNS="$2"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --max-epochs)
+      MAX_EPOCHS="$2"
+      shift 2
+      ;;
+    --batch-size)
+      BATCH_SIZE="$2"
+      shift 2
+      ;;
+    --num-workers)
+      NUM_WORKERS="$2"
+      shift 2
+      ;;
+    --prefetch-factor)
+      PREFETCH_FACTOR="$2"
+      shift 2
+      ;;
+    --persistent-workers)
+      PERSISTENT_WORKERS="$2"
+      shift 2
+      ;;
+    --pin-memory)
+      PIN_MEMORY="$2"
+      shift 2
+      ;;
+    --patience)
+      PATIENCE="$2"
+      shift 2
+      ;;
+    --check-val-every-n-epoch)
+      CHECK_VAL_EVERY_N_EPOCH="$2"
+      shift 2
+      ;;
+    --teacher-cache)
+      TEACHER_CACHE="$2"
+      shift 2
+      ;;
+    --sampling-curriculum)
+      SAMPLING_CURRICULUM="$2"
+      shift 2
+      ;;
+    --sampling-curriculum-steps)
+      SAMPLING_CURRICULUM_STEPS="$2"
+      shift 2
+      ;;
+    -*)
+      echo "Unknown argument: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ "${_POSITIONAL_INDEX}" == "0" ]]; then
+        TIER_FILE="$1"
+      elif [[ "${_POSITIONAL_INDEX}" == "1" ]]; then
+        RUNS="$1"
+      else
+        echo "Unexpected positional argument: $1" >&2
+        exit 2
+      fi
+      _POSITIONAL_INDEX=$((_POSITIONAL_INDEX + 1))
+      shift
+      ;;
+  esac
+done
 
 make_sampling_curriculum() {
   if [[ -n "${SAMPLING_CURRICULUM}" ]]; then
@@ -50,6 +132,10 @@ COMMON_OVERRIDES=(
   "trainer.gradient_clip_algorithm=norm"
   "trainer.reload_dataloaders_every_n_epochs=1"
   "data.batch_size=${BATCH_SIZE}"
+  "data.num_workers=${NUM_WORKERS}"
+  "data.prefetch_factor=${PREFETCH_FACTOR}"
+  "data.persistent_workers=${PERSISTENT_WORKERS}"
+  "data.pin_memory=${PIN_MEMORY}"
   "data.prompt_class_names_file=${TIER_FILE}"
   "data.shuffle_train=true"
   "data.require_teacher_cache=true"
