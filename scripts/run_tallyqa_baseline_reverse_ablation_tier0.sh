@@ -2,6 +2,12 @@
 set -euo pipefail
 
 TIER_FILE="${TIER_FILE:-artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_0_acc_ge_0p60_n_ge_1000/prompt_classes.txt}"
+TIER_ROOT="${TIER_ROOT:-artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum}"
+TIER_1_FILE="${TIER_1_FILE:-${TIER_ROOT}/tier_1_acc_ge_0p60_n_ge_500/prompt_classes.txt}"
+TIER_2_FILE="${TIER_2_FILE:-${TIER_ROOT}/tier_2_acc_ge_0p60/prompt_classes.txt}"
+TIER_3_FILE="${TIER_3_FILE:-${TIER_ROOT}/tier_3_acc_ge_0p55/prompt_classes.txt}"
+TIER_4_FILE="${TIER_4_FILE:-${TIER_ROOT}/tier_4_acc_ge_0p40/prompt_classes.txt}"
+TIER_FUSION_MODE="${TIER_FUSION_MODE:-transformer}"
 RUNS="${RUNS:-all}"
 DRY_RUN="${DRY_RUN:-0}"
 MAX_EPOCHS="${MAX_EPOCHS:-20}"
@@ -64,6 +70,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --teacher-cache)
       TEACHER_CACHE="$2"
+      shift 2
+      ;;
+    --tier-fusion-mode)
+      TIER_FUSION_MODE="$2"
       shift 2
       ;;
     --sampling-decay-steps)
@@ -170,6 +180,42 @@ run_one() {
     --config-name tallyqa_student \
     "experiment.run_name=${run_name}" \
     "${COMMON_OVERRIDES[@]}" \
+    "$@"
+}
+
+run_large_soft_teacher() {
+  local run_id="$1"
+  local run_name="$2"
+  local prompt_file="$3"
+  local fusion_mode="$4"
+  shift 4
+  run_one "${run_id}" "${run_name}" \
+    "data.require_teacher_cache=true" \
+    "paths.teacher_cache=${TEACHER_CACHE}" \
+    "data.teacher_probability_temperature=1.0" \
+    "data.prompt_class_names_file=${prompt_file}" \
+    "data.train_sampling=prompt_class_tempered" \
+    "data.prompt_class_sampling_temperature=0.0" \
+    "data.prompt_class_sampling_end_temperature=0.25" \
+    "data.prompt_class_sampling_decay_steps=null" \
+    "data.prompt_class_sampling_ramp_start_step=2000" \
+    "data.train_epoch_size=null" \
+    "data.curriculum_schedule=null" \
+    "trainer.reload_dataloaders_every_n_epochs=1" \
+    "distillation.alpha=1.0" \
+    "distillation.beta=0.25" \
+    "distillation.target_distribution=local_soft" \
+    "distillation.local_soft_sigma=0.5" \
+    "distillation.local_soft_radius=1" \
+    "model.image_backbone=mobilenet_v3_large" \
+    "model.fusion_mode=${fusion_mode}" \
+    "model.dropout=0.1" \
+    "optimizer.weight_decay=0.01" \
+    "optimizer.lr_schedule=warmup_plateau_decay" \
+    "optimizer.lr_decay_start_step=1500" \
+    "optimizer.lr_final_learning_rate=0.0001" \
+    "optimizer.warmup_steps=1000" \
+    "optimizer.warmup_start_learning_rate=0.0001" \
     "$@"
 }
 
@@ -370,31 +416,11 @@ run_one "09" "tallyqa-tier0-09-composite-teacher-kl-hard-targets" \
   "optimizer.warmup_start_learning_rate=0.0001"
 
 # 10: same as 08, but switch the image encoder to MobileNetV3-large.
-run_one "10" "tallyqa-tier0-10-large-backbone-full-baseline" \
-  "data.require_teacher_cache=true" \
-  "paths.teacher_cache=${TEACHER_CACHE}" \
-  "data.teacher_probability_temperature=1.0" \
-  "data.train_sampling=prompt_class_tempered" \
-  "data.prompt_class_sampling_temperature=0.0" \
-  "data.prompt_class_sampling_end_temperature=0.25" \
-  "data.prompt_class_sampling_decay_steps=null" \
-  "data.prompt_class_sampling_ramp_start_step=2000" \
-  "data.train_epoch_size=null" \
-  "data.curriculum_schedule=null" \
-  "trainer.reload_dataloaders_every_n_epochs=1" \
-  "distillation.alpha=1.0" \
-  "distillation.beta=0.25" \
-  "distillation.target_distribution=local_soft" \
-  "distillation.local_soft_sigma=0.5" \
-  "distillation.local_soft_radius=1" \
-  "model.image_backbone=mobilenet_v3_large" \
-  "model.dropout=0.1" \
-  "optimizer.weight_decay=0.01" \
-  "optimizer.lr_schedule=warmup_plateau_decay" \
-  "optimizer.lr_decay_start_step=1500" \
-  "optimizer.lr_final_learning_rate=0.0001" \
-  "optimizer.warmup_steps=1000" \
-  "optimizer.warmup_start_learning_rate=0.0001"
+run_large_soft_teacher \
+  "10" \
+  "tallyqa-tier0-10-large-backbone-full-baseline" \
+  "${TIER_FILE}" \
+  "transformer"
 
 # 11: same as 06, but ramp prompt sampling from natural after step 2000 to p=0.25 at train end.
 run_one "11" "tallyqa-tier0-11-sampling-p025-ramp-after-2000" \
@@ -473,3 +499,36 @@ run_one "13" "tallyqa-tier0-13-large-film-28-last-14x14x80-soft-teacher" \
   "optimizer.lr_final_learning_rate=0.0001" \
   "optimizer.warmup_steps=1000" \
   "optimizer.warmup_start_learning_rate=0.0001"
+
+# 14: same as 10, but replace transformer/NormFormer-style fusion with concat MLP fusion.
+run_large_soft_teacher \
+  "14" \
+  "tallyqa-tier0-14-large-backbone-mlp-fusion" \
+  "${TIER_FILE}" \
+  "concat_mlp"
+
+# 15-18: same recipe as 10, but grow the prompt-class tier.
+# Set --tier-fusion-mode concat_mlp after run 14 if the MLP wins.
+run_large_soft_teacher \
+  "15" \
+  "tallyqa-tier1-15-large-${TIER_FUSION_MODE}-soft-teacher" \
+  "${TIER_1_FILE}" \
+  "${TIER_FUSION_MODE}"
+
+run_large_soft_teacher \
+  "16" \
+  "tallyqa-tier2-16-large-${TIER_FUSION_MODE}-soft-teacher" \
+  "${TIER_2_FILE}" \
+  "${TIER_FUSION_MODE}"
+
+run_large_soft_teacher \
+  "17" \
+  "tallyqa-tier3-17-large-${TIER_FUSION_MODE}-soft-teacher" \
+  "${TIER_3_FILE}" \
+  "${TIER_FUSION_MODE}"
+
+run_large_soft_teacher \
+  "18" \
+  "tallyqa-tier4-18-large-${TIER_FUSION_MODE}-soft-teacher" \
+  "${TIER_4_FILE}" \
+  "${TIER_FUSION_MODE}"

@@ -20,6 +20,7 @@ dependencies = [
     "torchvision>=0.18",
     "tqdm>=4.66",
     "transformers>=4.49",
+    "visualkeras>=0.2.0",
     "wandb>=0.17",
 ]
 

@@ -17,6 +17,20 @@ wheels = [
 ]
 
 [[package]]
+name = "aggdraw"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/bf/4876fb82a906e9303392235e9fe382130b649c0ee4faa7fdb25596c26dff/aggdraw-1.4.1.tar.gz", hash = "sha256:e21d6b77afeeffa259b898d652295757fd35f15a9e11a24823c0d7ca63385c83", size = 263051, upload-time = "2025-12-03T16:33:17.818Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/c7/f8dfee49f44e31bf6f94ca4b48e61a3ca74d32bdbe64ac82d69513edb6d7/aggdraw-1.4.1-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:fd0d3403f3e1a3100fb2b767abe26c605fe73642e20a1da4dd54c5069df74f6f", size = 485227, upload-time = "2025-12-03T16:32:40.337Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/0d/27efb21e736153c1d8f1195152d5d983b5550d3ec64ea9a1463cc11c8226/aggdraw-1.4.1-cp311-cp311-macosx_14_0_x86_64.whl", hash = "sha256:00eb0f446687682afdc981fa6a2fcaaf37f07d91cca92ba5f76e27f84e5a7740", size = 520344, upload-time = "2025-12-03T16:32:42.061Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/e0/ec3e35151ff7e2369a8e2ff0b01dc21c7ffc36d3385181fffcd60fdc48b3/aggdraw-1.4.1-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:08ec360b248de593753c49ce25a355e488cf6c0fd18d6f3a08a420842b94d5d6", size = 1012815, upload-time = "2025-12-03T16:32:43.456Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/69/f8e430e56eebf59c955c23905cd7d32bfe8ea4ae2d37ba702bfa08c4b72f/aggdraw-1.4.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c4bc82787a7d94a56eeb7006a5198ff73e01c06f979584da5c59af5eb82855b2", size = 1027127, upload-time = "2025-12-03T16:32:44.777Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/b1/6c4aabf386c89a7cf497d043efaa8d381e5b1e4a07fdf4b79f321b65d738/aggdraw-1.4.1-cp311-cp311-win_amd64.whl", hash = "sha256:0f08e49b256d1dd81b19b2dcf3b1ddb4e811491a1f8f6eb8bf70d5c684094e19", size = 47198, upload-time = "2025-12-03T16:32:45.913Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/da/7dd4284403ecc2f345f4cc25c9296182b660ad21d653f76700465429c803/aggdraw-1.4.1-cp311-cp311-win_arm64.whl", hash = "sha256:a0fd3732374aa93a74d213a155e2eb7a7abb895e6fc047ed36cb2e05c7ef7415", size = 38152, upload-time = "2025-12-03T16:32:47.164Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1838,6 +1852,20 @@ wheels = [
 ]
 
 [[package]]
+name = "visualkeras"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aggdraw" },
+    { name = "numpy" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/51/59/97ef90bda0eec212b4d583a114f6e79d221bbc2077736f8a843234b9fd51/visualkeras-0.2.0.tar.gz", hash = "sha256:cbdcfc00f29484b199870e5895452d9414008692c796ab214e5e72d445e20917", size = 1032249, upload-time = "2025-10-14T00:52:53.391Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/1b/dbd60702ac130d5f0846b07ceefe0695069cdc9a71c22e62811b09b57a7f/visualkeras-0.2.0-py3-none-any.whl", hash = "sha256:9a79a6abf45256e6ad882d33eae293e68251a01a72d7d027cf8736a995b901e5", size = 29213, upload-time = "2025-10-14T00:52:51.922Z" },
+]
+
+[[package]]
 name = "vlm-micro"
 version = "0.1.0"
 source = { editable = "." }
@@ -1857,6 +1885,7 @@ dependencies = [
     { name = "torchvision" },
     { name = "tqdm" },
     { name = "transformers" },
+    { name = "visualkeras" },
     { name = "wandb" },
 ]
 
@@ -1903,6 +1932,7 @@ requires-dist = [
     { name = "torchvision", specifier = ">=0.18" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "transformers", specifier = ">=4.49" },
+    { name = "visualkeras", specifier = ">=0.2.0" },
     { name = "wandb", specifier = ">=0.17" },
 ]
 provides-extras = ["coral", "max78000", "qat", "dev"]

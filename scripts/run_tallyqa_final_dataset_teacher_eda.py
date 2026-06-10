@@ -32,6 +32,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smolvlm-cache", type=Path, default=DEFAULT_SMOLVLM_CACHE)
     parser.add_argument("--fasterrcnn-cache", type=Path, default=DEFAULT_FASTERRCNN_CACHE)
+    parser.add_argument(
+        "--detector-cache",
+        type=Path,
+        default=None,
+        help="Optional detector cache. Defaults to --fasterrcnn-cache for backward compatibility.",
+    )
+    parser.add_argument("--detector-name", default="Faster R-CNN COCO80")
+    parser.add_argument(
+        "--detector-key",
+        default="fasterrcnn_coco80_letterbox_score005_poibin",
+        help="Directory/key name used for the detector teacher in the output report.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--examples-jsonl",
@@ -595,9 +607,10 @@ def main() -> None:
         args.examples_jsonl,
         args.reference_examples_jsonl,
     )
+    detector_cache = args.detector_cache or args.fasterrcnn_cache
     teachers = [
         ("smolvlm256_stretched", "SmolVLM-256M", args.smolvlm_cache),
-        ("fasterrcnn_coco80_letterbox_score005_poibin", "Faster R-CNN COCO80", args.fasterrcnn_cache),
+        (args.detector_key, args.detector_name, detector_cache),
     ]
     results = {
         key: stream_teacher(cache, display_name, labels, args.collapse_at, allowed_dataset_indices)
@@ -605,7 +618,7 @@ def main() -> None:
     }
 
     smol_key = "smolvlm256_stretched"
-    detector_key = "fasterrcnn_coco80_letterbox_score005_poibin"
+    detector_key = args.detector_key
     smol_confusion = run_teacher_plots(
         results[smol_key],
         labels,

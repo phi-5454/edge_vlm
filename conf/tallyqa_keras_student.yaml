@@ -7,27 +7,56 @@ paths:
   checkpoint_dir: artifacts/models/tallyqa_keras_student
 
 keras_model:
+  # legacy_prior keeps the older tiny Conv/MLP model.
+  # current_student mirrors the PyTorch student more closely:
+  # prompt lookup -> MobileNetV3 cutoff -> image tokens -> fusion -> count logits.
+  architecture: current_student
   image_size: 224
   image_channels: 3
+  image_backbone: mobilenet_v3_small
+  image_feature_cutoff: auto
+  include_mobilenet_preprocessing: false
+  fusion_mode: normformer
+  fusion_depth: 4
+  fusion_heads: 4
+  fusion_mlp_ratio: 4
+  use_prompt_identity: true
+  use_image_positional_embeddings: true
   prompt_dim: 64
   image_dim: 64
-  fusion_dim: 96
+  fusion_dim: 128
   conv_channels: [16, 32, 64]
   dropout: 0.1
   activation: relu
   use_batch_norm: true
+  visualkeras:
+    enabled: true
 
 export:
   saved_model_dir: artifacts/exports/coral/keras_tallyqa_saved_model
   tflite_float: artifacts/exports/coral/keras_tallyqa_float.tflite
   tflite_quantized: artifacts/exports/coral/keras_tallyqa_quantized.tflite
+  compiler_report_dir: artifacts/reports/coral/edgetpu_compiler
   export_tflite: true
   quantization:
     # none: export float TFLite only.
     # ptq: train float model, then representative-dataset post-training quantization.
     # qat: wrap the Keras student with TensorFlow Model Optimization before training.
     mode: ptq
-    representative_samples: 128
+    representative_samples: 1024
+    representative_strategy: prompt_tempered
+    representative_prompt_temperature: 0.5
+    representative_min_per_prompt: 4
+    representative_min_per_output_class: 32
+    full_integer: true
+    inference_input_type: uint8
+    inference_output_type: int8
+
+data:
+  # mobilenet_v3_keras: raw 0..255 float images, with Keras preprocessing inside MobileNetV3.
+  # mobilenet_v3_external: image branch receives (pixel / 127.5) - 1.0; int8/uint8
+  # quantized input can then represent preprocessing with input scale/zero-point.
+  image_preprocessing: mobilenet_v3_external
 
 trainer:
   max_epochs: 10

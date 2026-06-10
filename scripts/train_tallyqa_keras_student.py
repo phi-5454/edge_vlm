@@ -6,6 +6,7 @@ from __future__ import annotations
 import html
 import io
 import json
+import math
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -111,6 +112,22 @@ def load_tallyqa_teacher_targets(
     return targets
 
 
+def load_prompt_filter(cfg: DictConfig) -> set[str] | None:
+    prompts: set[str] = set()
+    names = cfg.data.get("prompt_class_names", None)
+    if names is not None:
+        prompts.update(str(name) for name in names)
+    names_file = cfg.data.get("prompt_class_names_file", None)
+    if names_file:
+        path = absolute_path(str(names_file))
+        prompts.update(
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+    return prompts or None
+
+
 class KerasTallyQAData:
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
@@ -138,7 +155,10 @@ class KerasTallyQAData:
         self.full_indices = {"train": [], "val": [], "test": []}
         self.indices = {"train": [], "val": [], "test": []}
         missing_teacher_policy = str(cfg.data.missing_teacher_policy)
+        prompt_filter = load_prompt_filter(cfg)
         for index, row in enumerate(self.rows):
+            if prompt_filter is not None and str(row["student_prompt"]) not in prompt_filter:
+                continue
             split = split_for_image(str(row["image_id"]), int(cfg.seed))
             self.full_indices[split].append(index)
             if missing_teacher_policy == "keep" or index in self.teacher_targets:
@@ -147,6 +167,11 @@ class KerasTallyQAData:
             self.indices["train"] = self.indices["train"][: int(cfg.data.train_example_limit)]
         if missing_teacher_policy == "filter" and not sum(map(len, self.indices.values())):
             raise ValueError("The teacher cache does not contain any usable TallyQA targets.")
+        self.train_epoch = 0
+        self.train_steps_per_epoch = max(
+            1,
+            math.ceil(len(self.indices["train"]) / int(cfg.data.batch_size)),
+        )
 
         metadata = json.loads((self.dataset_root / "metadata.json").read_text(encoding="utf-8"))
         image_meta = metadata["image"]
@@ -168,7 +193,19 @@ class KerasTallyQAData:
         return self._images
 
     def image(self, image_index: int) -> np.ndarray:
-        chw = np.asarray(self.images[int(image_index)], dtype=np.float32) / 255.0
+        image_preprocessing = str(self.cfg.data.get("image_preprocessing", "imagenet_standard"))
+        chw = np.asarray(self.images[int(image_index)], dtype=np.float32)
+        if image_preprocessing == "mobilenet_v3_keras":
+            return np.transpose(chw, (1, 2, 0)).astype(np.float32)
+        if image_preprocessing == "mobilenet_v3_external":
+            chw = (chw / 127.5) - 1.0
+            return np.transpose(chw, (1, 2, 0)).astype(np.float32)
+        if image_preprocessing != "imagenet_standard":
+            raise ValueError(
+                "data.image_preprocessing must be one of "
+                "{'imagenet_standard', 'mobilenet_v3_keras', 'mobilenet_v3_external'}."
+            )
+        chw = chw / 255.0
         chw = (chw - self.mean) / self.std
         return np.transpose(chw, (1, 2, 0)).astype(np.float32)
 
@@ -195,12 +232,180 @@ class KerasTallyQAData:
             "active_prompts": sum(map(len, self.indices.values())),
         }
 
+    def set_train_epoch(self, epoch: int) -> None:
+        self.train_epoch = max(0, int(epoch))
+
+    def set_train_steps_per_epoch(self, steps: int) -> None:
+        self.train_steps_per_epoch = max(1, int(steps))
+
+    def prompt_sampling_temperature(self) -> float:
+        start_temperature = float(self.cfg.data.get("prompt_class_sampling_temperature", 0.5))
+        end_temperature = self.cfg.data.get("prompt_class_sampling_end_temperature", None)
+        if end_temperature is None:
+            return start_temperature
+        end_temperature = float(end_temperature)
+        elapsed_steps = self.train_epoch * self.train_steps_per_epoch
+        ramp_start_step = int(self.cfg.data.get("prompt_class_sampling_ramp_start_step", 0) or 0)
+        if elapsed_steps <= ramp_start_step:
+            return start_temperature
+        decay_steps = self.cfg.data.get("prompt_class_sampling_decay_steps", None)
+        if decay_steps is None:
+            max_epochs = int(self.cfg.trainer.get("max_epochs", self.train_epoch + 1))
+            decay_steps = max(1, max_epochs * self.train_steps_per_epoch - ramp_start_step)
+        progress = min(1.0, (elapsed_steps - ramp_start_step) / max(1, int(decay_steps)))
+        return start_temperature + (end_temperature - start_temperature) * progress
+
+    def train_epoch_indices(self) -> list[int]:
+        indices = list(self.indices["train"])
+        sampling = str(self.cfg.data.get("train_sampling", "natural"))
+        rng = np.random.default_rng(int(self.cfg.seed) + self.train_epoch)
+        if sampling == "natural":
+            if bool(self.cfg.data.get("shuffle_train", True)):
+                rng.shuffle(indices)
+            return indices
+        if sampling != "prompt_class_tempered":
+            raise ValueError("data.train_sampling must be 'natural' or 'prompt_class_tempered'.")
+        temperature = self.prompt_sampling_temperature()
+        by_prompt: dict[str, list[int]] = {}
+        for index in indices:
+            by_prompt.setdefault(str(self.rows[index]["student_prompt"]), []).append(index)
+        prompt_names = sorted(by_prompt)
+        counts = np.asarray([len(by_prompt[prompt]) for prompt in prompt_names], dtype=np.float64)
+        if temperature <= 0:
+            target = counts.copy()
+        else:
+            target = counts ** (1.0 - temperature)
+            target *= counts.sum() / target.sum()
+        quotas = np.floor(target).astype(np.int64)
+        leftovers = int(counts.sum()) - int(quotas.sum())
+        if leftovers > 0:
+            fractional = target - quotas
+            probabilities = fractional / fractional.sum() if fractional.sum() > 0 else None
+            chosen = rng.choice(
+                np.arange(len(prompt_names)),
+                size=leftovers,
+                replace=True,
+                p=probabilities,
+            )
+            for prompt_index in chosen.tolist():
+                quotas[prompt_index] += 1
+        sampled: list[int] = []
+        for prompt, quota in zip(prompt_names, quotas.tolist(), strict=True):
+            prompt_indices = by_prompt[prompt]
+            if quota <= len(prompt_indices):
+                chosen = rng.choice(np.asarray(prompt_indices), size=int(quota), replace=False)
+                sampled.extend(int(value) for value in chosen.tolist())
+            else:
+                sampled.extend(prompt_indices)
+                extra = int(quota) - len(prompt_indices)
+                chosen = rng.choice(np.asarray(prompt_indices), size=extra, replace=True)
+                sampled.extend(int(value) for value in chosen.tolist())
+        rng.shuffle(sampled)
+        return sampled
+
+    def representative_indices(
+        self,
+        max_samples: int,
+        strategy: str,
+        prompt_temperature: float,
+        min_per_prompt: int,
+        min_per_output_class: int,
+    ) -> list[int]:
+        train_indices = list(self.indices["train"])
+        if max_samples <= 0 or not train_indices:
+            return []
+        rng = np.random.default_rng(int(self.cfg.seed) + 7919)
+        selected: list[int] = []
+        selected_set: set[int] = set()
+
+        def add(candidates: list[int], count: int) -> None:
+            if count <= 0:
+                return
+            remaining = [index for index in candidates if index not in selected_set]
+            if not remaining:
+                return
+            take = min(count, len(remaining), max_samples - len(selected))
+            if take <= 0:
+                return
+            chosen = rng.choice(np.asarray(remaining, dtype=np.int64), size=take, replace=False)
+            for value in chosen.tolist():
+                selected.append(int(value))
+                selected_set.add(int(value))
+
+        by_prompt: dict[str, list[int]] = {}
+        by_class: dict[int, list[int]] = {class_id: [] for class_id in range(self.num_classes)}
+        for index in train_indices:
+            row = self.rows[index]
+            by_prompt.setdefault(str(row["student_prompt"]), []).append(index)
+            by_class[collapse_count(int(row["answer"]), self.collapse_at)].append(index)
+
+        for indices in by_class.values():
+            add(indices, min_per_output_class)
+        for prompt in sorted(by_prompt):
+            add(by_prompt[prompt], min_per_prompt)
+        remaining_budget = max_samples - len(selected)
+        if remaining_budget <= 0:
+            return selected[:max_samples]
+
+        remaining = [index for index in train_indices if index not in selected_set]
+        if not remaining:
+            return selected[:max_samples]
+        if strategy == "natural":
+            add(remaining, remaining_budget)
+        elif strategy == "prompt_tempered":
+            if prompt_temperature <= 0:
+                raise ValueError("representative_prompt_temperature must be positive.")
+            prompt_names = sorted(by_prompt)
+            counts = np.asarray([len(by_prompt[prompt]) for prompt in prompt_names], dtype=np.float64)
+            weights = counts ** prompt_temperature
+            weights = weights / weights.sum()
+            quotas = np.floor(weights * remaining_budget).astype(np.int64)
+            leftovers = remaining_budget - int(quotas.sum())
+            if leftovers > 0:
+                order = rng.choice(
+                    np.arange(len(prompt_names)),
+                    size=leftovers,
+                    replace=True,
+                    p=weights,
+                )
+                for prompt_index in order.tolist():
+                    quotas[prompt_index] += 1
+            for prompt, quota in zip(prompt_names, quotas.tolist(), strict=True):
+                add(by_prompt[prompt], int(quota))
+            if len(selected) < max_samples:
+                add(remaining, max_samples - len(selected))
+        else:
+            raise ValueError(
+                "export.quantization.representative_strategy must be one of "
+                "{'natural', 'prompt_tempered'}."
+            )
+        return selected[:max_samples]
+
+    def representative_examples(
+        self,
+        max_samples: int,
+        strategy: str,
+        prompt_temperature: float,
+        min_per_prompt: int,
+        min_per_output_class: int,
+    ) -> Iterable[tuple[np.ndarray, np.ndarray]]:
+        for index in self.representative_indices(
+            max_samples,
+            strategy,
+            prompt_temperature,
+            min_per_prompt,
+            min_per_output_class,
+        ):
+            row = self.rows[index]
+            item_class_id = int(row["item_class_id"])
+            yield (
+                self.prompt_token_ids[item_class_id : item_class_id + 1],
+                self.image(int(row["image_index"]))[np.newaxis, ...],
+            )
+
     def batches(self, split: str) -> Iterable[tuple[dict[str, np.ndarray], dict[str, np.ndarray]]]:
         batch_size = int(self.cfg.data.batch_size)
-        indices = list(self.indices[split])
-        if split == "train" and bool(self.cfg.data.get("shuffle_train", True)):
-            rng = np.random.default_rng(int(self.cfg.seed))
-            rng.shuffle(indices)
+        indices = self.train_epoch_indices() if split == "train" else list(self.indices[split])
         for start in range(0, len(indices), batch_size):
             batch_indices = indices[start : start + batch_size]
             rows = [self.rows[index] for index in batch_indices]
@@ -521,6 +726,219 @@ def build_tflite_prior_model(
     )
 
 
+def keras_mobilenet_cutoff_layer(backbone: str, cutoff: str | int | None) -> str | None:
+    if cutoff is None or cutoff == "none":
+        return None
+    if isinstance(cutoff, int) or str(cutoff).isdigit():
+        raise ValueError(
+            "Keras MobileNetV3 cutoffs are layer names. Use 'auto', 'none', or a Keras layer name."
+        )
+    if cutoff != "auto":
+        return str(cutoff)
+    if backbone == "mobilenet_v3_large":
+        return "expanded_conv_11/Add"
+    if backbone == "mobilenet_v3_small":
+        return "expanded_conv_7/Add"
+    raise ValueError("keras_model.image_backbone must be mobilenet_v3_large or mobilenet_v3_small.")
+
+
+def build_keras_mobilenet(
+    cfg: DictConfig,
+    images: tf.keras.layers.Input,
+) -> tf.keras.Model:
+    backbone_name = str(cfg.keras_model.get("image_backbone", cfg.model.get("image_backbone", "mobilenet_v3_small")))
+    weights = "imagenet" if bool(cfg.model.get("image_pretrained", True)) else None
+    kwargs = {
+        "include_top": False,
+        "weights": weights,
+        "input_tensor": images,
+        "include_preprocessing": bool(cfg.keras_model.get("include_mobilenet_preprocessing", True)),
+    }
+    if backbone_name == "mobilenet_v3_large":
+        backbone = tf.keras.applications.MobileNetV3Large(**kwargs)
+    elif backbone_name == "mobilenet_v3_small":
+        backbone = tf.keras.applications.MobileNetV3Small(**kwargs)
+    else:
+        raise ValueError("keras_model.image_backbone must be mobilenet_v3_large or mobilenet_v3_small.")
+    cutoff = keras_mobilenet_cutoff_layer(
+        backbone_name,
+        cfg.keras_model.get("image_feature_cutoff", cfg.model.get("image_feature_cutoff", "auto")),
+    )
+    if cutoff is None:
+        return backbone
+    return tf.keras.Model(backbone.input, backbone.get_layer(cutoff).output, name=f"{backbone_name}_cutoff")
+
+
+def add_learned_position_embeddings(
+    tokens: tf.Tensor,
+    token_count: int,
+    fusion_dim: int,
+    name: str,
+) -> tf.Tensor:
+    positions = tf.range(token_count, dtype=tf.int32)[tf.newaxis, :]
+    position_embeddings = tf.keras.layers.Embedding(
+        token_count,
+        fusion_dim,
+        embeddings_initializer="zeros",
+        name=f"{name}_embedding",
+    )(positions)
+    return tf.keras.layers.Add(name=f"{name}_add")([tokens, position_embeddings])
+
+
+def add_prompt_identity(
+    query_token: tf.Tensor,
+    fusion_dim: int,
+) -> tf.Tensor:
+    identity_index = tf.zeros((1, 1), dtype=tf.int32)
+    identity = tf.keras.layers.Embedding(
+        1,
+        fusion_dim,
+        embeddings_initializer="zeros",
+        name="prompt_identity_embedding",
+    )(identity_index)
+    return tf.keras.layers.Add(name="prompt_identity_add")([query_token, identity])
+
+
+def normformer_block(
+    tokens: tf.Tensor,
+    fusion_dim: int,
+    heads: int,
+    mlp_ratio: int,
+    dropout: float,
+    index: int,
+) -> tf.Tensor:
+    residual = tokens
+    x = tf.keras.layers.LayerNormalization(epsilon=1e-5, name=f"fusion_{index}_attn_norm")(tokens)
+    x = tf.keras.layers.MultiHeadAttention(
+        num_heads=heads,
+        key_dim=fusion_dim // heads,
+        dropout=dropout,
+        name=f"fusion_{index}_mha",
+    )(x, x)
+    if dropout > 0:
+        x = tf.keras.layers.Dropout(dropout, name=f"fusion_{index}_attn_dropout")(x)
+    tokens = tf.keras.layers.Add(name=f"fusion_{index}_attn_residual")([residual, x])
+
+    residual = tokens
+    x = tf.keras.layers.LayerNormalization(epsilon=1e-5, name=f"fusion_{index}_mlp_norm")(tokens)
+    x = tf.keras.layers.Dense(fusion_dim * mlp_ratio, activation="gelu", name=f"fusion_{index}_mlp_up")(x)
+    if dropout > 0:
+        x = tf.keras.layers.Dropout(dropout, name=f"fusion_{index}_mlp_dropout")(x)
+    x = tf.keras.layers.Dense(fusion_dim, name=f"fusion_{index}_mlp_down")(x)
+    tokens = tf.keras.layers.Add(name=f"fusion_{index}_mlp_residual")([residual, x])
+    return tokens
+
+
+def build_tallyqa_current_student_model(
+    cfg: DictConfig,
+    embedding_rows: np.ndarray,
+    prompt_length: int,
+) -> tf.keras.Model:
+    num_classes = int(cfg.model.num_outputs)
+    fusion_dim = int(cfg.keras_model.get("fusion_dim", cfg.model.fusion_dim))
+    heads = int(cfg.keras_model.get("fusion_heads", cfg.model.fusion_heads))
+    if fusion_dim % heads != 0:
+        raise ValueError("fusion_dim must be divisible by fusion_heads.")
+    fusion_depth = int(cfg.keras_model.get("fusion_depth", cfg.model.fusion_depth))
+    mlp_ratio = int(cfg.keras_model.get("fusion_mlp_ratio", cfg.model.fusion_mlp_ratio))
+    dropout = float(cfg.keras_model.get("dropout", cfg.model.dropout))
+    fusion_mode = str(cfg.keras_model.get("fusion_mode", "normformer"))
+    use_prompt_identity = bool(cfg.keras_model.get("use_prompt_identity", cfg.model.use_prompt_identity))
+    use_image_positional_embeddings = bool(
+        cfg.keras_model.get(
+            "use_image_positional_embeddings",
+            cfg.model.use_image_positional_embeddings,
+        )
+    )
+
+    token_ids = tf.keras.Input(shape=(prompt_length,), dtype=tf.int32, name="token_ids")
+    images = tf.keras.Input(
+        shape=(int(cfg.keras_model.image_size), int(cfg.keras_model.image_size), 3),
+        dtype=tf.float32,
+        name="images",
+    )
+
+    pad = np.zeros((1, embedding_rows.shape[1]), dtype=np.float32)
+    embedding_init = np.concatenate([pad, embedding_rows.astype(np.float32)], axis=0)
+    embedded = tf.keras.layers.Embedding(
+        input_dim=embedding_init.shape[0],
+        output_dim=embedding_init.shape[1],
+        embeddings_initializer=tf.keras.initializers.Constant(embedding_init),
+        trainable=not bool(cfg.model.freeze_embeddings),
+        mask_zero=True,
+        name="compact_prompt_embedding",
+    )(token_ids)
+    query = tf.keras.layers.GlobalAveragePooling1D(name="mean_prompt_embedding")(embedded)
+    query = tf.keras.layers.Dense(fusion_dim, activation="gelu", name="prompt_projection_dense")(query)
+    query = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="prompt_projection_norm")(query)
+    query_token = tf.keras.layers.Reshape((1, fusion_dim), name="prompt_token")(query)
+    if use_prompt_identity:
+        query_token = add_prompt_identity(query_token, fusion_dim)
+
+    backbone = build_keras_mobilenet(cfg, images)
+    backbone.trainable = not bool(cfg.model.freeze_image_features)
+    image_features = backbone(images)
+    image_tokens = tf.keras.layers.Conv2D(
+        fusion_dim,
+        kernel_size=1,
+        padding="same",
+        activation=None,
+        name="image_token_projection",
+    )(image_features)
+    height = int(image_tokens.shape[1])
+    width = int(image_tokens.shape[2])
+    if height <= 0 or width <= 0:
+        raise ValueError(f"Image token spatial shape must be static; got {image_tokens.shape}.")
+    token_count = height * width
+    image_tokens = tf.keras.layers.Reshape((token_count, fusion_dim), name="image_tokens")(image_tokens)
+    if use_image_positional_embeddings:
+        image_tokens = add_learned_position_embeddings(
+            image_tokens,
+            token_count,
+            fusion_dim,
+            name="image_position",
+        )
+
+    if fusion_mode == "mlp":
+        image = tf.keras.layers.GlobalAveragePooling1D(name="image_token_mean")(image_tokens)
+        query_flat = tf.keras.layers.Reshape((fusion_dim,), name="prompt_token_flat")(query_token)
+        fused = tf.keras.layers.Concatenate(name="prompt_image_concat")([query_flat, image])
+        fused = tf.keras.layers.Dense(fusion_dim * mlp_ratio, activation="gelu", name="fusion_mlp_0")(fused)
+        if dropout > 0:
+            fused = tf.keras.layers.Dropout(dropout, name="fusion_mlp_dropout")(fused)
+        fused = tf.keras.layers.Dense(fusion_dim, activation="gelu", name="fusion_mlp_1")(fused)
+    elif fusion_mode == "normformer":
+        tokens = tf.keras.layers.Concatenate(axis=1, name="prompt_image_tokens")(
+            [query_token, image_tokens]
+        )
+        for index in range(fusion_depth):
+            tokens = normformer_block(tokens, fusion_dim, heads, mlp_ratio, dropout, index)
+        fused = tf.keras.layers.GlobalAveragePooling1D(name="fusion_token_mean")(tokens)
+        fused = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="fusion_output_norm")(fused)
+    else:
+        raise ValueError("keras_model.fusion_mode must be one of {'normformer', 'mlp'}.")
+
+    logits = tf.keras.layers.Dense(num_classes, name="logits")(fused)
+    return tf.keras.Model(
+        inputs={"token_ids": token_ids, "images": images},
+        outputs=logits,
+        name=f"tallyqa_keras_{fusion_mode}_student",
+    )
+
+
+def build_keras_student_model(
+    cfg: DictConfig,
+    embedding_rows: np.ndarray,
+    prompt_length: int,
+) -> tf.keras.Model:
+    architecture = str(cfg.keras_model.get("architecture", "legacy_prior"))
+    if architecture == "legacy_prior":
+        return build_tflite_prior_model(cfg, embedding_rows, prompt_length)
+    if architecture == "current_student":
+        return build_tallyqa_current_student_model(cfg, embedding_rows, prompt_length)
+    raise ValueError("keras_model.architecture must be one of {'legacy_prior', 'current_student'}.")
+
+
 def maybe_apply_qat(student: tf.keras.Model, cfg: DictConfig) -> tf.keras.Model:
     mode = str(cfg.export.quantization.mode)
     if mode != "qat":
@@ -694,6 +1112,9 @@ class DistilledStudent(tf.keras.Model):
 
 def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, Any]:
     quantization_mode = str(cfg.export.quantization.mode)
+    include_mobilenet_preprocessing = bool(
+        cfg.keras_model.get("include_mobilenet_preprocessing", True)
+    )
     pytorch_unsupported = [
         {
             "component": "MobileViTFusionBlock / nn.TransformerEncoderLayer",
@@ -746,7 +1167,13 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
         "known_non_edge_tpu_or_risky_patterns": [
             "Embedding/Gather for prompt tokens",
             "prompt embedding/gather and mask-aware pooling are intentionally not QAT-annotated",
-            "float input normalization outside the model",
+            (
+                "Keras MobileNetV3 preprocessing is inside the model; inspect the EdgeTPU "
+                "compiler report for preprocessing CPU fallback."
+                if include_mobilenet_preprocessing
+                else "MobileNetV3 preprocessing is externalized; inspect exported TFLite "
+                "image input quantization parameters before deployment."
+            ),
             "Dropout exists only during training",
             "Keras training path currently does not mirror Lightning warmup scheduling.",
             "Keras W&B logging mirrors scalar metrics, confusion matrices, reports, results, and weights; Lightning-specific wandb.watch graph/gradient logging is not mirrored.",
@@ -768,7 +1195,122 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
         }[quantization_mode],
         "pytorch_student_steps_not_mirrored_for_tflite": pytorch_unsupported,
         "config": OmegaConf.to_container(cfg, resolve=True),
+        "compiler_report_layout": {
+            "root": str(cfg.export.get("compiler_report_dir", "artifacts/reports/coral/edgetpu_compiler")),
+            "per_run": (
+                "<root>/<run_name>/{float,ptq,qat}/ containing compiler stdout/stderr, "
+                "compiler_summary.json, model_operator_report.txt, and compiled .tflite when produced"
+            ),
+        },
     }
+
+
+def maybe_write_visualkeras(model: tf.keras.Model, output: Path) -> dict[str, Any]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import visualkeras
+    except ImportError:
+        return {
+            "enabled": False,
+            "status": "missing_dependency",
+            "message": "Install visualkeras to generate model architecture PNGs.",
+            "output": str(output),
+        }
+    try:
+        visualkeras.layered_view(model, legend=True, to_file=str(output))
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "output": str(output),
+        }
+    return {"enabled": True, "status": "written", "output": str(output)}
+
+
+class WarmupPlateauDecaySchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+    def __init__(
+        self,
+        learning_rate: float,
+        warmup_start_learning_rate: float,
+        warmup_steps: int,
+        decay_start_step: int,
+        final_learning_rate: float,
+        total_steps: int,
+    ):
+        super().__init__()
+        self.learning_rate = float(learning_rate)
+        self.warmup_start_learning_rate = float(warmup_start_learning_rate)
+        self.warmup_steps = max(0, int(warmup_steps))
+        self.decay_start_step = max(self.warmup_steps, int(decay_start_step))
+        self.final_learning_rate = float(final_learning_rate)
+        self.total_steps = max(1, int(total_steps))
+
+    def __call__(self, step: tf.Tensor) -> tf.Tensor:
+        step_f = tf.cast(step, tf.float32)
+        learning_rate = tf.constant(self.learning_rate, dtype=tf.float32)
+        warmup_start = tf.constant(self.warmup_start_learning_rate, dtype=tf.float32)
+        final_learning_rate = tf.constant(self.final_learning_rate, dtype=tf.float32)
+        if self.warmup_steps > 0:
+            warmup_progress = tf.clip_by_value(step_f / float(self.warmup_steps), 0.0, 1.0)
+            warmup_lr = warmup_start + (learning_rate - warmup_start) * warmup_progress
+        else:
+            warmup_lr = learning_rate
+        decay_progress = tf.clip_by_value(
+            (step_f - float(self.decay_start_step))
+            / max(1.0, float(self.total_steps - self.decay_start_step)),
+            0.0,
+            1.0,
+        )
+        decay_lr = learning_rate + (final_learning_rate - learning_rate) * decay_progress
+        return tf.where(
+            step_f < float(self.warmup_steps),
+            warmup_lr,
+            tf.where(step_f < float(self.decay_start_step), learning_rate, decay_lr),
+        )
+
+    def get_config(self) -> dict[str, float | int]:
+        return {
+            "learning_rate": self.learning_rate,
+            "warmup_start_learning_rate": self.warmup_start_learning_rate,
+            "warmup_steps": self.warmup_steps,
+            "decay_start_step": self.decay_start_step,
+            "final_learning_rate": self.final_learning_rate,
+            "total_steps": self.total_steps,
+        }
+
+
+def keras_learning_rate(cfg: DictConfig, total_steps: int) -> float | tf.keras.optimizers.schedules.LearningRateSchedule:
+    schedule = str(cfg.optimizer.get("lr_schedule", "none"))
+    learning_rate = float(cfg.optimizer.learning_rate)
+    if schedule == "none":
+        return learning_rate
+    warmup_steps = int(cfg.optimizer.get("warmup_steps", 0) or 0)
+    warmup_start = float(cfg.optimizer.get("warmup_start_learning_rate", learning_rate) or learning_rate)
+    if schedule == "warmup":
+        return WarmupPlateauDecaySchedule(
+            learning_rate=learning_rate,
+            warmup_start_learning_rate=warmup_start,
+            warmup_steps=warmup_steps,
+            decay_start_step=total_steps,
+            final_learning_rate=learning_rate,
+            total_steps=total_steps,
+        )
+    if schedule == "warmup_plateau_decay":
+        if cfg.optimizer.get("lr_decay_start_step", None) is not None:
+            decay_start_step = int(cfg.optimizer.lr_decay_start_step)
+        else:
+            decay_start_step = int(round(total_steps * float(cfg.optimizer.get("lr_decay_start_fraction", 0.5))))
+        final_lr = float(cfg.optimizer.get("lr_final_learning_rate", warmup_start) or warmup_start)
+        return WarmupPlateauDecaySchedule(
+            learning_rate=learning_rate,
+            warmup_start_learning_rate=warmup_start,
+            warmup_steps=warmup_steps,
+            decay_start_step=decay_start_step,
+            final_learning_rate=final_lr,
+            total_steps=total_steps,
+        )
+    raise ValueError("optimizer.lr_schedule must be one of {'none', 'warmup', 'warmup_plateau_decay'}.")
 
 
 class WandbKerasLogger(tf.keras.callbacks.Callback):
@@ -913,6 +1455,31 @@ class TqdmKerasProgress(tf.keras.callbacks.Callback):
             self.epoch_bar = None
 
 
+class KerasDataEpochCallback(tf.keras.callbacks.Callback):
+    def __init__(self, data: KerasTallyQAData, train_steps: int):
+        super().__init__()
+        self.data = data
+        self.train_steps = int(train_steps)
+
+    def on_train_begin(self, logs: dict[str, Any] | None = None) -> None:
+        self.data.set_train_steps_per_epoch(self.train_steps)
+
+    def on_epoch_begin(self, epoch: int, logs: dict[str, Any] | None = None) -> None:
+        self.data.set_train_epoch(epoch)
+        if str(self.data.cfg.data.get("train_sampling", "natural")) == "prompt_class_tempered":
+            print(
+                json.dumps(
+                    {
+                        "event": "keras_prompt_sampling_epoch",
+                        "epoch": int(epoch),
+                        "prompt_class_sampling_temperature": self.data.prompt_sampling_temperature(),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+
+
 class StudentWeightCheckpoint(tf.keras.callbacks.Callback):
     def __init__(self, student: tf.keras.Model, filepath: Path, monitor: str, mode: str):
         super().__init__()
@@ -944,25 +1511,24 @@ def export_float_tflite(model: tf.keras.Model, output: Path) -> None:
 def representative_dataset(
     data: KerasTallyQAData,
     max_samples: int,
+    cfg: DictConfig,
 ) -> Iterable[list[np.ndarray]]:
-    emitted = 0
-    for inputs, _targets in data.batches("train"):
-        images = inputs["images"].astype(np.float32)
-        token_ids = inputs["token_ids"].astype(np.int32)
-        for index in range(images.shape[0]):
-            yield [
-                token_ids[index : index + 1],
-                images[index : index + 1],
-            ]
-            emitted += 1
-            if emitted >= max_samples:
-                return
+    quant_cfg = cfg.export.quantization
+    for token_ids, image in data.representative_examples(
+        max_samples=max_samples,
+        strategy=str(quant_cfg.get("representative_strategy", "prompt_tempered")),
+        prompt_temperature=float(quant_cfg.get("representative_prompt_temperature", 0.5)),
+        min_per_prompt=int(quant_cfg.get("representative_min_per_prompt", 4)),
+        min_per_output_class=int(quant_cfg.get("representative_min_per_output_class", 32)),
+    ):
+        yield [token_ids.astype(np.int32), image.astype(np.float32)]
 
 
 def export_ptq_tflite(
     model: tf.keras.Model,
     output: Path,
     data: KerasTallyQAData,
+    cfg: DictConfig,
     representative_samples: int,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -971,7 +1537,14 @@ def export_ptq_tflite(
     converter.representative_dataset = lambda: representative_dataset(
         data,
         representative_samples,
+        cfg,
     )
+    if bool(cfg.export.quantization.get("full_integer", False)):
+        converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+        input_type = str(cfg.export.quantization.get("inference_input_type", "uint8"))
+        output_type = str(cfg.export.quantization.get("inference_output_type", "int8"))
+        converter.inference_input_type = getattr(tf, input_type)
+        converter.inference_output_type = getattr(tf, output_type)
     tflite = converter.convert()
     output.write_bytes(tflite)
 
@@ -985,14 +1558,19 @@ def main(cfg: DictConfig) -> None:
     load_dotenv(absolute_path(cfg.paths.wandb_env_file), override=False)
     data = make_data(cfg)
     prompt_length = int(data.prompt_token_ids.shape[1])
+    train_steps = inferred_steps(data, "train", cfg)
+    val_steps = inferred_steps(data, "val", cfg)
+    test_steps = inferred_steps(data, "test", cfg)
+    data.set_train_steps_per_epoch(train_steps)
+    total_train_steps = max(1, train_steps * int(cfg.trainer.max_epochs))
 
-    student = build_tflite_prior_model(cfg, data.embedding_rows, prompt_length)
+    student = build_keras_student_model(cfg, data.embedding_rows, prompt_length)
     student = maybe_apply_qat(student, cfg)
     class_weights = class_weights_from_config(cfg, data)
     kl_weights = (
         np.asarray([float(weight) for weight in cfg.distillation.kl_class_weights], dtype=np.float32)
         if cfg.distillation.get("kl_class_weights", None) is not None
-        else None
+        else class_weights
     )
     model = DistilledStudent(
         student=student,
@@ -1007,7 +1585,7 @@ def main(cfg: DictConfig) -> None:
     )
     model.compile(
         optimizer=tf.keras.optimizers.AdamW(
-            learning_rate=float(cfg.optimizer.learning_rate),
+            learning_rate=keras_learning_rate(cfg, total_train_steps),
             weight_decay=float(cfg.optimizer.weight_decay),
         )
     )
@@ -1019,6 +1597,14 @@ def main(cfg: DictConfig) -> None:
     report_dir.mkdir(parents=True, exist_ok=True)
     counts = parameter_counts(student)
 
+    visualkeras_report = (
+        maybe_write_visualkeras(
+            student,
+            report_dir / f"{run_name}_visualkeras.png",
+        )
+        if bool(cfg.keras_model.get("visualkeras", {}).get("enabled", False))
+        else {"enabled": False, "status": "disabled"}
+    )
     report = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "git_revision": git_revision(),
@@ -1036,6 +1622,26 @@ def main(cfg: DictConfig) -> None:
             "prompt_token_shape": list(data.prompt_token_ids.shape),
         },
         "model": compatibility_report(student, cfg),
+        "visualization": {
+            "visualkeras": visualkeras_report,
+        },
+        "quantization": {
+            "representative_indices": data.representative_indices(
+                max_samples=int(cfg.export.quantization.representative_samples),
+                strategy=str(cfg.export.quantization.get("representative_strategy", "prompt_tempered")),
+                prompt_temperature=float(
+                    cfg.export.quantization.get("representative_prompt_temperature", 0.5)
+                ),
+                min_per_prompt=int(cfg.export.quantization.get("representative_min_per_prompt", 4)),
+                min_per_output_class=int(
+                    cfg.export.quantization.get("representative_min_per_output_class", 32)
+                ),
+            ),
+            "representative_sampling": OmegaConf.to_container(
+                cfg.export.quantization,
+                resolve=True,
+            ),
+        },
     }
     report["model"]["parameter_counts"] = counts
     report_path = report_dir / f"{run_name}_architecture.json"
@@ -1071,9 +1677,6 @@ def main(cfg: DictConfig) -> None:
     val_ds = make_tf_dataset(data, "val", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
     test_ds = make_tf_dataset(data, "test", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
 
-    train_steps = inferred_steps(data, "train", cfg)
-    val_steps = inferred_steps(data, "val", cfg)
-    test_steps = inferred_steps(data, "test", cfg)
     checkpoint_callback = StudentWeightCheckpoint(
         student=student,
         filepath=ckpt_dir / "best.weights.h5",
@@ -1081,6 +1684,7 @@ def main(cfg: DictConfig) -> None:
         mode=str(cfg.trainer.early_stopping.get("mode", "min")),
     )
     callbacks: list[tf.keras.callbacks.Callback] = [
+        KerasDataEpochCallback(data=data, train_steps=train_steps),
         TqdmKerasProgress(train_steps=train_steps, val_steps=val_steps),
         WandbEvaluationLogger(
             val_dataset=val_ds,
@@ -1166,6 +1770,7 @@ def main(cfg: DictConfig) -> None:
                 student,
                 absolute_path(cfg.export.tflite_quantized),
                 data,
+                cfg,
                 int(cfg.export.quantization.representative_samples),
             )
             wandb.save(str(absolute_path(cfg.export.tflite_quantized)), policy="now")
