@@ -1276,6 +1276,42 @@ def keras_mobilenet_cutoff_layer(backbone: str, cutoff: str | int | None) -> str
     raise ValueError("keras_model.image_backbone must be mobilenet_v3_large or mobilenet_v3_small.")
 
 
+@tf.keras.utils.register_keras_serializable(package="vlm_micro")
+class TilePromptQueryToFeatureMap(tf.keras.layers.Layer):
+    def call(self, inputs: list[tf.Tensor] | tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
+        query_map, features = inputs
+        return tf.tile(
+            query_map,
+            [
+                1,
+                tf.shape(features)[1],
+                tf.shape(features)[2],
+                1,
+            ],
+        )
+
+
+@tf.keras.utils.register_keras_serializable(package="vlm_micro")
+class BatchedMatMul(tf.keras.layers.Layer):
+    def __init__(self, transpose_b: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.transpose_b = bool(transpose_b)
+
+    def call(self, inputs: list[tf.Tensor] | tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
+        return tf.matmul(inputs[0], inputs[1], transpose_b=self.transpose_b)
+
+    def get_config(self) -> dict[str, Any]:
+        config = super().get_config()
+        config["transpose_b"] = self.transpose_b
+        return config
+
+
+@tf.keras.utils.register_keras_serializable(package="vlm_micro")
+class FirstPromptToken(tf.keras.layers.Layer):
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        return inputs[:, 0, :]
+
+
 def build_keras_mobilenet(
     cfg: DictConfig,
     images: tf.keras.layers.Input,
@@ -1389,18 +1425,7 @@ def broadcast_query_to_feature_map(
     name: str,
 ) -> tf.Tensor:
     query_map = tf.keras.layers.Reshape((1, 1, channels), name=f"{name}_reshape")(query)
-    return tf.keras.layers.Lambda(
-        lambda parts: tf.tile(
-            parts[0],
-            [
-                1,
-                tf.shape(parts[1])[1],
-                tf.shape(parts[1])[2],
-                1,
-            ],
-        ),
-        name=f"{name}_tile",
-    )([query_map, features])
+    return TilePromptQueryToFeatureMap(name=f"{name}_tile")([query_map, features])
 
 
 def normformer_block(
@@ -1464,8 +1489,8 @@ def static_normformer_block(
     q = tf.keras.layers.Permute((2, 1, 3), name=f"fusion_{index}_q_permute")(q)
     k = tf.keras.layers.Permute((2, 1, 3), name=f"fusion_{index}_k_permute")(k)
     v = tf.keras.layers.Permute((2, 1, 3), name=f"fusion_{index}_v_permute")(v)
-    scores = tf.keras.layers.Lambda(
-        lambda parts: tf.matmul(parts[0], parts[1], transpose_b=True),
+    scores = BatchedMatMul(
+        transpose_b=True,
         name=f"fusion_{index}_attention_scores",
     )([q, k])
     scores = tf.keras.layers.Rescaling(1.0 / math.sqrt(key_dim), name=f"fusion_{index}_attention_scale")(
@@ -1477,10 +1502,7 @@ def static_normformer_block(
         weights = scores
     else:
         raise ValueError("attention_normalization must be one of {'softmax', 'none'}.")
-    context = tf.keras.layers.Lambda(
-        lambda parts: tf.matmul(parts[0], parts[1]),
-        name=f"fusion_{index}_attention_context",
-    )([weights, v])
+    context = BatchedMatMul(name=f"fusion_{index}_attention_context")([weights, v])
     context = tf.keras.layers.Permute((2, 1, 3), name=f"fusion_{index}_context_permute")(context)
     context = tf.keras.layers.Reshape((token_count, fusion_dim), name=f"fusion_{index}_context_flat")(
         context
@@ -1696,7 +1718,7 @@ def prompt_query_tensors(
         name="compact_prompt_embedding",
     )(token_ids)
     if bool(cfg.keras_model.get("static_single_prompt_token", False)):
-        query = tf.keras.layers.Lambda(lambda x: x[:, 0, :], name="first_prompt_embedding")(embedded)
+        query = FirstPromptToken(name="first_prompt_embedding")(embedded)
     else:
         query = tf.keras.layers.GlobalAveragePooling1D(name="mean_prompt_embedding")(embedded)
     query = tf.keras.layers.Dense(
