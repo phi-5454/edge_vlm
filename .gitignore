@@ -32,6 +32,9 @@ multirun/
 # Generated datasets, checkpoints, and model exports
 data/
 datasets/
+max78000/ai8x_training/datasets/*.py
+!max78000/ai8x_training/datasets/
+!max78000/ai8x_training/datasets/tallyqa_count.py
 external-models/*
 !external-models/
 !external-models/README.md

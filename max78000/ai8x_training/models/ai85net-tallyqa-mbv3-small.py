@@ -126,7 +126,7 @@ class SameResolutionConvStage(nn.Module):
         return self.layers(x)
 
 
-class TallyQAFoldedSimplePeople(nn.Module):
+class TallyQAFoldedSimpleCount(nn.Module):
     """Count classifier for folded RGB inputs."""
 
     # Input is 12x56x56. Each per-channel plane has 3136 bytes, below 8192.
@@ -205,13 +205,23 @@ class TallyQAFoldedSimplePeople(nn.Module):
         return self.classifier(x)
 
 
-def ai85tallyqambv3smallpeople(pretrained: bool = False, **kwargs):
-    """Construct the folded-input TallyQA people-count model."""
+def ai85tallyqambv3smallcount(pretrained: bool = False, **kwargs):
+    """Construct the folded-input TallyQA count model."""
     assert not pretrained
-    return TallyQAFoldedSimplePeople(**kwargs)
+    return TallyQAFoldedSimpleCount(**kwargs)
+
+
+def ai85tallyqambv3smallpeople(pretrained: bool = False, **kwargs):
+    """Backward-compatible alias for older people-count notebooks."""
+    return ai85tallyqambv3smallcount(pretrained=pretrained, **kwargs)
 
 
 models = [
+    {
+        "name": "ai85tallyqambv3smallcount",
+        "min_input": 1,
+        "dim": 2,
+    },
     {
         "name": "ai85tallyqambv3smallpeople",
         "min_input": 1,
