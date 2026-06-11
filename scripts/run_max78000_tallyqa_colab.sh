@@ -354,7 +354,7 @@ from pathlib import Path
 distiller_path = Path(sys.argv[1]).resolve()
 inner_init = distiller_path / "distiller" / "__init__.py"
 outer_init = distiller_path / "__init__.py"
-if inner_init.exists() and not outer_init.exists():
+if inner_init.exists():
     outer_init.write_text(
         "from pathlib import Path\n"
         "inner = Path(__file__).resolve().parent / 'distiller'\n"
@@ -363,6 +363,8 @@ if inner_init.exists() and not outer_init.exists():
         encoding="utf-8",
     )
     print(f"Wrote {outer_init} -> {inner_init}")
+else:
+    print(f"Warning: expected Distiller package source is missing: {inner_init}", file=sys.stderr)
 site_packages = Path(sysconfig.get_paths()["purelib"])
 site_packages.mkdir(parents=True, exist_ok=True)
 pth_path = site_packages / "edge_vlm_distiller.pth"
@@ -495,8 +497,10 @@ if [[ "${TRAIN}" == "1" || "${TRAIN}" == "true" ]]; then
       cd "${ai8x_abs}"
       export PYTHONPATH="${distiller_pythonpath}:${PYTHONPATH:-}"
       .venv/bin/python - <<'PY'
+import sys
 import distiller
 
+print("Python path head:", sys.path[:5])
 print(
     "Resolved distiller:",
     getattr(distiller, "__file__", None),
