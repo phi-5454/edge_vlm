@@ -599,5 +599,7 @@ def architecture_report(model: nn.Module) -> dict[str, Any]:
             None,
         ),
         "image_position_tokens": getattr(model, "image_position_tokens", None),
+        "zero_image_tokens": getattr(model, "zero_image_tokens", None),
+        "zero_query_token": getattr(model, "zero_query_token", None),
         "architecture": str(model),
     }

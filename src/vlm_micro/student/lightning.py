@@ -432,6 +432,7 @@ class TallyQAStudentModule(L.LightningModule):
             for stage in ("val", "test")
         }
         self._validation_plot_rows: list[dict[str, Any]] = []
+        self._test_plot_rows: list[dict[str, Any]] = []
 
     def forward(self, token_ids: torch.Tensor, attention_mask: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
         return self.model(token_ids, attention_mask, images)
@@ -594,10 +595,11 @@ class TallyQAStudentModule(L.LightningModule):
 
     def validation_step(self, batch: dict[str, torch.Tensor], batch_index: int) -> None:
         self._shared_step(batch, "val")
-        self._collect_validation_plots(batch)
+        self._collect_example_plots(batch, "val")
 
     def test_step(self, batch: dict[str, torch.Tensor], batch_index: int) -> None:
         self._shared_step(batch, "test")
+        self._collect_example_plots(batch, "test")
 
     def _log_epoch_metrics(self, stage: str) -> None:
         metrics = {
@@ -634,6 +636,8 @@ class TallyQAStudentModule(L.LightningModule):
     def on_test_epoch_end(self) -> None:
         self._log_epoch_metrics("test")
         self._log_confusion_matrix("test")
+        self._log_example_plots("test")
+        self._test_plot_rows = []
 
     def configure_optimizers(self) -> Any:
         image_parameters = [
@@ -710,15 +714,19 @@ class TallyQAStudentModule(L.LightningModule):
             },
         }
 
-    def _collect_validation_plots(self, batch: dict[str, torch.Tensor]) -> None:
+    def _collect_example_plots(self, batch: dict[str, torch.Tensor], stage: str) -> None:
         max_samples = int(self.hparams.validation_plot_samples)
-        if max_samples == 0 or len(self._validation_plot_rows) >= max_samples:
+        rows = self._validation_plot_rows if stage == "val" else self._test_plot_rows
+        if max_samples == 0 or len(rows) >= max_samples:
             return
-        if (int(self.current_epoch) + 1) % int(self.hparams.validation_plot_every_n_epochs) != 0:
+        if (
+            stage == "val"
+            and (int(self.current_epoch) + 1) % int(self.hparams.validation_plot_every_n_epochs) != 0
+        ):
             return
         if not hasattr(self.model, "image_features"):
             return
-        remaining = max_samples - len(self._validation_plot_rows)
+        remaining = max_samples - len(rows)
         images = batch["images"][:remaining]
         with torch.no_grad():
             query = self.model.encode_query(
@@ -747,7 +755,7 @@ class TallyQAStudentModule(L.LightningModule):
             logits = self(batch["token_ids"][:remaining], batch["attention_mask"][:remaining], images)
             predictions = torch.argmax(logits.detach().cpu(), dim=1)
         for index in range(images.shape[0]):
-            self._validation_plot_rows.append(
+            rows.append(
                 {
                     "dataset_index": int(batch["dataset_index"][index].detach().cpu()),
                     "image": images[index].detach().float().cpu(),
@@ -856,10 +864,15 @@ class TallyQAStudentModule(L.LightningModule):
         )
 
     def _log_validation_plots(self) -> None:
-        if not self._validation_plot_rows or self.logger is None:
+        self._log_example_plots("val")
+
+    def _log_example_plots(self, stage: str) -> None:
+        rows = self._validation_plot_rows if stage == "val" else self._test_plot_rows
+        namespace = "validation_plots" if stage == "val" else "test_plots"
+        if not rows or self.logger is None:
             if self.logger is not None:
                 self.log(
-                    "validation_plots/image_encoding_count",
+                    f"{namespace}/image_encoding_count",
                     0,
                     on_step=False,
                     on_epoch=True,
@@ -873,10 +886,10 @@ class TallyQAStudentModule(L.LightningModule):
             return
         experiment.log(
             {
-                "validation_plots/image_encoding": [
-                    self._validation_plot(row) for row in self._validation_plot_rows
+                f"{namespace}/image_encoding": [
+                    self._validation_plot(row) for row in rows
                 ],
-                "validation_plots/image_encoding_count": len(self._validation_plot_rows),
+                f"{namespace}/image_encoding_count": len(rows),
                 "trainer/epoch": int(self.current_epoch),
             }
         )

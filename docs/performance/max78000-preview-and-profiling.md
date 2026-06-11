@@ -38,17 +38,17 @@ Expected adjacent toolchains:
 
 Repo-owned artifacts:
 
-| Artifact | Purpose |
-| --- | --- |
-| `artifacts/exports/max78000/checkpoint.pth.tar` | Floating or QAT training checkpoint copied from `ai8x-training`. |
-| `artifacts/exports/max78000/checkpoint_qat.pth.tar` | Quantized checkpoint passed to `ai8xize.py`. |
-| `artifacts/exports/max78000/network.yaml` | Network YAML used for synthesis. |
-| `artifacts/exports/max78000/sample.npy` | Representative sample input for known-answer generation. |
-| `artifacts/exports/max78000/generated/` | Generated MSDK project or generated CNN files. |
-| `artifacts/profiles/max78000/ai8xize.log` | Raw synthesis/generator log. |
-| `artifacts/profiles/max78000/preview_serial.log` | Raw board serial log. |
-| `artifacts/profiles/max78000/preview.jsonl` | Normalized preview/timing records. |
-| `artifacts/profiles/max78000/report.json` | Normalized profiling summary. |
+| Artifact                                            | Purpose                                                          |
+| --------------------------------------------------- | ---------------------------------------------------------------- |
+| `artifacts/exports/max78000/checkpoint.pth.tar`     | Floating or QAT training checkpoint copied from `ai8x-training`. |
+| `artifacts/exports/max78000/checkpoint_qat.pth.tar` | Quantized checkpoint passed to `ai8xize.py`.                     |
+| `artifacts/exports/max78000/network.yaml`           | Network YAML used for synthesis.                                 |
+| `artifacts/exports/max78000/sample.npy`             | Representative sample input for known-answer generation.         |
+| `artifacts/exports/max78000/generated/`             | Generated MSDK project or generated CNN files.                   |
+| `artifacts/profiles/max78000/ai8xize.log`           | Raw synthesis/generator log.                                     |
+| `artifacts/profiles/max78000/preview_serial.log`    | Raw board serial log.                                            |
+| `artifacts/profiles/max78000/preview.jsonl`         | Normalized preview/timing records.                               |
+| `artifacts/profiles/max78000/report.json`           | Normalized profiling summary.                                    |
 
 ## Environment
 
@@ -71,9 +71,7 @@ git -C ../MAX78000/ai8x-synthesis rev-parse HEAD
 ## Model And Data Setup
 
 The MAX78000 backend is not a generic PyTorch, ONNX, or TFLite target. Start
-with an `ai8x.py` layer pattern and a network YAML that the ADI tools can map to
-hardware. For the current VLM/counting work, the realistic first target should
-be a compact camera model with:
+with an `ai8x.py` layer pattern and a network YAML that the ADI tools can map to hardware. For the current VLM/counting work, the realistic first target should be a compact camera model with:
 
 - fixed input shape
 - 8-bit activations/data
@@ -154,6 +152,26 @@ Stage the model, dataset adapter, QAT policy, and starter LR schedule:
 cd /home/younes/Courses/ETH/ML_Micro/edge_vlm
 uv run python scripts/stage_max78000_people_pipeline.py --force
 ```
+
+The materialize/stage/train path is also wrapped for local or Colab use:
+
+```bash
+cd /home/younes/Courses/ETH/ML_Micro/edge_vlm
+bash scripts/run_max78000_tallyqa_people_colab.sh --force
+```
+
+In Colab, where the ADI checkout is usually absent, let the wrapper clone it as
+an external sibling directory:
+
+```bash
+cd /content/edge_vlm
+bash scripts/run_max78000_tallyqa_people_colab.sh --clone-ai8x --force
+```
+
+Each run writes a normalized manifest, raw training log, and model architecture
+report under `artifacts/reports/max78000/tallyqa_people_training/<run-name>/`.
+The model report includes a readable Markdown summary, JSON metadata, a module
+tree, and a parameter chart.
 
 Optional folded-frontend pretraining:
 
@@ -654,13 +672,13 @@ uv run vlm-micro artifact-report \
 
 Record a comparison row for each available stage:
 
-| Stage | Quality Metric | Size | Latency | Energy/Power | Source |
-| --- | ---: | ---: | ---: | ---: | --- |
-| PyTorch FP32 | | checkpoint bytes | validation runtime | | W&B/training log |
-| ADI simulated 8-bit | | quantized checkpoint bytes | software eval runtime | | `--evaluate -8` log |
-| ai8xize estimate | | generated project bytes | estimated cycles | optional `--energy` | `ai8xize.log` |
-| MAX78000 board KAT | pass/fail | flashed image bytes | `inference_us` | measured if available | serial JSONL |
-| MAX78000 board camera | preview quality or replay metric | flashed image bytes | end-to-end loop | measured if available | preview JSONL |
+| Stage                 |                   Quality Metric |                       Size |               Latency |          Energy/Power | Source              |
+| --------------------- | -------------------------------: | -------------------------: | --------------------: | --------------------: | ------------------- |
+| PyTorch FP32          |                                  |           checkpoint bytes |    validation runtime |                       | W&B/training log    |
+| ADI simulated 8-bit   |                                  | quantized checkpoint bytes | software eval runtime |                       | `--evaluate -8` log |
+| ai8xize estimate      |                                  |    generated project bytes |      estimated cycles |   optional `--energy` | `ai8xize.log`       |
+| MAX78000 board KAT    |                        pass/fail |        flashed image bytes |        `inference_us` | measured if available | serial JSONL        |
+| MAX78000 board camera | preview quality or replay metric |        flashed image bytes |       end-to-end loop | measured if available | preview JSONL       |
 
 For detectors, use mAP as the primary quality metric and log score thresholds
 used for preview. For count classifiers, use MAE, within-one accuracy, and the

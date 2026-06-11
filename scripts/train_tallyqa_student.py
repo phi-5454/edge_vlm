@@ -12,6 +12,7 @@ os.environ["MPLBACKEND"] = "Agg"
 
 import hydra
 import lightning as L
+import matplotlib.pyplot as plt
 import torch
 import wandb
 from dotenv import load_dotenv
@@ -25,6 +26,15 @@ from torchinfo import summary as model_summary
 from vlm_micro.student.data import TallyQAStudentDataModule
 from vlm_micro.student.lightning import TallyQAStudentModule
 from vlm_micro.student.model import StudentBaseline, architecture_report
+
+
+def format_count(value: int | float) -> str:
+    value = float(value)
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:.2f}M"
+    if abs(value) >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return str(int(value))
 
 
 def absolute_path(value: str) -> Path:
@@ -72,8 +82,8 @@ def make_report(
     return report
 
 
-def print_model_summary(model: StudentBaseline, cfg: DictConfig) -> None:
-    print(
+def model_summary_text(model: StudentBaseline, cfg: DictConfig, depth: int = 4) -> str:
+    return str(
         model_summary(
             model,
             input_data=[
@@ -81,12 +91,172 @@ def print_model_summary(model: StudentBaseline, cfg: DictConfig) -> None:
                 torch.ones((1, 4), dtype=torch.bool),
                 torch.zeros((1, 3, int(cfg.model.image_size), int(cfg.model.image_size))),
             ],
-            depth=4,
+            depth=depth,
             col_names=("input_size", "output_size", "num_params", "trainable"),
             row_settings=("var_names",),
             verbose=0,
         )
     )
+
+
+def parameter_rows(model: torch.nn.Module) -> list[dict[str, Any]]:
+    rows = []
+    for name, parameter in model.named_parameters():
+        top_level = name.split(".", 1)[0]
+        rows.append(
+            {
+                "name": name,
+                "top_level": top_level,
+                "shape": list(parameter.shape),
+                "parameters": int(parameter.numel()),
+                "trainable": bool(parameter.requires_grad),
+            }
+        )
+    return rows
+
+
+def top_level_parameter_rows(model: torch.nn.Module) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in parameter_rows(model):
+        group = grouped.setdefault(
+            row["top_level"],
+            {"module": row["top_level"], "total": 0, "trainable": 0, "frozen": 0},
+        )
+        group["total"] += row["parameters"]
+        if row["trainable"]:
+            group["trainable"] += row["parameters"]
+        else:
+            group["frozen"] += row["parameters"]
+    return sorted(grouped.values(), key=lambda item: item["total"], reverse=True)
+
+
+def write_parameter_chart(rows: list[dict[str, Any]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        return
+    labels = [row["module"] for row in rows]
+    trainable = [row["trainable"] for row in rows]
+    frozen = [row["frozen"] for row in rows]
+    height = max(3.5, 0.42 * len(rows) + 1.4)
+    fig, ax = plt.subplots(figsize=(9, height))
+    y_positions = list(range(len(rows)))
+    ax.barh(y_positions, frozen, label="frozen", color="#9aa4b2")
+    ax.barh(y_positions, trainable, left=frozen, label="trainable", color="#2f80ed")
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Parameters")
+    ax.set_title("Model Parameters by Top-Level Module")
+    ax.xaxis.set_major_formatter(lambda value, _pos: format_count(value))
+    ax.legend(loc="lower right")
+    for y_pos, row in zip(y_positions, rows, strict=True):
+        ax.text(
+            row["total"],
+            y_pos,
+            f" {format_count(row['total'])}",
+            va="center",
+            fontsize=8,
+        )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
+def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in rows)
+    return "\n".join(lines)
+
+
+def write_model_report_bundle(
+    model: StudentBaseline,
+    cfg: DictConfig,
+    report: dict[str, Any],
+    report_path: Path,
+) -> dict[str, Path]:
+    base = report_path.with_suffix("")
+    summary_path = base.with_name(base.name + "_summary.txt")
+    markdown_path = base.with_name(base.name + "_readable.md")
+    html_path = base.with_name(base.name + "_readable.html")
+    chart_path = base.with_name(base.name + "_parameters.png")
+    parameters_path = base.with_name(base.name + "_parameters.json")
+
+    summary = model_summary_text(model, cfg)
+    rows = top_level_parameter_rows(model)
+    detailed_rows = parameter_rows(model)
+    parameters_path.write_text(json.dumps(detailed_rows, indent=2) + "\n", encoding="utf-8")
+    write_parameter_chart(rows, chart_path)
+
+    parameter_counts = report["model"]["parameter_counts"]
+    overview_rows = [
+        ["total", format_count(parameter_counts["total"]), str(parameter_counts["total"])],
+        ["trainable", format_count(parameter_counts["trainable"]), str(parameter_counts["trainable"])],
+        ["frozen", format_count(parameter_counts["frozen"]), str(parameter_counts["frozen"])],
+    ]
+    module_rows = [
+        [
+            str(row["module"]),
+            format_count(row["total"]),
+            format_count(row["trainable"]),
+            format_count(row["frozen"]),
+        ]
+        for row in rows
+    ]
+    model_info = report["model"]
+    dataset_info = report["dataset"]
+    config_lines = [
+        f"- backbone: `{model_info.get('image_backbone')}`",
+        f"- image feature cutoff: `{model_info.get('image_feature_cutoff')}`",
+        f"- image token mode: `{model_info.get('image_token_mode')}`",
+        f"- fusion mode: `{model_info.get('fusion_mode')}`",
+        f"- fusion depth / heads / MLP ratio: `{cfg.model.fusion_depth}` / `{cfg.model.fusion_heads}` / `{cfg.model.fusion_mlp_ratio}`",
+        f"- FiLM: `{model_info.get('image_film_indices')}` at `{model_info.get('image_film_position')}`",
+        f"- prompt identity: `{model_info.get('use_prompt_identity')}`",
+        f"- image positional embeddings: `{model_info.get('use_image_positional_embeddings')}` over `{model_info.get('image_position_tokens')}` tokens",
+        f"- zero image / zero query: `{model_info.get('zero_image_tokens')}` / `{model_info.get('zero_query_token')}`",
+        f"- dataset split sizes: `{dataset_info.get('split_sizes')}`",
+    ]
+    markdown = "\n\n".join(
+        [
+            f"# {cfg.experiment.run_name} Model Report",
+            "## Architecture",
+            "\n".join(config_lines),
+            "## Parameter Totals",
+            markdown_table(["group", "compact", "exact"], overview_rows),
+            "## Top-Level Modules",
+            markdown_table(["module", "total", "trainable", "frozen"], module_rows),
+            "## Torchinfo",
+            f"```text\n{summary}\n```",
+            "## Raw Module Tree",
+            f"```text\n{model}\n```",
+        ]
+    )
+    summary_path.write_text(summary + "\n", encoding="utf-8")
+    markdown_path.write_text(markdown + "\n", encoding="utf-8")
+    html_body = (
+        "<html><body>"
+        f"<h1>{html.escape(str(cfg.experiment.run_name))} Model Report</h1>"
+        "<h2>Parameter Totals</h2>"
+        f"<pre>{html.escape(markdown_table(['group', 'compact', 'exact'], overview_rows))}</pre>"
+        "<h2>Top-Level Modules</h2>"
+        f"<pre>{html.escape(markdown_table(['module', 'total', 'trainable', 'frozen'], module_rows))}</pre>"
+        "<h2>Torchinfo</h2>"
+        f"<pre>{html.escape(summary)}</pre>"
+        "<h2>Raw Module Tree</h2>"
+        f"<pre>{html.escape(str(model))}</pre>"
+        "</body></html>"
+    )
+    html_path.write_text(html_body, encoding="utf-8")
+    return {
+        "summary": summary_path,
+        "markdown": markdown_path,
+        "html": html_path,
+        "parameter_chart": chart_path,
+        "parameters": parameters_path,
+    }
 
 
 def class_weights_from_config(cfg: DictConfig, data: TallyQAStudentDataModule) -> list[float] | None:
@@ -284,10 +454,15 @@ def main(cfg: DictConfig) -> None:
     run_name = str(cfg.experiment.run_name)
     report_path = absolute_path(cfg.paths.report_dir) / f"{run_name}_architecture.json"
     report = make_report(cfg, data, model, report_path)
+    readable_report_paths = write_model_report_bundle(model, cfg, report, report_path)
+    print("Dataset:")
     print(json.dumps(report["dataset"], indent=2))
+    print("Parameter counts:")
     print(json.dumps(report["model"]["parameter_counts"], indent=2))
-    print_model_summary(model, cfg)
+    print(readable_report_paths["summary"].read_text(encoding="utf-8"))
     print(f"Full architecture report: {report_path}")
+    print(f"Readable architecture report: {readable_report_paths['markdown']}")
+    print(f"Parameter chart: {readable_report_paths['parameter_chart']}")
 
     logger = WandbLogger(
         project=str(cfg.wandb.project),
@@ -305,7 +480,12 @@ def main(cfg: DictConfig) -> None:
         }
     )
     logger.experiment.log(
-        {"model/architecture": wandb.Html(f"<pre>{html.escape(str(model))}</pre>")}
+        {
+            "model/architecture": wandb.Html(
+                readable_report_paths["html"].read_text(encoding="utf-8")
+            ),
+            "model/parameter_chart": wandb.Image(str(readable_report_paths["parameter_chart"])),
+        }
     )
     if bool(cfg.wandb.get("watch", {}).get("enabled", False)):
         logger.watch(
@@ -375,6 +555,8 @@ def main(cfg: DictConfig) -> None:
     }
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     logger.experiment.save(str(report_path), policy="now")
+    for path in readable_report_paths.values():
+        logger.experiment.save(str(path), policy="now")
     logger.experiment.save(str(result_path), policy="now")
     wandb.finish()
 

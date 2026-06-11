@@ -11,6 +11,7 @@ import os
 import csv
 import re
 import subprocess
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -217,6 +218,10 @@ class KerasTallyQAData:
         chw = (chw - self.mean) / self.std
         return np.transpose(chw, (1, 2, 0)).astype(np.float32)
 
+    def display_image(self, image_index: int) -> np.ndarray:
+        chw = np.asarray(self.images[int(image_index)], dtype=np.float32) / 255.0
+        return np.transpose(chw, (1, 2, 0)).clip(0.0, 1.0)
+
     def split_sizes(self) -> dict[str, int]:
         return {split: len(indices) for split, indices in self.indices.items()}
 
@@ -411,6 +416,37 @@ class KerasTallyQAData:
                 self.image(int(row["image_index"]))[np.newaxis, ...],
             )
 
+    def prediction_examples(self, split: str, max_samples: int) -> dict[str, Any]:
+        indices = list(self.indices[split])[: max(0, int(max_samples))]
+        rows = [self.rows[index] for index in indices]
+        item_class_ids = np.asarray([int(row["item_class_id"]) for row in rows], dtype=np.int64)
+        return {
+            "indices": indices,
+            "rows": rows,
+            "inputs": {
+                "token_ids": self.prompt_token_ids[item_class_ids],
+                "images": np.stack([self.image(int(row["image_index"])) for row in rows])
+                if rows
+                else np.empty(
+                    (
+                        0,
+                        int(self.cfg.keras_model.image_size),
+                        int(self.cfg.keras_model.image_size),
+                        3,
+                    ),
+                    dtype=np.float32,
+                ),
+            },
+            "display_images": [
+                self.display_image(int(row["image_index"]))
+                for row in rows
+            ],
+            "labels": np.asarray(
+                [collapse_count(int(row["answer"]), self.collapse_at) for row in rows],
+                dtype=np.int32,
+            ),
+        }
+
     def batches(self, split: str) -> Iterable[tuple[dict[str, np.ndarray], dict[str, np.ndarray]]]:
         batch_size = int(self.cfg.data.batch_size)
         indices = self.train_epoch_indices() if split == "train" else list(self.indices[split])
@@ -437,7 +473,11 @@ class KerasTallyQAData:
                     "token_ids": self.prompt_token_ids[item_class_ids],
                     "images": images,
                 },
-                {"labels": labels, "teacher_probs": teacher_probs},
+                {
+                    "labels": labels,
+                    "teacher_probs": teacher_probs,
+                    "dataset_index": np.asarray(batch_indices, dtype=np.int64),
+                },
             )
 
 
@@ -497,6 +537,7 @@ def make_tf_dataset(
         {
             "labels": tf.TensorSpec(shape=(None,), dtype=tf.int32),
             "teacher_probs": tf.TensorSpec(shape=(None, num_classes), dtype=tf.float32),
+            "dataset_index": tf.TensorSpec(shape=(None,), dtype=tf.int64),
         },
     )
     return tf.data.Dataset.from_generator(lambda: data.batches(split), output_signature=signature)
@@ -648,11 +689,18 @@ class MulticlassAccumulator:
     def __init__(self, num_classes: int):
         self.num_classes = num_classes
         self.confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
+        self.prompt_totals = PromptClassAccumulator(num_classes)
 
-    def update(self, labels: np.ndarray, logits: np.ndarray) -> None:
+    def update(
+        self,
+        labels: np.ndarray,
+        logits: np.ndarray,
+        prompts: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
         predictions = np.argmax(logits, axis=1)
         for true_label, predicted_label in zip(labels.tolist(), predictions.tolist(), strict=True):
             self.confusion[int(true_label), int(predicted_label)] += 1
+        self.prompt_totals.update(labels, predictions, prompts)
 
     def metrics(self) -> dict[str, float]:
         correct = int(np.trace(self.confusion))
@@ -704,6 +752,125 @@ class MulticlassAccumulator:
             "class_weighted_accuracy": float(class_weighted_accuracy),
             "class_weighted_within_1_accuracy": float(class_weighted_within_one),
             "class_weighted_mae": float(class_weighted_mae),
+            **self.prompt_totals.metrics(),
+        }
+
+
+class PromptClassAccumulator:
+    def __init__(self, num_classes: int):
+        self.num_classes = num_classes
+        self.by_prompt: dict[str, np.ndarray] = {}
+
+    def update(
+        self,
+        labels: np.ndarray,
+        predictions: np.ndarray,
+        prompts: list[str] | tuple[str, ...] | None,
+    ) -> None:
+        if prompts is None or len(prompts) != len(labels):
+            return
+        for prompt, true_label, predicted_label in zip(
+            prompts,
+            labels.tolist(),
+            predictions.tolist(),
+            strict=True,
+        ):
+            confusion = self.by_prompt.setdefault(
+                str(prompt),
+                np.zeros((self.num_classes, self.num_classes), dtype=np.int64),
+            )
+            confusion[int(true_label), int(predicted_label)] += 1
+
+    @staticmethod
+    def _metrics_for_confusion(confusion: np.ndarray) -> dict[str, float]:
+        correct = int(np.trace(confusion))
+        total = int(confusion.sum())
+        labels = [index for index in range(confusion.shape[0]) if int(confusion[index].sum()) > 0]
+        absolute_error = 0
+        within_one = 0
+        for true_label in range(confusion.shape[0]):
+            for predicted_label in range(confusion.shape[1]):
+                count = int(confusion[true_label, predicted_label])
+                absolute_error += abs(predicted_label - true_label) * count
+                within_one += int(abs(predicted_label - true_label) <= 1) * count
+        class_weighted_accuracy = (
+            sum(confusion[label, label] / confusion[label].sum() for label in labels) / len(labels)
+            if labels
+            else 0.0
+        )
+        class_weighted_within_one = (
+            sum(
+                sum(
+                    int(abs(predicted_label - label) <= 1) * confusion[label, predicted_label]
+                    for predicted_label in range(confusion.shape[1])
+                )
+                / confusion[label].sum()
+                for label in labels
+            )
+            / len(labels)
+            if labels
+            else 0.0
+        )
+        class_weighted_mae = (
+            sum(
+                sum(
+                    abs(predicted_label - label) * confusion[label, predicted_label]
+                    for predicted_label in range(confusion.shape[1])
+                )
+                / confusion[label].sum()
+                for label in labels
+            )
+            / len(labels)
+            if labels
+            else 0.0
+        )
+        return {
+            "accuracy": correct / total if total else 0.0,
+            "within_1_accuracy": within_one / total if total else 0.0,
+            "mae": absolute_error / total if total else 0.0,
+            "class_weighted_accuracy": float(class_weighted_accuracy),
+            "class_weighted_within_1_accuracy": float(class_weighted_within_one),
+            "class_weighted_mae": float(class_weighted_mae),
+        }
+
+    def metrics(self) -> dict[str, float]:
+        prompt_metrics = [
+            self._metrics_for_confusion(confusion)
+            for confusion in self.by_prompt.values()
+            if int(confusion.sum()) > 0
+        ]
+        if not prompt_metrics:
+            return {
+                "prompt_class_weighted_accuracy": 0.0,
+                "prompt_class_weighted_within_1_accuracy": 0.0,
+                "prompt_class_weighted_mae": 0.0,
+                "prompt_class_output_weighted_accuracy": 0.0,
+                "prompt_class_output_weighted_within_1_accuracy": 0.0,
+                "prompt_class_output_weighted_mae": 0.0,
+            }
+        return {
+            "prompt_class_weighted_accuracy": sum(
+                metrics["accuracy"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
+            "prompt_class_weighted_within_1_accuracy": sum(
+                metrics["within_1_accuracy"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
+            "prompt_class_weighted_mae": sum(metrics["mae"] for metrics in prompt_metrics)
+            / len(prompt_metrics),
+            "prompt_class_output_weighted_accuracy": sum(
+                metrics["class_weighted_accuracy"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
+            "prompt_class_output_weighted_within_1_accuracy": sum(
+                metrics["class_weighted_within_1_accuracy"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
+            "prompt_class_output_weighted_mae": sum(
+                metrics["class_weighted_mae"] for metrics in prompt_metrics
+            )
+            / len(prompt_metrics),
         }
 
 
@@ -764,6 +931,63 @@ def save_confusion_matrix_plot(
     return output
 
 
+def save_prediction_examples_plot(
+    stage: str,
+    model: tf.keras.Model,
+    data: KerasTallyQAData,
+    output: Path,
+    max_samples: int,
+) -> Path | None:
+    examples = data.prediction_examples(stage, max_samples)
+    rows = examples["rows"]
+    if not rows:
+        return None
+    logits = model.student(examples["inputs"], training=False).numpy()
+    probabilities = tf.nn.softmax(logits, axis=1).numpy()
+    predictions = np.argmax(probabilities, axis=1)
+    labels = examples["labels"]
+    class_names = class_labels(data.num_classes)
+    height = max(3.2, 2.15 * len(rows))
+    fig, axes = plt.subplots(len(rows), 2, figsize=(10.8, height), squeeze=False)
+    for row_index, row in enumerate(rows):
+        image_ax, prob_ax = axes[row_index]
+        image_ax.imshow(examples["display_images"][row_index])
+        prompt = str(row["student_prompt"])
+        title = (
+            f"{stage} idx={examples['indices'][row_index]} "
+            f"true={int(labels[row_index])} pred={int(predictions[row_index])} "
+            f"prompt={prompt}"
+        )
+        image_ax.set_title("\n".join(textwrap.wrap(title, width=58)), fontsize=9)
+        image_ax.axis("off")
+
+        colors = ["#8a8f98"] * len(class_names)
+        colors[int(labels[row_index])] = "#2b8a3e"
+        colors[int(predictions[row_index])] = (
+            "#2f6fdd" if predictions[row_index] == labels[row_index] else "#c92a2a"
+        )
+        prob_ax.bar(class_names, probabilities[row_index], color=colors)
+        prob_ax.set_ylim(0, 1)
+        prob_ax.set_ylabel("p")
+        prob_ax.set_xlabel("count")
+        prob_ax.set_title("predicted count distribution", fontsize=9)
+        for class_index, probability in enumerate(probabilities[row_index]):
+            if probability >= 0.05:
+                prob_ax.text(
+                    class_index,
+                    probability + 0.02,
+                    f"{probability:.2f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                )
+    fig.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=160)
+    plt.close(fig)
+    return output
+
+
 def safe_artifact_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
 
@@ -781,11 +1005,20 @@ def log_wandb_artifact(name: str, artifact_type: str, paths: Iterable[Path]) -> 
         wandb.log_artifact(artifact)
 
 
+def save_wandb_file(path: Path, *, policy: str = "now") -> None:
+    if wandb.run is None:
+        return
+    if os.environ.get("VLM_MICRO_WANDB_SAVE_FILES", "0").strip().lower() not in {"1", "true", "yes"}:
+        return
+    wandb.save(str(path), policy=policy)
+
+
 def evaluate_split_metrics(
     model: tf.keras.Model,
     dataset: tf.data.Dataset,
     steps: int,
     num_classes: int,
+    data: KerasTallyQAData,
     description: str | None = None,
 ) -> MulticlassAccumulator:
     accumulator = MulticlassAccumulator(num_classes)
@@ -801,7 +1034,9 @@ def evaluate_split_metrics(
         inputs, targets = next(iterator)
         logits = model.student(inputs, training=False).numpy()
         labels = targets["labels"].numpy()
-        accumulator.update(labels, logits)
+        dataset_indices = targets["dataset_index"].numpy().tolist()
+        prompts = [str(data.rows[int(index)]["student_prompt"]) for index in dataset_indices]
+        accumulator.update(labels, logits, prompts)
     return accumulator
 
 
@@ -1515,6 +1750,8 @@ class DistilledStudent(tf.keras.Model):
         self.ce_tracker = tf.keras.metrics.Mean(name="ce_loss")
         self.ce_unweighted_tracker = tf.keras.metrics.Mean(name="ce_loss_unweighted")
         self.kl_tracker = tf.keras.metrics.Mean(name="kl_loss")
+        self.grad_global_norm_tracker = tf.keras.metrics.Mean(name="grad_global_norm")
+        self.grad_max_norm_tracker = tf.keras.metrics.Mean(name="grad_max_norm")
         self.accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name="accuracy")
         self.mae = tf.keras.metrics.Mean(name="mae")
         self.within_one = tf.keras.metrics.Mean(name="within_1_accuracy")
@@ -1530,6 +1767,11 @@ class DistilledStudent(tf.keras.Model):
             self.mae,
             self.within_one,
         ]
+
+    def reset_metrics(self) -> None:
+        super().reset_metrics()
+        self.grad_global_norm_tracker.reset_state()
+        self.grad_max_norm_tracker.reset_state()
 
     def call(self, inputs: dict[str, tf.Tensor], training: bool = False) -> tf.Tensor:
         return self.student(inputs, training=training)
@@ -1591,6 +1833,14 @@ class DistilledStudent(tf.keras.Model):
                 teacher_probs,
             )
         gradients = tape.gradient(loss, self.student.trainable_variables)
+        non_none_gradients = [gradient for gradient in gradients if gradient is not None]
+        if non_none_gradients:
+            self.grad_global_norm_tracker.update_state(tf.linalg.global_norm(non_none_gradients))
+            self.grad_max_norm_tracker.update_state(
+                tf.reduce_max(
+                    tf.stack([tf.reduce_max(tf.abs(gradient)) for gradient in non_none_gradients])
+                )
+            )
         self.optimizer.apply_gradients(zip(gradients, self.student.trainable_variables, strict=False))
         self.loss_tracker.update_state(loss)
         self.ce_tracker.update_state(ce_loss)
@@ -1598,7 +1848,11 @@ class DistilledStudent(tf.keras.Model):
         self.kl_tracker.update_state(kl_loss)
         self.accuracy.update_state(labels, logits)
         self._update_count_metrics(labels, logits)
-        return {metric.name: metric.result() for metric in self.metrics}
+        return {
+            **{metric.name: metric.result() for metric in self.metrics},
+            self.grad_global_norm_tracker.name: self.grad_global_norm_tracker.result(),
+            self.grad_max_norm_tracker.name: self.grad_max_norm_tracker.result(),
+        }
 
     def test_step(self, data: tuple[dict[str, tf.Tensor], dict[str, tf.Tensor]]) -> dict[str, tf.Tensor]:
         inputs, targets = data
@@ -1692,8 +1946,7 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
             ),
             "Dropout exists only during training",
             "Keras training path currently does not mirror Lightning warmup scheduling.",
-            "Keras W&B logging mirrors scalar metrics, confusion matrices, reports, results, and weights; Lightning-specific wandb.watch graph/gradient logging is not mirrored.",
-            "Keras validation image activation plots are not mirrored because the TFLite-prior model does not expose the same spatial token activations as the PyTorch student.",
+            "Keras W&B logging mirrors scalar metrics, confusion matrices, example prediction plots, reports, results, and weights; Lightning-specific wandb.watch graph/gradient logging is not mirrored.",
         ],
         "quantization_mode": quantization_mode,
         "quantization_notes": {
@@ -1870,7 +2123,7 @@ class WandbKerasLogger(tf.keras.callbacks.Callback):
             payload[f"{self.prefix}train/lr"] = learning_rate
         payload["trainer/global_step"] = self.global_train_step
         if payload:
-            wandb.log(payload, step=self.global_train_step)
+            wandb.log(payload)
 
     def on_epoch_end(self, epoch: int, logs: dict[str, Any] | None = None) -> None:
         payload = {
@@ -1888,30 +2141,62 @@ class WandbKerasLogger(tf.keras.callbacks.Callback):
 class WandbEvaluationLogger(tf.keras.callbacks.Callback):
     def __init__(
         self,
+        train_dataset: tf.data.Dataset,
+        train_steps: int,
         val_dataset: tf.data.Dataset,
         val_steps: int,
         num_classes: int,
         output_dir: Path,
+        data: KerasTallyQAData,
+        example_samples: int,
+        example_every_n_epochs: int,
+        log_train_metrics: bool,
     ):
         super().__init__()
+        self.train_dataset = train_dataset
+        self.train_steps = train_steps
         self.val_dataset = val_dataset
         self.val_steps = val_steps
         self.num_classes = num_classes
         self.output_dir = output_dir
+        self.data = data
+        self.example_samples = max(0, int(example_samples))
+        self.example_every_n_epochs = max(1, int(example_every_n_epochs))
+        self.log_train_metrics = bool(log_train_metrics)
 
     def on_epoch_end(self, epoch: int, logs: dict[str, Any] | None = None) -> None:
         logs = logs if logs is not None else {}
+        if self.log_train_metrics:
+            train_accumulator = evaluate_split_metrics(
+                self.model,
+                self.train_dataset,
+                self.train_steps,
+                self.num_classes,
+                self.data,
+                description="train metrics",
+            )
+            for name, value in train_accumulator.metrics().items():
+                logs[name] = float(value)
         accumulator = evaluate_split_metrics(
             self.model,
             self.val_dataset,
             self.val_steps,
             self.num_classes,
+            self.data,
             description="val metrics",
         )
         metrics = accumulator.metrics()
         for name, value in metrics.items():
             logs[f"val_{name}"] = float(value)
         payload: dict[str, Any] = {
+            **(
+                {
+                    f"train/{name}": float(value)
+                    for name, value in train_accumulator.metrics().items()
+                }
+                if self.log_train_metrics
+                else {}
+            ),
             **{f"val/{name}": float(value) for name, value in metrics.items()},
             "trainer/epoch": epoch,
             "trainer/global_step": int(self.model.optimizer.iterations.numpy()),
@@ -1923,7 +2208,21 @@ class WandbEvaluationLogger(tf.keras.callbacks.Callback):
                 self.output_dir / f"val_confusion_matrix_epoch_{epoch + 1:03d}.png",
             )
             payload["val_plots/confusion_matrix"] = wandb.Image(str(figure_path))
-            wandb.save(str(figure_path), policy="now")
+            save_wandb_file(Path(figure_path), policy="now")
+        if (
+            self.example_samples > 0
+            and (epoch + 1) % self.example_every_n_epochs == 0
+        ):
+            examples_path = save_prediction_examples_plot(
+                "val",
+                self.model,
+                self.data,
+                self.output_dir / f"val_prediction_examples_epoch_{epoch + 1:03d}.png",
+                self.example_samples,
+            )
+            if examples_path is not None:
+                payload["val_plots/example_predictions"] = wandb.Image(str(examples_path))
+                save_wandb_file(examples_path, policy="now")
         wandb.log(payload)
 
 class TqdmKerasProgress(tf.keras.callbacks.Callback):
@@ -2125,6 +2424,7 @@ def evaluate_tflite_split_metrics(
     dataset: tf.data.Dataset,
     steps: int,
     num_classes: int,
+    data: KerasTallyQAData,
     description: str | None = None,
 ) -> MulticlassAccumulator:
     interpreter = tf.lite.Interpreter(
@@ -2173,7 +2473,9 @@ def evaluate_tflite_split_metrics(
         if logits.ndim == 1:
             logits = logits[np.newaxis, :]
         labels = targets["labels"].numpy()
-        accumulator.update(labels, logits)
+        dataset_indices = targets["dataset_index"].numpy().tolist()
+        prompts = [str(data.rows[int(index)]["student_prompt"]) for index in dataset_indices]
+        accumulator.update(labels, logits, prompts)
     return accumulator
 
 
@@ -2188,8 +2490,14 @@ def metric_comparison_plot(
         "within_1_accuracy",
         "class_weighted_accuracy",
         "class_weighted_within_1_accuracy",
+        "prompt_class_weighted_accuracy",
+        "prompt_class_weighted_within_1_accuracy",
+        "prompt_class_output_weighted_accuracy",
+        "prompt_class_output_weighted_within_1_accuracy",
         "mae",
         "class_weighted_mae",
+        "prompt_class_weighted_mae",
+        "prompt_class_output_weighted_mae",
     ]
     labels = [key.replace("_", "\n") for key in metric_keys]
     x = np.arange(len(metric_keys))
@@ -2375,9 +2683,32 @@ def main(cfg: DictConfig) -> None:
         },
         allow_val_change=True,
     )
+    if bool(cfg.wandb.get("watch", {}).get("enabled", False)):
+        try:
+            wandb.watch(
+                student,
+                log=str(cfg.wandb.watch.get("log", "all")),
+                log_freq=int(cfg.wandb.watch.get("log_freq", 100)),
+                log_graph=bool(cfg.wandb.watch.get("log_graph", False)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: wandb.watch failed for Keras model: {exc}")
+    wandb.define_metric("trainer/global_step")
+    for metric_pattern in [
+        "train/*",
+        "val/*",
+        "test/*",
+        "test_quantized/*",
+        "model/*",
+        "val_plots/*",
+        "test_plots/*",
+        "test_quantized_plots/*",
+    ]:
+        wandb.define_metric(metric_pattern, step_metric="trainer/global_step")
     summary_text = Path(readable_model_reports["summary_txt"]).read_text(encoding="utf-8")
     layer_table_text = Path(readable_model_reports["layer_table_txt"]).read_text(encoding="utf-8")
     model_log_payload: dict[str, Any] = {
+        "trainer/global_step": 0,
         "model/architecture": wandb.Html(f"<pre>{html.escape(summary_text)}</pre>"),
         "model/layer_parameter_table": wandb.Html(
             f"<pre>{html.escape(layer_table_text)}</pre>"
@@ -2398,14 +2729,14 @@ def main(cfg: DictConfig) -> None:
             str(fusion_head_visualkeras_path)
         )
     wandb.log(model_log_payload)
-    wandb.save(str(report_path), policy="now")
+    save_wandb_file(Path(report_path), policy="now")
     for artifact_path in readable_model_reports.values():
         if Path(artifact_path).exists():
-            wandb.save(str(artifact_path), policy="now")
+            save_wandb_file(Path(artifact_path), policy="now")
     if visualkeras_path.exists():
-        wandb.save(str(visualkeras_path), policy="now")
+        save_wandb_file(Path(visualkeras_path), policy="now")
     if fusion_head_visualkeras_path.exists():
-        wandb.save(str(fusion_head_visualkeras_path), policy="now")
+        save_wandb_file(Path(fusion_head_visualkeras_path), policy="now")
     log_wandb_artifact(
         f"{run_name}-model-report",
         "model-report",
@@ -2431,10 +2762,20 @@ def main(cfg: DictConfig) -> None:
         KerasDataEpochCallback(data=data, train_steps=train_steps),
         TqdmKerasProgress(train_steps=train_steps, val_steps=val_steps),
         WandbEvaluationLogger(
+            train_dataset=train_ds,
+            train_steps=train_steps,
             val_dataset=val_ds,
             val_steps=val_steps,
             num_classes=int(cfg.model.num_outputs),
             output_dir=run_report_dir,
+            data=data,
+            example_samples=(
+                int(cfg.validation_plots.samples)
+                if bool(cfg.validation_plots.enabled)
+                else 0
+            ),
+            example_every_n_epochs=int(cfg.validation_plots.every_n_epochs),
+            log_train_metrics=bool(cfg.trainer.get("log_train_eval_metrics", True)),
         ),
         WandbKerasLogger(log_every_n_steps=int(cfg.trainer.log_every_n_steps)),
         checkpoint_callback,
@@ -2470,6 +2811,7 @@ def main(cfg: DictConfig) -> None:
         test_ds,
         test_steps,
         int(cfg.model.num_outputs),
+        data,
         description="test metrics",
     )
     test_metric_results = test_accumulator.metrics()
@@ -2480,14 +2822,32 @@ def main(cfg: DictConfig) -> None:
             test_accumulator,
             run_report_dir / "test_confusion_matrix.png",
         )
-        wandb.log(
-            {
-                "test_plots/confusion_matrix": wandb.Image(str(test_confusion_path)),
-                **{f"test/{key}": float(value) for key, value in test_metric_results.items()},
-            },
-            step=int(cfg.trainer.max_epochs) + 1,
+        final_global_step = int(model.optimizer.iterations.numpy())
+        test_plot_payload: dict[str, Any] = {
+            "trainer/global_step": final_global_step,
+            "test_plots/confusion_matrix": wandb.Image(str(test_confusion_path)),
+            **{f"test/{key}": float(value) for key, value in test_metric_results.items()},
+        }
+        test_example_samples = (
+            int(cfg.validation_plots.samples)
+            if bool(cfg.validation_plots.enabled)
+            else 0
         )
-        wandb.save(str(test_confusion_path), policy="now")
+        if test_example_samples > 0:
+            test_examples_path = save_prediction_examples_plot(
+                "test",
+                model,
+                data,
+                run_report_dir / "test_prediction_examples.png",
+                test_example_samples,
+            )
+            if test_examples_path is not None:
+                test_plot_payload["test_plots/example_predictions"] = wandb.Image(
+                    str(test_examples_path)
+                )
+                save_wandb_file(test_examples_path, policy="now")
+        wandb.log(test_plot_payload)
+        save_wandb_file(Path(test_confusion_path), policy="now")
     result = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_name": run_name,
@@ -2510,7 +2870,7 @@ def main(cfg: DictConfig) -> None:
         "tflite": {},
     }
     if checkpoint_callback.filepath.exists():
-        wandb.save(str(checkpoint_callback.filepath), policy="now")
+        save_wandb_file(Path(checkpoint_callback.filepath), policy="now")
 
     if bool(cfg.export.export_tflite):
         float_tflite_path = export_path_for_run(str(cfg.export.tflite_float), run_name, cfg)
@@ -2521,7 +2881,7 @@ def main(cfg: DictConfig) -> None:
         )
         export_float_tflite(student, float_tflite_path)
         result["tflite"]["float"] = str(float_tflite_path)
-        wandb.save(str(float_tflite_path), policy="now")
+        save_wandb_file(Path(float_tflite_path), policy="now")
         if quantization_mode in {"ptq", "qat"}:
             export_ptq_tflite(
                 student,
@@ -2531,12 +2891,13 @@ def main(cfg: DictConfig) -> None:
                 int(cfg.export.quantization.representative_samples),
             )
             result["tflite"]["quantized"] = str(quantized_tflite_path)
-            wandb.save(str(quantized_tflite_path), policy="now")
+            save_wandb_file(Path(quantized_tflite_path), policy="now")
             quantized_accumulator = evaluate_tflite_split_metrics(
                 quantized_tflite_path,
                 test_ds,
                 test_steps,
                 int(cfg.model.num_outputs),
+                data,
                 description="quantized test metrics",
             )
             quantized_metrics = quantized_accumulator.metrics()
@@ -2551,6 +2912,7 @@ def main(cfg: DictConfig) -> None:
             )
             wandb.log(
                 {
+                    "trainer/global_step": int(model.optimizer.iterations.numpy()),
                     "test_quantized_plots/confusion_matrix": wandb.Image(str(quantized_confusion_path)),
                     "test_plots/float_vs_quantized_metrics": metric_comparison_plot(
                         test_metric_results,
@@ -2558,14 +2920,13 @@ def main(cfg: DictConfig) -> None:
                         comparison_plot_path,
                     ),
                     **{f"test_quantized/{key}": float(value) for key, value in quantized_metrics.items()},
-                },
-                step=int(cfg.trainer.max_epochs) + 1,
+                }
             )
-            wandb.save(str(comparison_plot_path), policy="now")
-            wandb.save(str(quantized_confusion_path), policy="now")
+            save_wandb_file(Path(comparison_plot_path), policy="now")
+            save_wandb_file(Path(quantized_confusion_path), policy="now")
     result_path = run_report_dir / f"{run_name}_results.json"
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    wandb.save(str(result_path), policy="now")
+    save_wandb_file(Path(result_path), policy="now")
     final_artifact_paths: list[Path] = [
         result_path,
         report_path,
