@@ -29,6 +29,7 @@ VALIDATION_PLOTS_SAMPLES="${VALIDATION_PLOTS_SAMPLES:-4}"
 VALIDATION_PLOTS_EVERY_N_EPOCHS="${VALIDATION_PLOTS_EVERY_N_EPOCHS:-1}"
 QUANTIZATION_MODE="${QUANTIZATION_MODE:-ptq}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
+PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -152,6 +153,10 @@ while [[ $# -gt 0 ]]; do
       QUANTIZATION_MODE="$2"
       shift 2
       ;;
+    --preflight-only)
+      PREFLIGHT_ONLY=true
+      shift
+      ;;
     --skip-completed)
       SKIP_COMPLETED=1
       shift
@@ -263,6 +268,7 @@ run_one() {
     "optimizer.warmup_steps=1000" \
     "optimizer.warmup_start_learning_rate=0.0001" \
     "trainer.max_epochs=${MAX_EPOCHS}" \
+    "trainer.preflight_only=${PREFLIGHT_ONLY}" \
     "trainer.log_every_n_steps=25" \
     "trainer.steps_per_execution=${STEPS_PER_EXECUTION}" \
     "trainer.image_learning_rate_scale=${IMAGE_LEARNING_RATE_SCALE}" \
