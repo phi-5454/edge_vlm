@@ -2895,6 +2895,15 @@ def main(cfg: DictConfig) -> None:
         ),
         steps_per_execution=int(cfg.trainer.get("steps_per_execution", 1)),
     )
+    initial_weights = (
+        absolute_path(cfg.paths.initial_weights)
+        if cfg.paths.get("initial_weights", None) is not None
+        else None
+    )
+    if initial_weights is not None:
+        if not initial_weights.exists():
+            raise FileNotFoundError(f"Initial Keras weights not found: {initial_weights}")
+        student.load_weights(initial_weights)
 
     run_name = str(cfg.experiment.run_name)
     report_dir = absolute_path(cfg.paths.report_dir)
@@ -2953,6 +2962,7 @@ def main(cfg: DictConfig) -> None:
             "prompt_token_shape": list(data.prompt_token_ids.shape),
         },
         "model": compatibility_report(student, cfg),
+        "initial_weights": str(initial_weights) if initial_weights is not None else None,
         "visualization": {
             "visualkeras": visualkeras_report,
             "fusion_head_visualkeras": fusion_head_visualkeras_report,
@@ -3011,6 +3021,7 @@ def main(cfg: DictConfig) -> None:
             "full_split_sizes": data.full_split_sizes(),
             "teacher_cache_coverage": data.cache_coverage(),
             "keras_parameter_count": student.count_params(),
+            "initial_weights": str(initial_weights) if initial_weights is not None else None,
         },
         allow_val_change=True,
     )
@@ -3133,15 +3144,21 @@ def main(cfg: DictConfig) -> None:
             )
         )
 
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=int(cfg.trainer.max_epochs),
-        steps_per_epoch=train_steps,
-        validation_steps=val_steps,
-        callbacks=callbacks,
-        verbose=0,
-    )
+    if bool(cfg.trainer.get("skip_fit", False)):
+        history_dict: dict[str, list[float]] = {}
+    else:
+        history = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=int(cfg.trainer.max_epochs),
+            steps_per_epoch=train_steps,
+            validation_steps=val_steps,
+            callbacks=callbacks,
+            verbose=0,
+        )
+        history_dict = {
+            key: [float(value) for value in values] for key, values in history.history.items()
+        }
     test_results = model.evaluate(
         test_ds,
         steps=test_steps,
@@ -3217,7 +3234,9 @@ def main(cfg: DictConfig) -> None:
         "split_sizes": data.split_sizes(),
         "full_split_sizes": data.full_split_sizes(),
         "teacher_cache_coverage": data.cache_coverage(),
-        "history": {key: [float(value) for value in values] for key, values in history.history.items()},
+        "initial_weights": str(initial_weights) if initial_weights is not None else None,
+        "fit_skipped": bool(cfg.trainer.get("skip_fit", False)),
+        "history": history_dict,
         "test_results": {key: float(value) for key, value in test_results.items()},
         "quantized_test_results": None,
         "checkpoint": str(ckpt_dir / "best.weights.h5"),

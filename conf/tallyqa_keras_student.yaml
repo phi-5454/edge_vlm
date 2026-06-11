@@ -5,6 +5,8 @@ defaults:
 paths:
   report_dir: artifacts/reports/tallyqa_keras_student
   checkpoint_dir: artifacts/models/tallyqa_keras_student
+  initial_weights: null
+  initial_weights_skip_mismatch: false
 
 keras_model:
   # legacy_prior keeps the older tiny Conv/MLP model.
@@ -64,6 +66,7 @@ data:
 
 trainer:
   max_epochs: 10
+  skip_fit: false
   log_every_n_steps: 25
   steps_per_execution: 1
   image_learning_rate_scale: 1.0
