@@ -1881,6 +1881,7 @@ class WandbKerasLogger(tf.keras.callbacks.Callback):
         if learning_rate is not None:
             payload[f"{self.prefix}train/lr_epoch"] = learning_rate
         payload["trainer/epoch"] = epoch
+        payload["trainer/global_step"] = self.global_train_step
         wandb.log(payload)
 
 
@@ -1913,6 +1914,7 @@ class WandbEvaluationLogger(tf.keras.callbacks.Callback):
         payload: dict[str, Any] = {
             **{f"val/{name}": float(value) for name, value in metrics.items()},
             "trainer/epoch": epoch,
+            "trainer/global_step": int(self.model.optimizer.iterations.numpy()),
         }
         if int(accumulator.confusion.sum()) > 0:
             figure_path = save_confusion_matrix_plot(
@@ -1922,7 +1924,7 @@ class WandbEvaluationLogger(tf.keras.callbacks.Callback):
             )
             payload["val_plots/confusion_matrix"] = wandb.Image(str(figure_path))
             wandb.save(str(figure_path), policy="now")
-        wandb.log(payload, step=epoch + 1)
+        wandb.log(payload)
 
 class TqdmKerasProgress(tf.keras.callbacks.Callback):
     def __init__(self, train_steps: int, val_steps: int):
@@ -2415,9 +2417,9 @@ def main(cfg: DictConfig) -> None:
         ],
     )
 
-    train_ds = make_tf_dataset(data, "train", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
-    val_ds = make_tf_dataset(data, "val", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
-    test_ds = make_tf_dataset(data, "test", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
+    train_ds = make_tf_dataset(data, "train", cfg, prompt_length).repeat().prefetch(tf.data.AUTOTUNE)
+    val_ds = make_tf_dataset(data, "val", cfg, prompt_length).repeat().prefetch(tf.data.AUTOTUNE)
+    test_ds = make_tf_dataset(data, "test", cfg, prompt_length).repeat().prefetch(tf.data.AUTOTUNE)
 
     checkpoint_callback = StudentWeightCheckpoint(
         student=student,
