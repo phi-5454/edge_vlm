@@ -4,6 +4,8 @@ set -euo pipefail
 SOURCE_DATASET="${SOURCE_DATASET:-data/tallyqa_cauldron_target_mobilenet224_letterbox}"
 DATASET_OUTPUT="${DATASET_OUTPUT:-data/max78000_tallyqa_count_fold2_56}"
 PROMPT_CLASS_NAMES_FILE="${PROMPT_CLASS_NAMES_FILE:-}"
+TIERED_CURRICULUM_DIR="${TIERED_CURRICULUM_DIR:-}"
+DATASET_TIER="${DATASET_TIER:-}"
 AI8X_TRAINING="${AI8X_TRAINING:-../MAX78000/ai8x-training}"
 AI8X_TRAINING_REPO="${AI8X_TRAINING_REPO:-https://github.com/analogdevicesinc/ai8x-training.git}"
 RUN_NAME="${RUN_NAME:-tallyqa_count_mbv3small}"
@@ -59,6 +61,9 @@ Common options:
   --dataset-output DIR         Materialized MAX78000 dataset output.
   --prompt-class-names-file FILE
                                Optional prompt class subset. Enables 0/1/2/3/4/5+ general count mode.
+  --tiered-curriculum-dir DIR   Directory containing tier_*/prompt_classes.txt.
+  --dataset-tier NAME           Train on one tier under --dataset-output. If missing, all tiers
+                                are materialized from --tiered-curriculum-dir first.
   --ai8x-training DIR          Path to sibling ai8x-training checkout.
   --clone-ai8x                 Clone ai8x-training if --ai8x-training is absent.
   --run-name NAME              ADI training run name.
@@ -109,6 +114,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --prompt-class-names-file)
       PROMPT_CLASS_NAMES_FILE="$2"
+      shift 2
+      ;;
+    --tiered-curriculum-dir)
+      TIERED_CURRICULUM_DIR="$2"
+      shift 2
+      ;;
+    --dataset-tier)
+      DATASET_TIER="$2"
       shift 2
       ;;
     --ai8x-training)
@@ -317,6 +330,17 @@ require_cmd() {
 
 require_cmd uv
 
+if [[ -n "${PROMPT_CLASS_NAMES_FILE}" && -n "${TIERED_CURRICULUM_DIR}" ]]; then
+  echo "Use either --prompt-class-names-file or --tiered-curriculum-dir, not both." >&2
+  exit 2
+fi
+
+if [[ -n "${TIERED_CURRICULUM_DIR}" && -z "${DATASET_TIER}" ]] \
+  && [[ "${TRAIN}" == "1" || "${TRAIN}" == "true" ]]; then
+  echo "--tiered-curriculum-dir materializes all tiers; pass --dataset-tier to choose one for training." >&2
+  exit 2
+fi
+
 if [[ ! -d "${SOURCE_DATASET}" ]]; then
   echo "Source dataset not found: ${SOURCE_DATASET}" >&2
   echo "Copy it into place first, for example from Google Drive in Colab." >&2
@@ -343,22 +367,49 @@ if [[ -d "${AI8X_TRAINING}/.git" ]] && {
   run_cmd git -C "${AI8X_TRAINING}" submodule update --init --recursive
 fi
 
-if [[ "${MATERIALIZE}" == "1" || "${MATERIALIZE}" == "true" ]]; then
+selected_dataset_output="${DATASET_OUTPUT}"
+if [[ -n "${DATASET_TIER}" ]]; then
+  selected_dataset_output="${DATASET_OUTPUT}/${DATASET_TIER}"
+fi
+
+needs_materialize=0
+if [[ -z "${DATASET_TIER}" ]] && [[ "${MATERIALIZE}" == "1" || "${MATERIALIZE}" == "true" ]]; then
+  needs_materialize=1
+fi
+if [[ -n "${DATASET_TIER}" && ! -f "${selected_dataset_output}/manifest.jsonl" ]]; then
+  if [[ -z "${TIERED_CURRICULUM_DIR}" ]]; then
+    echo "Materialized tier missing: ${selected_dataset_output}/manifest.jsonl" >&2
+    echo "Pass --tiered-curriculum-dir so the missing tier datasets can be materialized." >&2
+    exit 2
+  fi
+  needs_materialize=1
+fi
+if [[ -n "${DATASET_TIER}" && -n "${TIERED_CURRICULUM_DIR}" ]] \
+  && [[ "${MATERIALIZE}" == "1" || "${MATERIALIZE}" == "true" ]] \
+  && [[ "${FORCE}" == "1" || "${FORCE}" == "true" ]]; then
+  needs_materialize=1
+fi
+
+if [[ "${needs_materialize}" == "1" ]]; then
   materialize_args=(
     uv run python scripts/materialize_max78000_tallyqa_dataset.py
     --source "${SOURCE_DATASET}"
     --output "${DATASET_OUTPUT}"
     --seed "${SEED}"
   )
-  if [[ -n "${PROMPT_CLASS_NAMES_FILE}" ]]; then
+  if [[ -n "${TIERED_CURRICULUM_DIR}" ]]; then
+    materialize_args+=(--tiered-curriculum-dir "${TIERED_CURRICULUM_DIR}")
+  elif [[ -n "${PROMPT_CLASS_NAMES_FILE}" ]]; then
     materialize_args+=(--prompt-class-names-file "${PROMPT_CLASS_NAMES_FILE}")
   fi
   if [[ "${FORCE}" == "1" || "${FORCE}" == "true" ]]; then
     materialize_args+=(--force)
   fi
   run_cmd "${materialize_args[@]}"
-elif [[ ! -f "${DATASET_OUTPUT}/manifest.jsonl" ]]; then
-  echo "Materialized dataset missing: ${DATASET_OUTPUT}/manifest.jsonl" >&2
+fi
+
+if [[ ! -f "${selected_dataset_output}/manifest.jsonl" ]]; then
+  echo "Materialized dataset missing: ${selected_dataset_output}/manifest.jsonl" >&2
   exit 1
 fi
 
@@ -374,7 +425,7 @@ if [[ "${STAGE}" == "1" || "${STAGE}" == "true" ]]; then
 fi
 
 ai8x_abs="$(cd "${AI8X_TRAINING}" && pwd)"
-data_abs="$(cd "$(dirname "${DATASET_OUTPUT}")" && pwd)/$(basename "${DATASET_OUTPUT}")"
+data_abs="$(cd "$(dirname "${selected_dataset_output}")" && pwd)/$(basename "${selected_dataset_output}")"
 report_abs="$(mkdir -p "${REPORT_DIR}/${RUN_NAME}" && cd "${REPORT_DIR}/${RUN_NAME}" && pwd)"
 distiller_pythonpath="${ai8x_abs}/distiller"
 
@@ -513,6 +564,8 @@ python3 - "$manifest_path" \
   "$WORKERS" \
   "$KERAS_TIER0_QAT_COMPARISON" \
   "${PROMPT_CLASS_NAMES_FILE}" \
+  "${TIERED_CURRICULUM_DIR}" \
+  "${DATASET_TIER}" \
   "$TRAIN" \
   "${train_args[@]}" <<'PY'
 import json
@@ -540,6 +593,8 @@ from pathlib import Path
     workers,
     keras_tier0_qat_comparison,
     prompt_class_names_file,
+    tiered_curriculum_dir,
+    dataset_tier,
     train_enabled,
     *train_command,
 ) = sys.argv[1:]
@@ -564,6 +619,8 @@ payload = {
     "distiller_pythonpath": distiller_pythonpath,
     "data_dir": data_dir,
     "prompt_class_names_file": prompt_class_names_file or None,
+    "tiered_curriculum_dir": tiered_curriculum_dir or None,
+    "dataset_tier": dataset_tier or None,
     "model_name": model_name,
     "dataset_name": dataset_name,
     "qat_policy": qat_policy,

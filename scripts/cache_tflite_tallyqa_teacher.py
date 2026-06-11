@@ -51,6 +51,14 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Use none for ordinary CPU TFLite models; use edgetpu for compiled models.",
     )
+    parser.add_argument(
+        "--disable-default-delegates",
+        action="store_true",
+        help=(
+            "Run with the builtin TFLite kernels only. This is useful when XNNPACK "
+            "fails to prepare a model during local simulator smoke tests."
+        ),
+    )
     parser.add_argument("--answer-min", type=int, default=0)
     parser.add_argument("--answer-max", type=int, default=5)
     parser.add_argument(
@@ -129,7 +137,7 @@ def completed_indices(path: Path) -> set[int]:
     return completed
 
 
-def make_interpreter(model_path: Path, delegate: str) -> Any:
+def make_interpreter(model_path: Path, delegate: str, disable_default_delegates: bool = False) -> Any:
     try:
         import tensorflow as tf
     except ImportError as exc:
@@ -148,10 +156,16 @@ def make_interpreter(model_path: Path, delegate: str) -> Any:
                     "Could not load libedgetpu.so.1. Use --delegate none with a non-EdgeTPU "
                     "TFLite model, or install the EdgeTPU runtime for compiled models."
                 ) from exc
-    interpreter = tf.lite.Interpreter(
-        model_path=str(model_path),
-        experimental_delegates=delegates or None,
-    )
+    interpreter_kwargs: dict[str, Any] = {
+        "model_path": str(model_path),
+        "experimental_delegates": delegates or None,
+    }
+    if disable_default_delegates:
+        interpreter_kwargs["experimental_op_resolver_type"] = (
+            tf.lite.experimental.OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES
+        )
+        interpreter_kwargs["experimental_delegates"] = delegates or []
+    interpreter = tf.lite.Interpreter(**interpreter_kwargs)
     try:
         interpreter.allocate_tensors()
     except RuntimeError as exc:
@@ -451,7 +465,7 @@ def main() -> None:
         )
         return
 
-    interpreter = make_interpreter(args.model, args.delegate)
+    interpreter = make_interpreter(args.model, args.delegate, args.disable_default_delegates)
     image_store = Uint8ImageStore(args.dataset, metadata)
     output_mode = "a" if args.resume else "w"
     stats: Counter = Counter()

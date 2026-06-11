@@ -3055,6 +3055,40 @@ def metric_deltas(
     }
 
 
+def normalize_initial_weights_load_stage(value: str) -> str:
+    normalized = value.replace("-", "_").lower()
+    aliases = {
+        "before_qat": "before_quantization",
+        "pre_qat": "before_quantization",
+        "float": "before_quantization",
+        "after_qat": "after_quantization",
+        "post_qat": "after_quantization",
+        "qat": "after_quantization",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"before_quantization", "after_quantization"}:
+        raise ValueError(
+            "paths.initial_weights_load_stage must be one of "
+            "before_quantization, after_quantization, before_qat, or after_qat."
+        )
+    return normalized
+
+
+def load_initial_weights_if_configured(
+    model: tf.keras.Model,
+    initial_weights: Path | None,
+    cfg: DictConfig,
+) -> None:
+    if initial_weights is None:
+        return
+    if not initial_weights.exists():
+        raise FileNotFoundError(f"Initial Keras weights not found: {initial_weights}")
+    model.load_weights(
+        initial_weights,
+        skip_mismatch=bool(cfg.paths.get("initial_weights_skip_mismatch", False)),
+    )
+
+
 @hydra.main(version_base=None, config_path="../conf", config_name="tallyqa_keras_student")
 def main(cfg: DictConfig) -> None:
     quantization_mode = str(cfg.export.quantization.mode)
@@ -3070,7 +3104,18 @@ def main(cfg: DictConfig) -> None:
     data.set_train_steps_per_epoch(train_steps)
     total_train_steps = max(1, train_steps * int(cfg.trainer.max_epochs))
 
+    initial_weights = (
+        absolute_path(cfg.paths.initial_weights)
+        if cfg.paths.get("initial_weights", None) is not None
+        else None
+    )
+    initial_weights_load_stage = normalize_initial_weights_load_stage(
+        str(cfg.paths.get("initial_weights_load_stage", "after_quantization"))
+    )
+
     student = build_keras_student_model(cfg, data.embedding_rows, prompt_length)
+    if initial_weights_load_stage == "before_quantization":
+        load_initial_weights_if_configured(student, initial_weights, cfg)
     student = maybe_apply_qat(student, cfg)
     quantization_coverage = assert_qat_coverage(student, cfg)
     class_weights = class_weights_from_config(cfg, data)
@@ -3104,18 +3149,8 @@ def main(cfg: DictConfig) -> None:
         ),
         steps_per_execution=int(cfg.trainer.get("steps_per_execution", 1)),
     )
-    initial_weights = (
-        absolute_path(cfg.paths.initial_weights)
-        if cfg.paths.get("initial_weights", None) is not None
-        else None
-    )
-    if initial_weights is not None:
-        if not initial_weights.exists():
-            raise FileNotFoundError(f"Initial Keras weights not found: {initial_weights}")
-        student.load_weights(
-            initial_weights,
-            skip_mismatch=bool(cfg.paths.get("initial_weights_skip_mismatch", False)),
-        )
+    if initial_weights_load_stage == "after_quantization":
+        load_initial_weights_if_configured(student, initial_weights, cfg)
 
     run_name = str(cfg.experiment.run_name)
     report_dir = absolute_path(cfg.paths.report_dir)
@@ -3178,6 +3213,7 @@ def main(cfg: DictConfig) -> None:
         "initial_weights_skip_mismatch": bool(
             cfg.paths.get("initial_weights_skip_mismatch", False)
         ),
+        "initial_weights_load_stage": initial_weights_load_stage,
         "visualization": {
             "visualkeras": visualkeras_report,
             "fusion_head_visualkeras": fusion_head_visualkeras_report,
@@ -3249,6 +3285,7 @@ def main(cfg: DictConfig) -> None:
             "teacher_cache_coverage": data.cache_coverage(),
             "keras_parameter_count": student.count_params(),
             "initial_weights": str(initial_weights) if initial_weights is not None else None,
+            "initial_weights_load_stage": initial_weights_load_stage,
             "qat_wrapped_fraction": float(quantization_coverage["wrapped_fraction"]),
             "qat_unwrapped_quantizable_leaf_layers": int(
                 quantization_coverage["unwrapped_quantizable_leaf_layers"]
@@ -3467,6 +3504,7 @@ def main(cfg: DictConfig) -> None:
         "full_split_sizes": data.full_split_sizes(),
         "teacher_cache_coverage": data.cache_coverage(),
         "initial_weights": str(initial_weights) if initial_weights is not None else None,
+        "initial_weights_load_stage": initial_weights_load_stage,
         "fit_skipped": bool(cfg.trainer.get("skip_fit", False)),
         "history": history_dict,
         "test_results": {key: float(value) for key, value in test_results.items()},

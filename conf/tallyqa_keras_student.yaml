@@ -7,6 +7,11 @@ paths:
   checkpoint_dir: artifacts/models/tallyqa_keras_student
   initial_weights: null
   initial_weights_skip_mismatch: false
+  # after_quantization: load into the final model graph. Use this to resume an
+  # existing QAT checkpoint.
+  # before_quantization: load into the float Keras student before QAT wrapping.
+  # Use this to fine-tune a stable float/PTQ checkpoint with QAT.
+  initial_weights_load_stage: after_quantization
 
 keras_model:
   # legacy_prior keeps the older tiny Conv/MLP model.

@@ -3,7 +3,8 @@
 
 By default this preserves the original people-only positive-count view used for
 bring-up.  Passing --prompt-class-names-file switches to a general prompt-class
-subset with classes 0, 1, 2, 3, 4, 5+.
+subset with classes 0, 1, 2, 3, 4, 5+.  Passing --tiered-curriculum-dir writes
+one materialized dataset per tier directory under --output.
 """
 
 from __future__ import annotations
@@ -34,6 +35,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional newline-separated prompt classes. Enables general 0/1/2/3/4/5+ mode.",
     )
+    parser.add_argument(
+        "--tiered-curriculum-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory containing tier_*/prompt_classes.txt. When set, --output is treated "
+            "as a root and one dataset is written per tier subdirectory."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
@@ -46,6 +56,15 @@ def load_prompt_classes(path: Path | None) -> set[str] | None:
     if not prompts:
         raise ValueError(f"{path} does not contain any prompt classes.")
     return prompts
+
+
+def discover_tier_prompt_files(tiered_curriculum_dir: Path) -> list[tuple[str, Path]]:
+    prompt_files = sorted(tiered_curriculum_dir.glob("tier_*/prompt_classes.txt"))
+    if not prompt_files:
+        raise FileNotFoundError(
+            f"No tier_*/prompt_classes.txt files found under {tiered_curriculum_dir}"
+        )
+    return [(path.parent.name, path) for path in prompt_files]
 
 
 def record_for_row(
@@ -80,16 +99,47 @@ def record_for_row(
     }
 
 
-def main() -> None:
-    args = parse_args()
-    if not (args.source / "metadata.json").exists():
-        raise FileNotFoundError(args.source / "metadata.json")
-    if (args.output / "manifest.jsonl").exists() and not args.force:
-        raise FileExistsError(f"{args.output / 'manifest.jsonl'} exists. Re-run with --force.")
-    args.output.mkdir(parents=True, exist_ok=True)
+def command_payload(
+    args: argparse.Namespace,
+    output: Path,
+    prompt_classes_file: Path | None,
+) -> list[str]:
+    command = [
+        "uv",
+        "run",
+        "python",
+        "scripts/materialize_max78000_tallyqa_dataset.py",
+        "--source",
+        str(args.source),
+        "--output",
+        str(output),
+        "--seed",
+        str(args.seed),
+    ]
+    if prompt_classes_file is not None:
+        command.extend(["--prompt-class-names-file", str(prompt_classes_file)])
+    if args.tiered_curriculum_dir is not None:
+        command.extend(["--tiered-curriculum-dir", str(args.tiered_curriculum_dir)])
+    if args.force:
+        command.append("--force")
+    return command
 
-    prompt_classes = load_prompt_classes(args.prompt_class_names_file)
-    rows = load_tallyqa_rows(args.source)
+
+def materialize_dataset(
+    *,
+    args: argparse.Namespace,
+    output: Path,
+    rows: list[dict[str, Any]],
+    source_metadata: dict[str, Any],
+    prompt_classes_file: Path | None,
+    tier_name: str | None = None,
+    tier_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if (output / "manifest.jsonl").exists() and not args.force:
+        raise FileExistsError(f"{output / 'manifest.jsonl'} exists. Re-run with --force.")
+    output.mkdir(parents=True, exist_ok=True)
+
+    prompt_classes = load_prompt_classes(prompt_classes_file)
     records = [
         record
         for row in rows
@@ -98,7 +148,6 @@ def main() -> None:
     if not records:
         raise RuntimeError("No MAX78000 TallyQA records were found for the requested filter.")
 
-    source_metadata = json.loads((args.source / "metadata.json").read_text(encoding="utf-8"))
     labels = COUNT_LABELS if prompt_classes is not None else PEOPLE_LABELS
     task = (
         f"TallyQA prompt-class subset count, {len(prompt_classes)} prompt classes, labels 0/1/2/3/4/5+"
@@ -107,21 +156,12 @@ def main() -> None:
     )
     metadata = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "command": [
-            "uv",
-            "run",
-            "python",
-            "scripts/materialize_max78000_tallyqa_dataset.py",
-            "--source",
-            str(args.source),
-            "--output",
-            str(args.output),
-            "--seed",
-            str(args.seed),
-        ],
+        "command": command_payload(args, output, prompt_classes_file),
         "source_dataset": str(args.source),
-        "prompt_class_names_file": str(args.prompt_class_names_file)
-        if args.prompt_class_names_file is not None
+        "tier_name": tier_name,
+        "tier_metadata": tier_metadata,
+        "prompt_class_names_file": str(prompt_classes_file)
+        if prompt_classes_file is not None
         else None,
         "prompt_classes": sorted(prompt_classes) if prompt_classes is not None else ["people"],
         "task": task,
@@ -154,14 +194,75 @@ def main() -> None:
         },
     }
 
-    with (args.output / "manifest.jsonl").open("w", encoding="utf-8") as handle:
+    with (output / "manifest.jsonl").open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
-    (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
-    print(f"Wrote {len(records)} records to {args.output / 'manifest.jsonl'}")
+    print(f"Wrote {len(records)} records to {output / 'manifest.jsonl'}")
     print(f"Split counts: {metadata['split_counts']}")
     print(f"Label counts: {metadata['label_counts']}")
+    return metadata
+
+
+def main() -> None:
+    args = parse_args()
+    if args.prompt_class_names_file is not None and args.tiered_curriculum_dir is not None:
+        raise ValueError("Use either --prompt-class-names-file or --tiered-curriculum-dir, not both.")
+    if not (args.source / "metadata.json").exists():
+        raise FileNotFoundError(args.source / "metadata.json")
+
+    rows = load_tallyqa_rows(args.source)
+    source_metadata = json.loads((args.source / "metadata.json").read_text(encoding="utf-8"))
+
+    if args.tiered_curriculum_dir is None:
+        materialize_dataset(
+            args=args,
+            output=args.output,
+            rows=rows,
+            source_metadata=source_metadata,
+            prompt_classes_file=args.prompt_class_names_file,
+        )
+        return
+
+    manifest_path = args.tiered_curriculum_dir / "manifest.json"
+    curriculum_manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    )
+    tier_definitions = curriculum_manifest.get("tier_definitions", {})
+    summary: dict[str, Any] = {
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "command": command_payload(args, args.output, None),
+        "source_dataset": str(args.source),
+        "tiered_curriculum_dir": str(args.tiered_curriculum_dir),
+        "curriculum_manifest": str(manifest_path) if manifest_path.exists() else None,
+        "output_root": str(args.output),
+        "tiers": {},
+    }
+    for tier_name, prompt_file in discover_tier_prompt_files(args.tiered_curriculum_dir):
+        print(f"\nMaterializing {tier_name} from {prompt_file}")
+        metadata = materialize_dataset(
+            args=args,
+            output=args.output / tier_name,
+            rows=rows,
+            source_metadata=source_metadata,
+            prompt_classes_file=prompt_file,
+            tier_name=tier_name,
+            tier_metadata=tier_definitions.get(tier_name),
+        )
+        summary["tiers"][tier_name] = {
+            "output": str(args.output / tier_name),
+            "prompt_class_names_file": str(prompt_file),
+            "prompt_classes": len(metadata["prompt_classes"]),
+            "records": metadata["records"],
+            "split_counts": metadata["split_counts"],
+            "label_counts": metadata["label_counts"],
+        }
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    summary_path = args.output / "tiered_materialization_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print(f"\nWrote {summary_path}")
 
 
 if __name__ == "__main__":

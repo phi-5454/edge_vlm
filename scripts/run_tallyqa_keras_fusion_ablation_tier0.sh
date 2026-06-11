@@ -30,6 +30,9 @@ VALIDATION_PLOTS_EVERY_N_EPOCHS="${VALIDATION_PLOTS_EVERY_N_EPOCHS:-1}"
 QUANTIZATION_MODE="${QUANTIZATION_MODE:-ptq}"
 SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
+INITIAL_WEIGHTS="${INITIAL_WEIGHTS:-}"
+INITIAL_WEIGHTS_LOAD_STAGE="${INITIAL_WEIGHTS_LOAD_STAGE:-after_quantization}"
+INITIAL_WEIGHTS_SKIP_MISMATCH="${INITIAL_WEIGHTS_SKIP_MISMATCH:-false}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -157,6 +160,24 @@ while [[ $# -gt 0 ]]; do
       PREFLIGHT_ONLY=true
       shift
       ;;
+    --initial-weights)
+      INITIAL_WEIGHTS="$2"
+      shift 2
+      ;;
+    --initial-weights-load-stage)
+      INITIAL_WEIGHTS_LOAD_STAGE="$2"
+      shift 2
+      ;;
+    --initial-weights-skip-mismatch)
+      INITIAL_WEIGHTS_SKIP_MISMATCH=true
+      shift
+      ;;
+    --qat-fine-tune-from)
+      INITIAL_WEIGHTS="$2"
+      INITIAL_WEIGHTS_LOAD_STAGE=before_quantization
+      QUANTIZATION_MODE=qat
+      shift 2
+      ;;
     --skip-completed)
       SKIP_COMPLETED=1
       shift
@@ -216,6 +237,14 @@ run_one() {
   if [[ "${DRY_RUN}" == "1" || "${DRY_RUN}" == "true" ]]; then
     echo "DRY_RUN: uv run ${uv_extra_args[*]} python scripts/train_tallyqa_keras_student.py --config-name tallyqa_keras_student experiment.run_name=${run_name} keras_model.fusion_mode=${fusion_mode} ..."
     return 0
+  fi
+  local initial_weight_args=()
+  if [[ -n "${INITIAL_WEIGHTS}" ]]; then
+    initial_weight_args+=(
+      "paths.initial_weights=${INITIAL_WEIGHTS}"
+      "paths.initial_weights_load_stage=${INITIAL_WEIGHTS_LOAD_STAGE}"
+      "paths.initial_weights_skip_mismatch=${INITIAL_WEIGHTS_SKIP_MISMATCH}"
+    )
   fi
   uv run "${uv_extra_args[@]}" python scripts/train_tallyqa_keras_student.py \
     --config-name tallyqa_keras_student \
@@ -284,6 +313,7 @@ run_one() {
     "validation_plots.every_n_epochs=${VALIDATION_PLOTS_EVERY_N_EPOCHS}" \
     "export.export_tflite=true" \
     "export.quantization.mode=${QUANTIZATION_MODE}" \
+    "${initial_weight_args[@]}" \
     "$@"
 }
 

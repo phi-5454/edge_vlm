@@ -296,8 +296,14 @@ class TallyQAFoldedMobileNetV3MinimalCount(nn.Module):
     transitions are implemented as max-pool-plus-conv blocks.
     """
 
+    # Folded 56x56 input replaces the first two spatial reductions in the
+    # original 224x224 MobileNetV3 input path. For MobileNetV3-small this lands
+    # at the 56x56x16 stage. Keep the 24, 40, and 48-channel stages and cut
+    # before the 96/576 tail, matching the large-minimal fusion-cut principle.
+    small_stem_channels = 16
+    small_head_channels = 144
+    small_pool_kernel = 14
     small_specs = (
-        MobileNetV3MinimalBlockSpec(16, 16, pool=True),
         MobileNetV3MinimalBlockSpec(72, 24, pool=True),
         MobileNetV3MinimalBlockSpec(88, 24),
         MobileNetV3MinimalBlockSpec(96, 40, pool=True),
@@ -305,14 +311,16 @@ class TallyQAFoldedMobileNetV3MinimalCount(nn.Module):
         MobileNetV3MinimalBlockSpec(240, 40),
         MobileNetV3MinimalBlockSpec(120, 48),
         MobileNetV3MinimalBlockSpec(144, 48),
-        MobileNetV3MinimalBlockSpec(288, 96, pool=True),
-        MobileNetV3MinimalBlockSpec(576, 96),
-        MobileNetV3MinimalBlockSpec(576, 96),
     )
+
+    # For MobileNetV3-large, the folded input corresponds to the 56x56x24
+    # stage. Keep the 40, 80, and 112-channel stages and cut before the 160
+    # tail, which is both later than the intended fusion cut and parameter-heavy
+    # when depthwise convolutions are replaced by full 3x3 convolutions.
+    large_stem_channels = 24
+    large_head_channels = 672
+    large_pool_kernel = 14
     large_specs = (
-        MobileNetV3MinimalBlockSpec(16, 16),
-        MobileNetV3MinimalBlockSpec(64, 24, pool=True),
-        MobileNetV3MinimalBlockSpec(72, 24),
         MobileNetV3MinimalBlockSpec(72, 40, pool=True),
         MobileNetV3MinimalBlockSpec(120, 40),
         MobileNetV3MinimalBlockSpec(120, 40),
@@ -322,9 +330,6 @@ class TallyQAFoldedMobileNetV3MinimalCount(nn.Module):
         MobileNetV3MinimalBlockSpec(184, 80),
         MobileNetV3MinimalBlockSpec(480, 112),
         MobileNetV3MinimalBlockSpec(672, 112),
-        MobileNetV3MinimalBlockSpec(672, 160, pool=True),
-        MobileNetV3MinimalBlockSpec(960, 160),
-        MobileNetV3MinimalBlockSpec(960, 160),
     )
 
     def __init__(
@@ -352,12 +357,20 @@ class TallyQAFoldedMobileNetV3MinimalCount(nn.Module):
         self.num_channels = num_channels
         self.dimensions = dimensions
 
-        specs = self.small_specs if variant == "small" else self.large_specs
-        head_channels = 576 if variant == "small" else 960
+        if variant == "small":
+            specs = self.small_specs
+            stem_channels = self.small_stem_channels
+            head_channels = self.small_head_channels
+            pool_kernel = self.small_pool_kernel
+        else:
+            specs = self.large_specs
+            stem_channels = self.large_stem_channels
+            head_channels = self.large_head_channels
+            pool_kernel = self.large_pool_kernel
 
         self.stem = ai8x.FusedConv2dBNReLU(
             num_channels,
-            16,
+            stem_channels,
             3,
             padding=1,
             bias=bias,
@@ -365,7 +378,7 @@ class TallyQAFoldedMobileNetV3MinimalCount(nn.Module):
         )
 
         blocks: list[nn.Module] = []
-        in_channels = 16
+        in_channels = stem_channels
         for base_spec in specs:
             spec = MobileNetV3MinimalBlockSpec(
                 expand_channels=base_spec.expand_channels,
@@ -384,9 +397,7 @@ class TallyQAFoldedMobileNetV3MinimalCount(nn.Module):
             **kwargs,
         )
 
-        # 56x56 with four MobileNetV3 stride-2 transitions becomes 3x3 with
-        # MAX78000-style floor pooling.
-        self.avgpool = ai8x.AvgPool2d(kernel_size=3, stride=3, **kwargs)
+        self.avgpool = ai8x.AvgPool2d(kernel_size=pool_kernel, stride=pool_kernel, **kwargs)
         self.classifier = ai8x.Linear(head_channels, num_classes, bias=True, wide=True, **kwargs)
 
         initialize_conv_linear(self)
