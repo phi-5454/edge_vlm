@@ -182,17 +182,21 @@ run_one() {
   local run_id="$1"
   local run_name="$2"
   local fusion_mode="$3"
+  local uv_extra_args=(--extra tf)
   shift 3
+  if [[ "${QUANTIZATION_MODE}" == "qat" ]]; then
+    uv_extra_args+=(--extra qat)
+  fi
   if ! run_selected "${run_id}"; then
     echo "Skipping run ${run_id}: ${run_name}"
     return 0
   fi
   echo "Running ${run_id}: ${run_name}"
   if [[ "${DRY_RUN}" == "1" || "${DRY_RUN}" == "true" ]]; then
-    echo "DRY_RUN: uv run python scripts/train_tallyqa_keras_student.py --config-name tallyqa_keras_student experiment.run_name=${run_name} keras_model.fusion_mode=${fusion_mode} ..."
+    echo "DRY_RUN: uv run ${uv_extra_args[*]} python scripts/train_tallyqa_keras_student.py --config-name tallyqa_keras_student experiment.run_name=${run_name} keras_model.fusion_mode=${fusion_mode} ..."
     return 0
   fi
-  uv run python scripts/train_tallyqa_keras_student.py \
+  uv run "${uv_extra_args[@]}" python scripts/train_tallyqa_keras_student.py \
     --config-name tallyqa_keras_student \
     "experiment.run_name=${run_name}" \
     "paths.teacher_cache=${TEACHER_CACHE}" \
