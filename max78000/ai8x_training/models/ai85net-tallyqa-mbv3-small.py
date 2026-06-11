@@ -5,11 +5,10 @@
 # Stage this file into ../MAX78000/ai8x-training/models/ before running ADI train.py.
 #
 ###################################################################################################
-"""Folded-input simple-conv count classifier for MAX78000.
+"""Folded-input count classifiers for MAX78000.
 
-This is a conservative MAX78000 bring-up model, not a literal MobileNetV3 port.
-The intent is to mirror the "simple" MobileNet direction while staying within
-the ADI ai8x-training operator subset:
+The default factory remains a conservative bring-up model. This file also
+contains MobileNetV3-minimal-inspired folded encoders for architecture probes:
 
 - input: 12-channel 56x56 tensor produced by downsampling 224x224 RGB to
   112x112 and then 2x2 folding
@@ -21,12 +20,6 @@ the ADI ai8x-training operator subset:
 - no strided convolutions; downsampling is max pooling fused before conv
 - ReLU only
 - no squeeze-excitation / hard-sigmoid path
-
-The requested spatial progression is:
-
-    56x56x12 -> 56x56x24 -> 28x28x40 -> 14x14x80 -> 14x14x112
-
-The classifier average-pools the 14x14x112 tensor to 1x1 before a linear head.
 """
 
 from __future__ import annotations
@@ -50,6 +43,34 @@ class StageSpec:
 
     out_channels: int
     extra_convs: int = 1
+
+
+@dataclass(frozen=True)
+class MobileNetV3MinimalBlockSpec:
+    """MobileNetV3-minimal block with MAX78000-compatible substitutions.
+
+    expand_channels and out_channels mirror the Keras MobileNetV3 minimal
+    channel schedule. Original depthwise convolutions are replaced by ordinary
+    3x3 convolutions. Original stride-2 blocks use fused max pooling before the
+    3x3 convolution.
+    """
+
+    expand_channels: int
+    out_channels: int
+    pool: bool = False
+    residual: bool = True
+
+
+def initialize_conv_linear(module: nn.Module) -> None:
+    for child in module.modules():
+        if isinstance(child, nn.Conv2d):
+            nn.init.kaiming_normal_(child.weight, mode="fan_out", nonlinearity="relu")
+            if child.bias is not None:
+                nn.init.zeros_(child.bias)
+        elif isinstance(child, nn.Linear):
+            nn.init.normal_(child.weight, mean=0.0, std=0.01)
+            if child.bias is not None:
+                nn.init.zeros_(child.bias)
 
 
 class DownsampleConvStage(nn.Module):
@@ -126,6 +147,74 @@ class SameResolutionConvStage(nn.Module):
         return self.layers(x)
 
 
+class MobileNetV3MinimalBlock(nn.Module):
+    """Inverted-residual-style block using ordinary 3x3 convs instead of depthwise convs."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        spec: MobileNetV3MinimalBlockSpec,
+        bias: bool,
+        **kwargs,
+    ):
+        super().__init__()
+        self.use_residual = spec.residual and not spec.pool and in_channels == spec.out_channels
+
+        if spec.expand_channels == in_channels:
+            self.expand = None
+            spatial_channels = in_channels
+        else:
+            self.expand = ai8x.FusedConv2dBNReLU(
+                in_channels,
+                spec.expand_channels,
+                1,
+                bias=bias,
+                **kwargs,
+            )
+            spatial_channels = spec.expand_channels
+
+        if spec.pool:
+            self.spatial = ai8x.FusedMaxPoolConv2dBNReLU(
+                spatial_channels,
+                spatial_channels,
+                3,
+                pool_size=2,
+                pool_stride=2,
+                padding=1,
+                bias=bias,
+                **kwargs,
+            )
+        else:
+            self.spatial = ai8x.FusedConv2dBNReLU(
+                spatial_channels,
+                spatial_channels,
+                3,
+                padding=1,
+                bias=bias,
+                **kwargs,
+            )
+
+        # MobileNetV3 inverted residuals use a linear projection.
+        self.project = ai8x.FusedConv2dBN(
+            spatial_channels,
+            spec.out_channels,
+            1,
+            bias=bias,
+            **kwargs,
+        )
+        self.add = ai8x.Add() if self.use_residual else None
+
+    def forward(self, x):  # pylint: disable=arguments-differ
+        identity = x
+        if self.expand is not None:
+            x = self.expand(x)
+        x = self.spatial(x)
+        x = self.project(x)
+        if self.add is not None:
+            x = self.add(x, identity)
+        return x
+
+
 class TallyQAFoldedSimpleCount(nn.Module):
     """Count classifier for folded RGB inputs."""
 
@@ -181,15 +270,7 @@ class TallyQAFoldedSimpleCount(nn.Module):
         self._initialize()
 
     def _initialize(self) -> None:
-        for module in self.modules():
-            if isinstance(module, nn.Conv2d):
-                nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, mean=0.0, std=0.01)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        initialize_conv_linear(self)
 
     def forward_features(self, x):
         x = self.stem(x)
@@ -205,10 +286,139 @@ class TallyQAFoldedSimpleCount(nn.Module):
         return self.classifier(x)
 
 
+class TallyQAFoldedMobileNetV3MinimalCount(nn.Module):
+    """Folded-input MobileNetV3-minimal-style count classifier.
+
+    The architecture keeps MobileNetV3 minimal's channel schedule and residual
+    pattern, but substitutes ordinary 3x3 convolutions for depthwise
+    convolutions. The input-folded 56x56 tensor replaces the usual RGB image
+    stem input, so the stem is same-resolution and later stride-2 MobileNetV3
+    transitions are implemented as max-pool-plus-conv blocks.
+    """
+
+    small_specs = (
+        MobileNetV3MinimalBlockSpec(16, 16, pool=True),
+        MobileNetV3MinimalBlockSpec(72, 24, pool=True),
+        MobileNetV3MinimalBlockSpec(88, 24),
+        MobileNetV3MinimalBlockSpec(96, 40, pool=True),
+        MobileNetV3MinimalBlockSpec(240, 40),
+        MobileNetV3MinimalBlockSpec(240, 40),
+        MobileNetV3MinimalBlockSpec(120, 48),
+        MobileNetV3MinimalBlockSpec(144, 48),
+        MobileNetV3MinimalBlockSpec(288, 96, pool=True),
+        MobileNetV3MinimalBlockSpec(576, 96),
+        MobileNetV3MinimalBlockSpec(576, 96),
+    )
+    large_specs = (
+        MobileNetV3MinimalBlockSpec(16, 16),
+        MobileNetV3MinimalBlockSpec(64, 24, pool=True),
+        MobileNetV3MinimalBlockSpec(72, 24),
+        MobileNetV3MinimalBlockSpec(72, 40, pool=True),
+        MobileNetV3MinimalBlockSpec(120, 40),
+        MobileNetV3MinimalBlockSpec(120, 40),
+        MobileNetV3MinimalBlockSpec(240, 80, pool=True),
+        MobileNetV3MinimalBlockSpec(200, 80),
+        MobileNetV3MinimalBlockSpec(184, 80),
+        MobileNetV3MinimalBlockSpec(184, 80),
+        MobileNetV3MinimalBlockSpec(480, 112),
+        MobileNetV3MinimalBlockSpec(672, 112),
+        MobileNetV3MinimalBlockSpec(672, 160, pool=True),
+        MobileNetV3MinimalBlockSpec(960, 160),
+        MobileNetV3MinimalBlockSpec(960, 160),
+    )
+
+    def __init__(
+        self,
+        variant: str,
+        num_classes: int = 5,
+        num_channels: int = 12,
+        dimensions: tuple[int, int] = (56, 56),
+        bias: bool = True,
+        residual: bool = True,
+        **kwargs,
+    ):
+        super().__init__()
+        if dimensions != (56, 56):
+            raise ValueError("This MAX78000 folded MobileNetV3 model expects 56x56 inputs.")
+        if num_channels != 12:
+            raise ValueError("This MAX78000 folded MobileNetV3 model expects 12 input channels.")
+        if num_classes not in {5, 6}:
+            raise ValueError("Count head supports either 5 classes (1..5+) or 6 classes (0..5+).")
+        if variant not in {"small", "large"}:
+            raise ValueError("variant must be one of {'small', 'large'}.")
+
+        self.variant = variant
+        self.num_classes = num_classes
+        self.num_channels = num_channels
+        self.dimensions = dimensions
+
+        specs = self.small_specs if variant == "small" else self.large_specs
+        head_channels = 576 if variant == "small" else 960
+
+        self.stem = ai8x.FusedConv2dBNReLU(
+            num_channels,
+            16,
+            3,
+            padding=1,
+            bias=bias,
+            **kwargs,
+        )
+
+        blocks: list[nn.Module] = []
+        in_channels = 16
+        for base_spec in specs:
+            spec = MobileNetV3MinimalBlockSpec(
+                expand_channels=base_spec.expand_channels,
+                out_channels=base_spec.out_channels,
+                pool=base_spec.pool,
+                residual=base_spec.residual and residual,
+            )
+            blocks.append(MobileNetV3MinimalBlock(in_channels, spec, bias=bias, **kwargs))
+            in_channels = spec.out_channels
+        self.features = nn.Sequential(*blocks)
+        self.head_conv = ai8x.FusedConv2dBNReLU(
+            in_channels,
+            head_channels,
+            1,
+            bias=bias,
+            **kwargs,
+        )
+
+        # 56x56 with four MobileNetV3 stride-2 transitions becomes 3x3 with
+        # MAX78000-style floor pooling.
+        self.avgpool = ai8x.AvgPool2d(kernel_size=3, stride=3, **kwargs)
+        self.classifier = ai8x.Linear(head_channels, num_classes, bias=True, wide=True, **kwargs)
+
+        initialize_conv_linear(self)
+
+    def forward_features(self, x):
+        x = self.stem(x)
+        x = self.features(x)
+        return self.head_conv(x)
+
+    def forward(self, x):  # pylint: disable=arguments-differ
+        x = self.forward_features(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        return self.classifier(x)
+
+
 def ai85tallyqambv3smallcount(pretrained: bool = False, **kwargs):
     """Construct the folded-input TallyQA count model."""
     assert not pretrained
     return TallyQAFoldedSimpleCount(**kwargs)
+
+
+def ai85tallyqambv3smallminimalcount(pretrained: bool = False, **kwargs):
+    """Construct the folded-input MobileNetV3-small-minimal-style TallyQA model."""
+    assert not pretrained
+    return TallyQAFoldedMobileNetV3MinimalCount(variant="small", **kwargs)
+
+
+def ai85tallyqambv3largeminimalcount(pretrained: bool = False, **kwargs):
+    """Construct the folded-input MobileNetV3-large-minimal-style TallyQA model."""
+    assert not pretrained
+    return TallyQAFoldedMobileNetV3MinimalCount(variant="large", **kwargs)
 
 
 def ai85tallyqambv3smallpeople(pretrained: bool = False, **kwargs):
@@ -224,6 +434,16 @@ models = [
     },
     {
         "name": "ai85tallyqambv3smallpeople",
+        "min_input": 1,
+        "dim": 2,
+    },
+    {
+        "name": "ai85tallyqambv3smallminimalcount",
+        "min_input": 1,
+        "dim": 2,
+    },
+    {
+        "name": "ai85tallyqambv3largeminimalcount",
         "min_input": 1,
         "dim": 2,
     },

@@ -1828,7 +1828,10 @@ def build_tallyqa_current_student_model(
 
     backbone = build_keras_mobilenet(cfg, images)
     backbone.trainable = not bool(cfg.model.freeze_image_features)
-    image_features = backbone(images)
+    # Use the backbone output tensor directly. Calling the backbone as a nested
+    # layer hides its Conv/DepthwiseConv leaves from older tf-keras clone_model()
+    # implementations, which prevents full QAT annotation.
+    image_features = backbone.output
     feature_height = int(image_features.shape[1])
     feature_width = int(image_features.shape[2])
     if feature_height <= 0 or feature_width <= 0:

@@ -23,8 +23,16 @@ FILES = (
         Path("policies/qat_policy_tallyqa_count.yaml"),
     ),
     (
+        Path("max78000/ai8x_training/policies/qat_policy_tallyqa_count_from_start.yaml"),
+        Path("policies/qat_policy_tallyqa_count_from_start.yaml"),
+    ),
+    (
         Path("max78000/ai8x_training/policies/schedule-tallyqa-count.yaml"),
         Path("policies/schedule-tallyqa-count.yaml"),
+    ),
+    (
+        Path("max78000/ai8x_training/policies/schedule-tallyqa-count-30ep.yaml"),
+        Path("policies/schedule-tallyqa-count-30ep.yaml"),
     ),
 )
 

@@ -33,7 +33,18 @@ WANDB_ENV_FILE="${WANDB_ENV_FILE:-../wandb_api_key.env}"
 FORCE="${FORCE:-0}"
 CLONE_AI8X="${CLONE_AI8X:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+KERAS_TIER0_QAT_COMPARISON="${KERAS_TIER0_QAT_COMPARISON:-0}"
 REPORT_DIR="${REPORT_DIR:-artifacts/reports/max78000/tallyqa_training}"
+
+RUN_NAME_SET=0
+QAT_POLICY_SET=0
+SCHEDULE_SET=0
+EPOCHS_SET=0
+BATCH_SIZE_SET=0
+LEARNING_RATE_SET=0
+OPTIMIZER_SET=0
+WEIGHT_DECAY_SET=0
+PRINT_FREQ_SET=0
 
 usage() {
   cat <<'EOF'
@@ -71,6 +82,10 @@ Common options:
   --wandb-env-file FILE
   --force
   --dry-run
+  --keras-tier0-qat-comparison
+                               Apply MAX settings closest to the Keras tier0 MLP QAT run:
+                               30 epochs, batch 256, Adam lr 1e-3, wd 1e-2,
+                               QAT from epoch 0, 30-epoch decay schedule, print every 25.
 
 Colab shape:
   cd /content/edge_vlm
@@ -110,6 +125,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --run-name)
       RUN_NAME="$2"
+      RUN_NAME_SET=1
       shift 2
       ;;
     --model)
@@ -122,34 +138,42 @@ while [[ $# -gt 0 ]]; do
       ;;
     --qat-policy)
       QAT_POLICY="$2"
+      QAT_POLICY_SET=1
       shift 2
       ;;
     --schedule)
       SCHEDULE="$2"
+      SCHEDULE_SET=1
       shift 2
       ;;
     --epochs)
       EPOCHS="$2"
+      EPOCHS_SET=1
       shift 2
       ;;
     --batch-size)
       BATCH_SIZE="$2"
+      BATCH_SIZE_SET=1
       shift 2
       ;;
     --lr)
       LEARNING_RATE="$2"
+      LEARNING_RATE_SET=1
       shift 2
       ;;
     --optimizer)
       OPTIMIZER="$2"
+      OPTIMIZER_SET=1
       shift 2
       ;;
     --weight-decay)
       WEIGHT_DECAY="$2"
+      WEIGHT_DECAY_SET=1
       shift 2
       ;;
     --print-freq)
       PRINT_FREQ="$2"
+      PRINT_FREQ_SET=1
       shift 2
       ;;
     --workers)
@@ -216,6 +240,10 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=1
       shift
       ;;
+    --keras-tier0-qat-comparison)
+      KERAS_TIER0_QAT_COMPARISON=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -232,6 +260,36 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${KERAS_TIER0_QAT_COMPARISON}" == "1" || "${KERAS_TIER0_QAT_COMPARISON}" == "true" ]]; then
+  if [[ "${RUN_NAME_SET}" == "0" ]]; then
+    RUN_NAME="max78000-tier0-keras-comparison-qat"
+  fi
+  if [[ "${QAT_POLICY_SET}" == "0" ]]; then
+    QAT_POLICY="policies/qat_policy_tallyqa_count_from_start.yaml"
+  fi
+  if [[ "${SCHEDULE_SET}" == "0" ]]; then
+    SCHEDULE="policies/schedule-tallyqa-count-30ep.yaml"
+  fi
+  if [[ "${EPOCHS_SET}" == "0" ]]; then
+    EPOCHS=30
+  fi
+  if [[ "${BATCH_SIZE_SET}" == "0" ]]; then
+    BATCH_SIZE=256
+  fi
+  if [[ "${LEARNING_RATE_SET}" == "0" ]]; then
+    LEARNING_RATE=0.001
+  fi
+  if [[ "${OPTIMIZER_SET}" == "0" ]]; then
+    OPTIMIZER=Adam
+  fi
+  if [[ "${WEIGHT_DECAY_SET}" == "0" ]]; then
+    WEIGHT_DECAY=0.01
+  fi
+  if [[ "${PRINT_FREQ_SET}" == "0" ]]; then
+    PRINT_FREQ=25
+  fi
+fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
@@ -453,6 +511,7 @@ python3 - "$manifest_path" \
   "$OPTIMIZER" \
   "$WEIGHT_DECAY" \
   "$WORKERS" \
+  "$KERAS_TIER0_QAT_COMPARISON" \
   "${PROMPT_CLASS_NAMES_FILE}" \
   "$TRAIN" \
   "${train_args[@]}" <<'PY'
@@ -479,6 +538,7 @@ from pathlib import Path
     optimizer,
     weight_decay,
     workers,
+    keras_tier0_qat_comparison,
     prompt_class_names_file,
     train_enabled,
     *train_command,
@@ -514,6 +574,7 @@ payload = {
     "optimizer": optimizer,
     "weight_decay": float(weight_decay),
     "workers": int(workers),
+    "keras_tier0_qat_comparison": keras_tier0_qat_comparison in {"1", "true", "True"},
     "train_enabled": train_enabled in {"1", "true", "True"},
     "train_command": train_command,
 }
