@@ -304,6 +304,7 @@ fi
 ai8x_abs="$(cd "${AI8X_TRAINING}" && pwd)"
 data_abs="$(cd "$(dirname "${DATASET_OUTPUT}")" && pwd)/$(basename "${DATASET_OUTPUT}")"
 report_abs="$(mkdir -p "${REPORT_DIR}/${RUN_NAME}" && cd "${REPORT_DIR}/${RUN_NAME}" && pwd)"
+distiller_pythonpath="${ai8x_abs}/distiller"
 
 if [[ "${MODEL_REPORT}" == "1" || "${MODEL_REPORT}" == "true" ]]; then
   model_report_args=(
@@ -380,6 +381,7 @@ manifest_path="${report_abs}/run_manifest.json"
 python3 - "$manifest_path" \
   "$repo_root" \
   "$ai8x_abs" \
+  "$distiller_pythonpath" \
   "$data_abs" \
   "$RUN_NAME" \
   "$MODEL_NAME" \
@@ -404,6 +406,7 @@ from pathlib import Path
     manifest_path,
     repo_root,
     ai8x_training,
+    distiller_pythonpath,
     data_dir,
     run_name,
     model_name,
@@ -437,6 +440,7 @@ payload = {
     "edge_vlm_git_head": git_head(repo_root),
     "ai8x_training": ai8x_training,
     "ai8x_training_git_head": git_head(ai8x_training),
+    "distiller_pythonpath": distiller_pythonpath,
     "data_dir": data_dir,
     "prompt_class_names_file": prompt_class_names_file or None,
     "model_name": model_name,
@@ -459,12 +463,14 @@ if [[ "${TRAIN}" == "1" || "${TRAIN}" == "true" ]]; then
   if [[ "${DRY_RUN}" == "1" || "${DRY_RUN}" == "true" ]]; then
     echo "Would launch ADI ai8x-training run: ${RUN_NAME}"
     printf '+ cd %q &&' "${ai8x_abs}"
+    printf ' PYTHONPATH=%q' "${distiller_pythonpath}:${PYTHONPATH:-}"
     printf ' %q' "${train_args[@]}"
     printf ' 2>&1 | tee %q\n' "${report_abs}/train.log"
   else
     echo "Launching ADI ai8x-training run: ${RUN_NAME}"
     (
       cd "${ai8x_abs}"
+      export PYTHONPATH="${distiller_pythonpath}:${PYTHONPATH:-}"
       "${train_args[@]}"
     ) 2>&1 | tee "${report_abs}/train.log"
   fi

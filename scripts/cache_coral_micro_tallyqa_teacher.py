@@ -46,7 +46,30 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, help="Serial device, for example /dev/ttyACM0.")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--serial-timeout-s", type=float, default=120.0)
+    parser.add_argument(
+        "--serial-timeout-s",
+        type=float,
+        default=30.0,
+        help="Default serial read/write timeout. Phase-specific timeouts below override it.",
+    )
+    parser.add_argument(
+        "--ready-timeout-s",
+        type=float,
+        default=None,
+        help="Timeout while waiting for board_ready. Defaults to --serial-timeout-s.",
+    )
+    parser.add_argument(
+        "--rx-ready-timeout-s",
+        type=float,
+        default=5.0,
+        help="Timeout after sending a JSON header while waiting for board RX_READY.",
+    )
+    parser.add_argument(
+        "--result-timeout-s",
+        type=float,
+        default=30.0,
+        help="Timeout after sending image bytes while waiting for board RESULT.",
+    )
     parser.add_argument("--payload-chunk-size", type=int, default=512)
     parser.add_argument("--payload-chunk-delay-s", type=float, default=0.0005)
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -90,6 +113,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--payload-chunk-size must be positive")
     if args.payload_chunk_delay_s < 0:
         raise ValueError("--payload-chunk-delay-s must be non-negative")
+    for name in ("serial_timeout_s", "ready_timeout_s", "rx_ready_timeout_s", "result_timeout_s"):
+        value = getattr(args, name)
+        if value is not None and value <= 0:
+            raise ValueError(f"--{name.replace('_', '-')} must be positive")
 
 
 def selected_indices(examples: list[dict[str, Any]], args: argparse.Namespace) -> list[int]:
@@ -144,26 +171,45 @@ def read_prefixed(
     raw_handle: Any,
     recent_lines: deque[str] | None = None,
     phase: str | None = None,
+    timeout_s: float | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    while True:
-        raw = ser.readline()
-        if not raw:
-            suffix = f" during {phase}" if phase else ""
-            raise TimeoutError(f"Timed out waiting for Coral Micro serial output{suffix}.")
-        line = raw.decode("utf-8", errors="replace").strip()
-        if recent_lines is not None:
-            recent_lines.append(line)
-        raw_handle.write(line + "\n")
-        raw_handle.flush()
-        parsed = prefixed_payload(line)
-        if parsed is not None:
-            return parsed
-        print(line)
+    previous_timeout = ser.timeout
+    if timeout_s is not None:
+        ser.timeout = timeout_s
+    try:
+        while True:
+            raw = ser.readline()
+            if not raw:
+                suffix = f" during {phase}" if phase else ""
+                raise TimeoutError(f"Timed out waiting for Coral Micro serial output{suffix}.")
+            line = raw.decode("utf-8", errors="replace").strip()
+            if recent_lines is not None:
+                recent_lines.append(line)
+            raw_handle.write(line + "\n")
+            raw_handle.flush()
+            parsed = prefixed_payload(line)
+            if parsed is not None:
+                return parsed
+            print(line)
+    finally:
+        if timeout_s is not None:
+            ser.timeout = previous_timeout
 
 
-def wait_ready(ser: Any, raw_handle: Any, recent_lines: deque[str] | None = None) -> dict[str, Any]:
+def wait_ready(
+    ser: Any,
+    raw_handle: Any,
+    recent_lines: deque[str] | None = None,
+    timeout_s: float | None = None,
+) -> dict[str, Any]:
     while True:
-        event, payload = read_prefixed(ser, raw_handle, recent_lines, "waiting for board_ready")
+        event, payload = read_prefixed(
+            ser,
+            raw_handle,
+            recent_lines,
+            "waiting for board_ready",
+            timeout_s,
+        )
         if event == "ready":
             return payload
         if event == "error":
@@ -449,7 +495,12 @@ def main() -> None:
     ):
         recent_lines: deque[str] = deque(maxlen=20)
         try:
-            board_ready = wait_ready(ser, raw_log, recent_lines)
+            board_ready = wait_ready(
+                ser,
+                raw_log,
+                recent_lines,
+                args.ready_timeout_s or args.serial_timeout_s,
+            )
         except TimeoutError as exc:
             raise TimeoutError(serial_timeout_message(args, serial, exc, recent_lines)) from exc
         print(json.dumps({"event": "board_ready", **board_ready}, sort_keys=True))
@@ -475,6 +526,7 @@ def main() -> None:
                         raw_log,
                         recent_lines,
                         f"waiting for RX_READY for dataset index {dataset_index}",
+                        args.rx_ready_timeout_s,
                     )
                 except TimeoutError as exc:
                     raise TimeoutError(
@@ -498,6 +550,7 @@ def main() -> None:
                         raw_log,
                         recent_lines,
                         f"waiting for RESULT for dataset index {dataset_index}",
+                        args.result_timeout_s,
                     )
                 except TimeoutError as exc:
                     raise TimeoutError(
