@@ -59,10 +59,13 @@ data:
   # mobilenet_v3_external: image branch receives (pixel / 127.5) - 1.0; int8/uint8
   # quantized input can then represent preprocessing with input scale/zero-point.
   image_preprocessing: mobilenet_v3_external
+  keras_batch_workers: 4
+  keras_prefetch_batches: 8
 
 trainer:
   max_epochs: 10
   log_every_n_steps: 25
+  steps_per_execution: 1
   log_train_eval_metrics: true
   early_stopping:
     monitor: val_loss

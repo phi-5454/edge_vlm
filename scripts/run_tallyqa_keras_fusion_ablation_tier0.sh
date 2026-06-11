@@ -15,6 +15,13 @@ FUSION_HEADS="${FUSION_HEADS:-4}"
 FUSION_MLP_RATIO="${FUSION_MLP_RATIO:-4}"
 LEARNING_RATE="${LEARNING_RATE:-0.001}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
+KERAS_BATCH_WORKERS="${KERAS_BATCH_WORKERS:-8}"
+KERAS_PREFETCH_BATCHES="${KERAS_PREFETCH_BATCHES:-16}"
+STEPS_PER_EXECUTION="${STEPS_PER_EXECUTION:-16}"
+LOG_TRAIN_EVAL_METRICS="${LOG_TRAIN_EVAL_METRICS:-false}"
+VALIDATION_PLOTS_ENABLED="${VALIDATION_PLOTS_ENABLED:-false}"
+VALIDATION_PLOTS_SAMPLES="${VALIDATION_PLOTS_SAMPLES:-4}"
+VALIDATION_PLOTS_EVERY_N_EPOCHS="${VALIDATION_PLOTS_EVERY_N_EPOCHS:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,6 +81,42 @@ while [[ $# -gt 0 ]]; do
       WEIGHT_DECAY="$2"
       shift 2
       ;;
+    --keras-batch-workers)
+      KERAS_BATCH_WORKERS="$2"
+      shift 2
+      ;;
+    --keras-prefetch-batches)
+      KERAS_PREFETCH_BATCHES="$2"
+      shift 2
+      ;;
+    --steps-per-execution)
+      STEPS_PER_EXECUTION="$2"
+      shift 2
+      ;;
+    --log-train-eval-metrics)
+      LOG_TRAIN_EVAL_METRICS=true
+      shift
+      ;;
+    --no-log-train-eval-metrics)
+      LOG_TRAIN_EVAL_METRICS=false
+      shift
+      ;;
+    --validation-plots)
+      VALIDATION_PLOTS_ENABLED=true
+      shift
+      ;;
+    --no-validation-plots)
+      VALIDATION_PLOTS_ENABLED=false
+      shift
+      ;;
+    --validation-plot-samples)
+      VALIDATION_PLOTS_SAMPLES="$2"
+      shift 2
+      ;;
+    --validation-plot-every-n-epochs)
+      VALIDATION_PLOTS_EVERY_N_EPOCHS="$2"
+      shift 2
+      ;;
     -*)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -131,6 +174,8 @@ run_one() {
     "data.prompt_class_sampling_ramp_start_step=2000" \
     "data.train_epoch_size=null" \
     "data.image_preprocessing=mobilenet_v3_external" \
+    "data.keras_batch_workers=${KERAS_BATCH_WORKERS}" \
+    "data.keras_prefetch_batches=${KERAS_PREFETCH_BATCHES}" \
     "model.freeze_embeddings=true" \
     "model.freeze_image_features=true" \
     "model.image_pretrained=true" \
@@ -165,10 +210,15 @@ run_one() {
     "optimizer.warmup_start_learning_rate=0.0001" \
     "trainer.max_epochs=${MAX_EPOCHS}" \
     "trainer.log_every_n_steps=25" \
+    "trainer.steps_per_execution=${STEPS_PER_EXECUTION}" \
+    "trainer.log_train_eval_metrics=${LOG_TRAIN_EVAL_METRICS}" \
     "trainer.early_stopping.enabled=true" \
     "trainer.early_stopping.monitor=val/class_weighted_mae" \
     "trainer.early_stopping.mode=min" \
     "trainer.early_stopping.patience=${PATIENCE}" \
+    "validation_plots.enabled=${VALIDATION_PLOTS_ENABLED}" \
+    "validation_plots.samples=${VALIDATION_PLOTS_SAMPLES}" \
+    "validation_plots.every_n_epochs=${VALIDATION_PLOTS_EVERY_N_EPOCHS}" \
     "export.export_tflite=true" \
     "export.quantization.mode=ptq" \
     "$@"

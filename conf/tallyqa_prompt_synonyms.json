@@ -1,0 +1,18 @@
+{
+  "people": ["humans", "persons", "human beings", "men and women"],
+  "giraffes": ["giraffe"],
+  "animals": ["creatures", "wildlife"],
+  "zebras": ["zebra"],
+  "elephants": ["elephant"],
+  "buses": ["bus"],
+  "trains": ["train"],
+  "dogs": ["dog"],
+  "birds": ["bird"],
+  "cows": ["cow", "cattle"],
+  "cats": ["cat"],
+  "motorcycles": ["motorcycle", "motorbikes", "motorbike"],
+  "cups": ["cup", "mugs", "mug"],
+  "bowls": ["bowl"],
+  "horses": ["horse"],
+  "umbrellas": ["umbrella"]
+}

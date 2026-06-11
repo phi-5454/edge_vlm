@@ -12,6 +12,8 @@ import csv
 import re
 import subprocess
 import textwrap
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -447,38 +449,63 @@ class KerasTallyQAData:
             ),
         }
 
+    def _batch_from_indices(
+        self,
+        batch_indices: list[int],
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        rows = [self.rows[index] for index in batch_indices]
+        item_class_ids = np.asarray([int(row["item_class_id"]) for row in rows], dtype=np.int64)
+        images = np.stack([self.image(int(row["image_index"])) for row in rows])
+        labels = np.asarray(
+            [collapse_count(int(row["answer"]), self.collapse_at) for row in rows],
+            dtype=np.int32,
+        )
+        teacher_probs = np.stack(
+            [
+                self.teacher_targets.get(
+                    index,
+                    np.full((self.num_classes,), np.nan, dtype=np.float32),
+                )
+                for index in batch_indices
+            ]
+        ).astype(np.float32)
+        return (
+            {
+                "token_ids": self.prompt_token_ids[item_class_ids],
+                "images": images,
+            },
+            {
+                "labels": labels,
+                "teacher_probs": teacher_probs,
+                "dataset_index": np.asarray(batch_indices, dtype=np.int64),
+            },
+        )
+
     def batches(self, split: str) -> Iterable[tuple[dict[str, np.ndarray], dict[str, np.ndarray]]]:
         batch_size = int(self.cfg.data.batch_size)
         indices = self.train_epoch_indices() if split == "train" else list(self.indices[split])
-        for start in range(0, len(indices), batch_size):
-            batch_indices = indices[start : start + batch_size]
-            rows = [self.rows[index] for index in batch_indices]
-            item_class_ids = np.asarray([int(row["item_class_id"]) for row in rows], dtype=np.int64)
-            images = np.stack([self.image(int(row["image_index"])) for row in rows])
-            labels = np.asarray(
-                [collapse_count(int(row["answer"]), self.collapse_at) for row in rows],
-                dtype=np.int32,
-            )
-            teacher_probs = np.stack(
-                [
-                    self.teacher_targets.get(
-                        index,
-                        np.full((self.num_classes,), np.nan, dtype=np.float32),
-                    )
-                    for index in batch_indices
-                ]
-            ).astype(np.float32)
-            yield (
-                {
-                    "token_ids": self.prompt_token_ids[item_class_ids],
-                    "images": images,
-                },
-                {
-                    "labels": labels,
-                    "teacher_probs": teacher_probs,
-                    "dataset_index": np.asarray(batch_indices, dtype=np.int64),
-                },
-            )
+        batch_indices = [
+            indices[start : start + batch_size]
+            for start in range(0, len(indices), batch_size)
+        ]
+        workers = max(0, int(self.cfg.data.get("keras_batch_workers", 0) or 0))
+        prefetch_batches = max(1, int(self.cfg.data.get("keras_prefetch_batches", 1) or 1))
+        if workers <= 0 or prefetch_batches <= 1:
+            for batch in batch_indices:
+                yield self._batch_from_indices(batch)
+            return
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            pending: deque[Future[tuple[dict[str, np.ndarray], dict[str, np.ndarray]]]] = deque()
+            iterator = iter(batch_indices)
+            for _ in range(min(prefetch_batches, len(batch_indices))):
+                pending.append(executor.submit(self._batch_from_indices, next(iterator)))
+            for batch in iterator:
+                future = pending.popleft()
+                pending.append(executor.submit(self._batch_from_indices, batch))
+                yield future.result()
+            while pending:
+                yield pending.popleft().result()
 
 
 def class_weights_from_config(cfg: DictConfig, data: KerasTallyQAData) -> np.ndarray | None:
@@ -993,7 +1020,7 @@ def safe_artifact_name(value: str) -> str:
 
 
 def log_wandb_artifact(name: str, artifact_type: str, paths: Iterable[Path]) -> None:
-    if wandb.run is None:
+    if wandb.run is None or getattr(wandb.run, "disabled", False):
         return
     artifact = wandb.Artifact(safe_artifact_name(name), type=artifact_type)
     added = False
@@ -2232,6 +2259,7 @@ class TqdmKerasProgress(tf.keras.callbacks.Callback):
         self.val_steps = val_steps
         self.epoch_bar: tqdm | None = None
         self.batch_bar: tqdm | None = None
+        self._seen_train_batches = 0
 
     def on_train_begin(self, logs: dict[str, Any] | None = None) -> None:
         epochs = int(self.params.get("epochs", 0) or 0)
@@ -2239,6 +2267,7 @@ class TqdmKerasProgress(tf.keras.callbacks.Callback):
 
     def on_epoch_begin(self, epoch: int, logs: dict[str, Any] | None = None) -> None:
         self.batch_bar = tqdm(total=self.train_steps, desc=f"train {epoch + 1}", unit="batch", leave=False)
+        self._seen_train_batches = 0
 
     def on_train_batch_end(self, batch: int, logs: dict[str, Any] | None = None) -> None:
         if self.batch_bar is None:
@@ -2252,7 +2281,10 @@ class TqdmKerasProgress(tf.keras.callbacks.Callback):
                 },
                 refresh=False,
             )
-        self.batch_bar.update(1)
+        seen = min(self.train_steps, int(batch) + 1)
+        delta = max(0, seen - self._seen_train_batches)
+        self._seen_train_batches = seen
+        self.batch_bar.update(delta)
 
     def on_epoch_end(self, epoch: int, logs: dict[str, Any] | None = None) -> None:
         if self.batch_bar is not None:
@@ -2566,7 +2598,8 @@ def main(cfg: DictConfig) -> None:
         optimizer=tf.keras.optimizers.AdamW(
             learning_rate=keras_learning_rate(cfg, total_train_steps),
             weight_decay=float(cfg.optimizer.weight_decay),
-        )
+        ),
+        steps_per_execution=int(cfg.trainer.get("steps_per_execution", 1)),
     )
 
     run_name = str(cfg.experiment.run_name)

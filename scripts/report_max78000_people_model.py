@@ -26,6 +26,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ai8x-training", type=Path, default=DEFAULT_AI8X_TRAINING)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--factory", default="ai85tallyqambv3smallpeople")
+    parser.add_argument("--device", type=int, default=85)
+    parser.add_argument("--simulate", action="store_true")
+    parser.add_argument("--round-avg", action="store_true")
     parser.add_argument("--input-channels", type=int, default=12)
     parser.add_argument("--input-size", type=int, default=56)
     parser.add_argument("--num-classes", type=int, default=5)
@@ -134,6 +137,13 @@ def main() -> None:
         raise FileNotFoundError(args.ai8x_training)
 
     module = load_model_module(args.model_file.resolve(), args.ai8x_training.resolve())
+    if "ai8x" in sys.modules:
+        sys.modules["ai8x"].set_device(
+            args.device,
+            simulate=bool(args.simulate),
+            round_avg=bool(args.round_avg),
+            verbose=False,
+        )
     factory = getattr(module, args.factory)
     model = factory(
         num_classes=args.num_classes,
@@ -159,6 +169,9 @@ def main() -> None:
         "model_file": str(args.model_file),
         "ai8x_training": str(args.ai8x_training),
         "factory": args.factory,
+        "device": args.device,
+        "simulate": bool(args.simulate),
+        "round_avg": bool(args.round_avg),
         "input_shape": [1, args.input_channels, args.input_size, args.input_size],
         "feature_shape": feature_shape,
         "output_shape": output_shape,
