@@ -323,7 +323,23 @@ fi
 if [[ "${SETUP_AI8X_ENV}" == "1" || "${SETUP_AI8X_ENV}" == "true" ]]; then
   run_shell "cd '${ai8x_abs}' && uv venv --python 3.11 .venv"
   ai8x_python="${ai8x_abs}/.venv/bin/python"
-  run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -r requirements-base.txt -r requirements-datasets.txt pycocotools==2.0.8"
+  req_tmp="${ai8x_abs}/.edge_vlm_filtered_requirements"
+  run_cmd mkdir -p "${req_tmp}"
+  python3 - "${ai8x_abs}/requirements-base.txt" "${req_tmp}/requirements-base.txt" \
+    "${ai8x_abs}/requirements-datasets.txt" "${req_tmp}/requirements-datasets.txt" <<'PY'
+import sys
+from pathlib import Path
+
+for src, dst in zip(sys.argv[1::2], sys.argv[2::2], strict=True):
+    lines = []
+    for line in Path(src).read_text().splitlines():
+        if line.strip().lower().startswith("pyffmpeg=="):
+            lines.append(f"# {line}  # filtered by edge_vlm wrapper: stale pin is unavailable on PyPI")
+        else:
+            lines.append(line)
+    Path(dst).write_text("\n".join(lines) + "\n")
+PY
+  run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -r '${req_tmp}/requirements-base.txt' -r '${req_tmp}/requirements-datasets.txt' pycocotools==2.0.8"
   if [[ -d "${ai8x_abs}/distiller" ]]; then
     run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -e distiller --config-settings editable_mode=strict"
   else

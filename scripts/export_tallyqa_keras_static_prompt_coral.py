@@ -106,6 +106,80 @@ def static_prompt_model(
     return tf.keras.Model(images, logits, name=f"{student.name}_static_prompt")
 
 
+def folded_prompt_patch_mlp_model(
+    student: tf.keras.Model,
+    cfg: DictConfig,
+    token_ids: np.ndarray,
+) -> tf.keras.Model:
+    fusion_mode = str(cfg.keras_model.get("fusion_mode", "normformer"))
+    if fusion_mode != "prompt_patch_mlp":
+        raise ValueError("Prompt folding is currently implemented only for prompt_patch_mlp.")
+
+    query_model = tf.keras.Model(
+        student.get_layer("token_ids").input,
+        student.get_layer("prompt_projection_norm").output,
+    )
+    query = query_model(token_ids, training=False).numpy().reshape(-1).astype(np.float32)
+
+    backbone = next(
+        layer
+        for layer in student.layers
+        if layer.name.startswith("mobilenet_v3_") and layer.name.endswith("_cutoff")
+    )
+    conv1 = student.get_layer("prompt_patch_conv1x1")
+    conv3 = student.get_layer("prompt_patch_conv3x3")
+    logits = student.get_layer("logits")
+
+    conv1_weights = conv1.get_weights()
+    if len(conv1_weights) == 2:
+        conv1_kernel, conv1_bias = conv1_weights
+    else:
+        conv1_kernel = conv1_weights[0]
+        conv1_bias = np.zeros((conv1_kernel.shape[-1],), dtype=np.float32)
+
+    image_channels = int(backbone.output_shape[-1])
+    if conv1_kernel.shape[2] <= image_channels:
+        raise ValueError(
+            "prompt_patch_conv1x1 kernel does not include prompt channels: "
+            f"kernel_shape={conv1_kernel.shape}, image_channels={image_channels}"
+        )
+    image_kernel = conv1_kernel[:, :, :image_channels, :]
+    prompt_kernel = conv1_kernel[:, :, image_channels:, :].reshape(query.shape[0], -1)
+    folded_bias = conv1_bias + query @ prompt_kernel
+
+    batch_size = cfg.keras_model.get("batch_size", None)
+    batch_size = None if batch_size is None else int(batch_size)
+    images = tf.keras.Input(
+        shape=(int(cfg.keras_model.image_size), int(cfg.keras_model.image_size), 3),
+        batch_size=batch_size,
+        dtype=tf.float32,
+        name="images",
+    )
+    image_features = backbone(images)
+    x = tf.keras.layers.Conv2D(
+        int(conv1_kernel.shape[-1]),
+        kernel_size=1,
+        padding="same",
+        activation=str(cfg.keras_model.get("activation", "relu")),
+        name="prompt_folded_patch_conv1x1",
+    )(image_features)
+    x = tf.keras.layers.Conv2D(
+        int(conv3.get_weights()[0].shape[-1]),
+        kernel_size=3,
+        padding="same",
+        activation=str(cfg.keras_model.get("activation", "relu")),
+        name="prompt_patch_conv3x3",
+    )(x)
+    x = tf.keras.layers.GlobalAveragePooling2D(name="prompt_patch_mean_pool")(x)
+    output = tf.keras.layers.Dense(int(cfg.model.num_outputs), name="logits")(x)
+    model = tf.keras.Model(images, output, name=f"{student.name}_folded_static_prompt")
+
+    model.get_layer("prompt_folded_patch_conv1x1").set_weights([image_kernel, folded_bias])
+    model.get_layer("prompt_patch_conv3x3").set_weights(conv3.get_weights())
+    model.get_layer("logits").set_weights(logits.get_weights())
+    return model
+
+
 def representative_images(
     data: KerasTallyQAData,
     max_samples: int,
@@ -284,7 +358,10 @@ def main() -> None:
     if not weights.exists():
         raise FileNotFoundError(weights)
     student.load_weights(weights, skip_mismatch=args.skip_mismatch)
-    wrapped = static_prompt_model(student, cfg, prompt_tokens)
+    if str(cfg.keras_model.get("fusion_mode", "normformer")) == "prompt_patch_mlp":
+        wrapped = folded_prompt_patch_mlp_model(student, cfg, prompt_tokens)
+    else:
+        wrapped = static_prompt_model(student, cfg, prompt_tokens)
 
     float_path = output_dir / "model_float.tflite"
     int8_path = output_dir / "model_int8.tflite"
@@ -316,7 +393,11 @@ def main() -> None:
             "static_prompt": (
                 "The prompt token ids are embedded as a constant, producing an image-only model "
                 "compatible with the current Coral Micro serial benchmark protocol."
-            )
+            ),
+            "prompt_patch_mlp_folding": (
+                "For prompt_patch_mlp, the prompt branch is folded into the first patch Conv2D "
+                "bias to avoid runtime TILE/CONCAT prompt operations."
+            ),
         },
     }
     if compiler.get("status") == "ok":

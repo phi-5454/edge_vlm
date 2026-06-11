@@ -295,8 +295,15 @@ void PrintResultJson(const InputHeader& header, uint64_t receive_us,
   }
 
   tflite::MicroErrorReporter error_reporter;
-  tflite::MicroMutableOpResolver<4> resolver;
+  tflite::MicroMutableOpResolver<11> resolver;
   resolver.AddCustom(kCustomOp, RegisterCustomOp());
+  resolver.AddAdd();
+  resolver.AddConv2D();
+  resolver.AddDepthwiseConv2D();
+  resolver.AddFullyConnected();
+  resolver.AddHardSwish();
+  resolver.AddMean();
+  resolver.AddMul();
   resolver.AddQuantize();
   resolver.AddDequantize();
   resolver.AddSoftmax();
