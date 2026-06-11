@@ -350,6 +350,25 @@ for src, dst in zip(sys.argv[1::2], sys.argv[2::2], strict=True):
 PY
   run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' 'setuptools<81' wheel"
   run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' --no-build-isolation-package visdom -r '${req_tmp}/requirements-base.txt' -r '${req_tmp}/requirements-datasets.txt' pycocotools==2.0.8"
+  "${ai8x_python}" - <<'PY'
+import sysconfig
+from pathlib import Path
+
+site_packages = Path(sysconfig.get_paths()["purelib"])
+site_packages.mkdir(parents=True, exist_ok=True)
+stub_path = site_packages / "pyffmpeg.py"
+stub_path.write_text(
+    '"""edge_vlm compatibility stub for ai8x Kinetics import-time registration."""\n\n'
+    "class FFmpeg:\n"
+    "    def __init__(self, *args, **kwargs):\n"
+    "        raise ImportError(\n"
+    "            'pyffmpeg is unavailable because ai8x-training pins a stale package; '\n"
+    "            'the Kinetics dataset is not supported in this edge_vlm environment.'\n"
+    "        )\n",
+    encoding="utf-8",
+)
+print(f"Wrote {stub_path}")
+PY
   if [[ -f "${ai8x_abs}/distiller/setup.py" || -f "${ai8x_abs}/distiller/pyproject.toml" ]]; then
     run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -e distiller --config-settings editable_mode=strict"
   elif [[ -d "${ai8x_abs}/distiller" ]]; then
