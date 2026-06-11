@@ -28,6 +28,7 @@ VALIDATION_PLOTS_ENABLED="${VALIDATION_PLOTS_ENABLED:-false}"
 VALIDATION_PLOTS_SAMPLES="${VALIDATION_PLOTS_SAMPLES:-4}"
 VALIDATION_PLOTS_EVERY_N_EPOCHS="${VALIDATION_PLOTS_EVERY_N_EPOCHS:-1}"
 QUANTIZATION_MODE="${QUANTIZATION_MODE:-ptq}"
+SKIP_COMPLETED="${SKIP_COMPLETED:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -151,6 +152,14 @@ while [[ $# -gt 0 ]]; do
       QUANTIZATION_MODE="$2"
       shift 2
       ;;
+    --skip-completed)
+      SKIP_COMPLETED=1
+      shift
+      ;;
+    --force-rerun)
+      SKIP_COMPLETED=0
+      shift
+      ;;
     -*)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -190,6 +199,13 @@ run_one() {
   if ! run_selected "${run_id}"; then
     echo "Skipping run ${run_id}: ${run_name}"
     return 0
+  fi
+  local result_path="artifacts/reports/tallyqa_keras_student/${run_name}/${run_name}_results.json"
+  if [[ "${SKIP_COMPLETED}" == "1" || "${SKIP_COMPLETED}" == "true" ]]; then
+    if [[ -s "${result_path}" ]]; then
+      echo "Skipping completed run ${run_id}: ${run_name} (${result_path})"
+      return 0
+    fi
   fi
   echo "Running ${run_id}: ${run_name}"
   if [[ "${DRY_RUN}" == "1" || "${DRY_RUN}" == "true" ]]; then

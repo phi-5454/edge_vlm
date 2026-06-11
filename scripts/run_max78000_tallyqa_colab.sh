@@ -514,31 +514,50 @@ PY
 if [[ "${TRAIN}" == "1" || "${TRAIN}" == "true" ]]; then
   if [[ "${DRY_RUN}" == "1" || "${DRY_RUN}" == "true" ]]; then
     echo "Would launch ADI ai8x-training run: ${RUN_NAME}"
-    printf '+ cd %q &&' "${ai8x_abs}"
-    printf ' PYTHONPATH=%q' "${distiller_pythonpath}:${PYTHONPATH:-}"
-    printf ' %q' "${train_args[@]}"
-    printf ' 2>&1 | tee %q\n' "${report_abs}/train.log"
+    if [[ "${WANDB_MODE}" == "disabled" ]]; then
+      printf '+ cd %q &&' "${ai8x_abs}"
+      printf ' PYTHONPATH=%q' "${distiller_pythonpath}:${PYTHONPATH:-}"
+      printf ' %q' "${train_args[@]}"
+      printf ' 2>&1 | tee %q\n' "${report_abs}/train.log"
+    else
+      printf '+ uv run python scripts/run_max78000_ai8x_with_wandb.py --cwd %q --log-file %q --project %q --run-name %q --job-type max78000-training --mode %q --manifest %q --model-report-dir %q --distiller-pythonpath %q --checkpoint-root %q --checkpoint-run-name %q --' \
+        "${ai8x_abs}" "${report_abs}/train.log" "${WANDB_PROJECT}" "${RUN_NAME}" "${WANDB_MODE}" "${manifest_path}" "${report_abs}/model" "${distiller_pythonpath}" "${ai8x_abs}/logs" "${RUN_NAME}"
+      printf ' %q' "${train_args[@]}"
+      printf '\n'
+    fi
   else
     echo "Launching ADI ai8x-training run: ${RUN_NAME}"
-    (
-      cd "${ai8x_abs}"
-      export PYTHONPATH="${distiller_pythonpath}:${PYTHONPATH:-}"
-      .venv/bin/python - <<'PY'
-import sys
-import distiller
-
-print("Python path head:", sys.path[:5])
-print(
-    "Resolved distiller:",
-    getattr(distiller, "__file__", None),
-    list(getattr(distiller, "__path__", [])),
-)
-from distiller import apputils, model_summaries
-
-print("Resolved distiller imports:", apputils.__name__, model_summaries.__name__)
-PY
-      "${train_args[@]}"
-    ) 2>&1 | tee "${report_abs}/train.log"
+    if [[ "${WANDB_MODE}" == "disabled" ]]; then
+      (
+        cd "${ai8x_abs}"
+        export PYTHONPATH="${distiller_pythonpath}:${PYTHONPATH:-}"
+        "${train_args[@]}"
+      ) 2>&1 | tee "${report_abs}/train.log"
+    else
+      wandb_train_args=(
+        uv run python scripts/run_max78000_ai8x_with_wandb.py
+        --cwd "${ai8x_abs}"
+        --log-file "${report_abs}/train.log"
+        --project "${WANDB_PROJECT}"
+        --run-name "${RUN_NAME}"
+        --job-type "max78000-training"
+        --mode "${WANDB_MODE}"
+        --manifest "${manifest_path}"
+        --model-report-dir "${report_abs}/model"
+        --distiller-pythonpath "${distiller_pythonpath}"
+        --checkpoint-root "${ai8x_abs}/logs"
+        --checkpoint-run-name "${RUN_NAME}"
+      )
+      if [[ -n "${WANDB_ENTITY}" ]]; then
+        wandb_train_args+=(--entity "${WANDB_ENTITY}")
+      fi
+      if [[ -f "${WANDB_ENV_FILE}" ]]; then
+        wandb_train_args+=(--env-file "${WANDB_ENV_FILE}")
+      fi
+      wandb_train_args+=(-- "${train_args[@]}")
+      echo "+ ${wandb_train_args[*]}"
+      "${wandb_train_args[@]}"
+    fi
   fi
 else
   echo "Skipping training. Command that would run:"
@@ -547,7 +566,7 @@ else
   printf '\n'
 fi
 
-if [[ "${TRAIN}" == "1" || "${TRAIN}" == "true" ]] && [[ "${WANDB_UPLOAD_CKPT}" == "1" || "${WANDB_UPLOAD_CKPT}" == "true" ]]; then
+if [[ "${TRAIN}" == "1" || "${TRAIN}" == "true" ]] && [[ "${WANDB_MODE}" == "disabled" ]] && [[ "${WANDB_UPLOAD_CKPT}" == "1" || "${WANDB_UPLOAD_CKPT}" == "true" ]]; then
   chosen_ckpt="$(
     python3 - "${ai8x_abs}" "${RUN_NAME}" <<'PY'
 import sys
