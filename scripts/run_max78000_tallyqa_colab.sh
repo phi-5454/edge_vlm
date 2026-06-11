@@ -352,6 +352,17 @@ import sysconfig
 from pathlib import Path
 
 distiller_path = Path(sys.argv[1]).resolve()
+inner_init = distiller_path / "distiller" / "__init__.py"
+outer_init = distiller_path / "__init__.py"
+if inner_init.exists() and not outer_init.exists():
+    outer_init.write_text(
+        "from pathlib import Path\n"
+        "inner = Path(__file__).resolve().parent / 'distiller'\n"
+        "__path__ = [str(inner)]\n"
+        "exec((inner / '__init__.py').read_text(encoding='utf-8'), globals())\n",
+        encoding="utf-8",
+    )
+    print(f"Wrote {outer_init} -> {inner_init}")
 site_packages = Path(sysconfig.get_paths()["purelib"])
 site_packages.mkdir(parents=True, exist_ok=True)
 pth_path = site_packages / "edge_vlm_distiller.pth"
