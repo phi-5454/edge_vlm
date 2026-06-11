@@ -1019,7 +1019,12 @@ def safe_artifact_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
 
 
-def log_wandb_artifact(name: str, artifact_type: str, paths: Iterable[Path]) -> None:
+def log_wandb_artifact(
+    name: str,
+    artifact_type: str,
+    paths: Iterable[Path],
+    aliases: list[str] | None = None,
+) -> None:
     if wandb.run is None or getattr(wandb.run, "disabled", False):
         return
     artifact = wandb.Artifact(safe_artifact_name(name), type=artifact_type)
@@ -1029,7 +1034,7 @@ def log_wandb_artifact(name: str, artifact_type: str, paths: Iterable[Path]) -> 
             artifact.add_file(str(path))
             added = True
     if added:
-        wandb.log_artifact(artifact)
+        wandb.log_artifact(artifact, aliases=aliases)
 
 
 def save_wandb_file(path: Path, *, policy: str = "now") -> None:
@@ -2960,6 +2965,17 @@ def main(cfg: DictConfig) -> None:
     result_path = run_report_dir / f"{run_name}_results.json"
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     save_wandb_file(Path(result_path), policy="now")
+    if checkpoint_callback.filepath.exists():
+        log_wandb_artifact(
+            f"{run_name}-chosen-test-checkpoint",
+            "model-checkpoint",
+            [
+                Path(checkpoint_callback.filepath),
+                result_path,
+                report_path,
+            ],
+            aliases=["best", "test-evaluated", checkpoint_callback.monitor],
+        )
     final_artifact_paths: list[Path] = [
         result_path,
         report_path,

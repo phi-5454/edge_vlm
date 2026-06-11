@@ -259,6 +259,19 @@ def write_model_report_bundle(
     }
 
 
+def log_wandb_artifact(name: str, artifact_type: str, paths: list[Path], aliases: list[str] | None = None) -> None:
+    if wandb.run is None:
+        return
+    artifact = wandb.Artifact(name.replace("/", "-"), type=artifact_type)
+    added = False
+    for path in paths:
+        if path.exists():
+            artifact.add_file(str(path))
+            added = True
+    if added:
+        wandb.log_artifact(artifact, aliases=aliases)
+
+
 def class_weights_from_config(cfg: DictConfig, data: TallyQAStudentDataModule) -> list[float] | None:
     explicit_weights = cfg.distillation.get("class_weights", None)
     weight_mode = cfg.distillation.get("class_weight_mode", None)
@@ -558,6 +571,15 @@ def main(cfg: DictConfig) -> None:
     for path in readable_report_paths.values():
         logger.experiment.save(str(path), policy="now")
     logger.experiment.save(str(result_path), policy="now")
+    best_checkpoint_path = Path(checkpoint.best_model_path) if checkpoint.best_model_path else None
+    if best_checkpoint_path is not None and best_checkpoint_path.exists():
+        logger.experiment.save(str(best_checkpoint_path), policy="now")
+        log_wandb_artifact(
+            f"{run_name}-chosen-test-checkpoint",
+            "model-checkpoint",
+            [best_checkpoint_path, result_path, report_path],
+            aliases=["best", "test-evaluated", checkpoint_monitor.replace("/", "_")],
+        )
     wandb.finish()
 
 

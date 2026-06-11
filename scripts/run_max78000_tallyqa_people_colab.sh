@@ -23,6 +23,11 @@ STAGE="${STAGE:-1}"
 SETUP_AI8X_ENV="${SETUP_AI8X_ENV:-1}"
 TRAIN="${TRAIN:-1}"
 MODEL_REPORT="${MODEL_REPORT:-1}"
+WANDB_UPLOAD_CKPT="${WANDB_UPLOAD_CKPT:-1}"
+WANDB_PROJECT="${WANDB_PROJECT:-vlm-micro}"
+WANDB_ENTITY="${WANDB_ENTITY:-}"
+WANDB_MODE="${WANDB_MODE:-online}"
+WANDB_ENV_FILE="${WANDB_ENV_FILE:-../wandb_api_key.env}"
 FORCE="${FORCE:-0}"
 CLONE_AI8X="${CLONE_AI8X:-0}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -53,7 +58,12 @@ Common options:
   --skip-stage
   --skip-ai8x-env
   --skip-model-report
+  --skip-wandb-checkpoint-upload
   --skip-train
+  --wandb-project NAME
+  --wandb-entity NAME
+  --wandb-mode online|offline|disabled
+  --wandb-env-file FILE
   --force
   --dry-run
 
@@ -145,6 +155,22 @@ while [[ $# -gt 0 ]]; do
       REPORT_DIR="$2"
       shift 2
       ;;
+    --wandb-project)
+      WANDB_PROJECT="$2"
+      shift 2
+      ;;
+    --wandb-entity)
+      WANDB_ENTITY="$2"
+      shift 2
+      ;;
+    --wandb-mode)
+      WANDB_MODE="$2"
+      shift 2
+      ;;
+    --wandb-env-file)
+      WANDB_ENV_FILE="$2"
+      shift 2
+      ;;
     --skip-materialize)
       MATERIALIZE=0
       shift
@@ -159,6 +185,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-model-report)
       MODEL_REPORT=0
+      shift
+      ;;
+    --skip-wandb-checkpoint-upload)
+      WANDB_UPLOAD_CKPT=0
       shift
       ;;
     --skip-train)
@@ -410,6 +440,56 @@ else
   printf 'cd %q &&' "${ai8x_abs}"
   printf ' %q' "${train_args[@]}"
   printf '\n'
+fi
+
+if [[ "${TRAIN}" == "1" || "${TRAIN}" == "true" ]] && [[ "${WANDB_UPLOAD_CKPT}" == "1" || "${WANDB_UPLOAD_CKPT}" == "true" ]]; then
+  chosen_ckpt="$(
+    python3 - "${ai8x_abs}" "${RUN_NAME}" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+run_name = sys.argv[2]
+logs = root / "logs"
+candidates: list[Path] = []
+if logs.exists():
+    candidates.extend(logs.rglob(f"{run_name}_best.pth.tar"))
+    candidates.extend(logs.rglob("best.pth.tar"))
+    candidates.extend(logs.rglob("*_best.pth.tar"))
+deduped = sorted({path.resolve() for path in candidates if path.is_file()}, key=lambda p: p.stat().st_mtime, reverse=True)
+print(deduped[0] if deduped else "")
+PY
+  )"
+  if [[ -n "${chosen_ckpt}" ]]; then
+    upload_args=(
+      uv run python scripts/upload_wandb_artifact.py
+      --project "${WANDB_PROJECT}"
+      --run-name "${RUN_NAME}-max78000-checkpoint-upload"
+      --job-type "max78000-checkpoint-upload"
+      --artifact-name "${RUN_NAME}-chosen-test-checkpoint"
+      --artifact-type "model-checkpoint"
+      --alias "best"
+      --alias "test-evaluated"
+      --file "${chosen_ckpt}"
+      --file "${manifest_path}"
+      --file "${report_abs}/train.log"
+      --mode "${WANDB_MODE}"
+    )
+    if [[ -n "${WANDB_ENTITY}" ]]; then
+      upload_args+=(--entity "${WANDB_ENTITY}")
+    fi
+    if [[ -f "${WANDB_ENV_FILE}" ]]; then
+      upload_args+=(--env-file "${WANDB_ENV_FILE}")
+    fi
+    echo "+ ${upload_args[*]}"
+    if [[ "${DRY_RUN}" != "1" && "${DRY_RUN}" != "true" ]]; then
+      if ! "${upload_args[@]}"; then
+        echo "Warning: W&B checkpoint artifact upload failed for ${chosen_ckpt}." >&2
+      fi
+    fi
+  else
+    echo "Warning: no ADI best checkpoint found under ${ai8x_abs}/logs; skipping W&B checkpoint artifact upload." >&2
+  fi
 fi
 
 echo "MAX78000 wrapper complete."
