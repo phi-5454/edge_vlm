@@ -1015,6 +1015,86 @@ def save_prediction_examples_plot(
     return output
 
 
+def normalize_activation_map(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float32)
+    minimum = float(np.nanmin(values))
+    maximum = float(np.nanmax(values))
+    if not np.isfinite(minimum) or not np.isfinite(maximum) or maximum <= minimum:
+        return np.zeros_like(values, dtype=np.float32)
+    return (values - minimum) / (maximum - minimum)
+
+
+def activation_probe_model(student: tf.keras.Model) -> tf.keras.Model | None:
+    try:
+        cutoff_layers = [
+            layer
+            for layer in student.layers
+            if isinstance(layer, tf.keras.Model) and str(layer.name).endswith("_cutoff")
+        ]
+        image_feature_output = cutoff_layers[0].output if cutoff_layers else None
+        projected_output = student.get_layer("image_token_projection").output
+        if image_feature_output is None:
+            return None
+        return tf.keras.Model(
+            student.inputs,
+            [image_feature_output, projected_output, student.output],
+            name=f"{student.name}_activation_probe",
+        )
+    except (KeyError, ValueError, IndexError):
+        return None
+
+
+def save_activation_examples_plot(
+    stage: str,
+    model: tf.keras.Model,
+    data: KerasTallyQAData,
+    output: Path,
+    max_samples: int,
+) -> Path | None:
+    probe = activation_probe_model(model.student)
+    if probe is None:
+        return None
+    examples = data.prediction_examples(stage, max_samples)
+    rows = examples["rows"]
+    if not rows:
+        return None
+    image_features, projected_features, logits = probe(examples["inputs"], training=False)
+    image_features = image_features.numpy()
+    projected_features = projected_features.numpy()
+    logits = logits.numpy()
+    probabilities = tf.nn.softmax(logits, axis=1).numpy()
+    predictions = np.argmax(probabilities, axis=1)
+    labels = examples["labels"]
+
+    height = max(3.2, 2.2 * len(rows))
+    fig, axes = plt.subplots(len(rows), 3, figsize=(10.8, height), squeeze=False)
+    for row_index, row in enumerate(rows):
+        image_ax, activation_ax, projected_ax = axes[row_index]
+        image_ax.imshow(examples["display_images"][row_index])
+        title = (
+            f"{stage} idx={examples['indices'][row_index]} "
+            f"true={int(labels[row_index])} pred={int(predictions[row_index])} "
+            f"prompt={row['student_prompt']}"
+        )
+        image_ax.set_title("\n".join(textwrap.wrap(title, width=42)), fontsize=9)
+        image_ax.axis("off")
+
+        activation = normalize_activation_map(image_features[row_index].mean(axis=-1))
+        projected = normalize_activation_map(projected_features[row_index].mean(axis=-1))
+        activation_ax.imshow(activation, cmap="magma")
+        activation_ax.set_title("mean image encoder activation", fontsize=9)
+        activation_ax.axis("off")
+        projected_ax.imshow(projected, cmap="magma")
+        projected_ax.set_title("mean projected image tokens", fontsize=9)
+        projected_ax.axis("off")
+
+    fig.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=160)
+    plt.close(fig)
+    return output
+
+
 def safe_artifact_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
 
@@ -1024,6 +1104,7 @@ def log_wandb_artifact(
     artifact_type: str,
     paths: Iterable[Path],
     aliases: list[str] | None = None,
+    base_path: Path | None = None,
 ) -> None:
     if wandb.run is None or getattr(wandb.run, "disabled", False):
         return
@@ -1031,7 +1112,13 @@ def log_wandb_artifact(
     added = False
     for path in paths:
         if path.exists():
-            artifact.add_file(str(path))
+            if base_path is not None:
+                try:
+                    artifact.add_file(str(path), name=str(path.relative_to(base_path)))
+                except ValueError:
+                    artifact.add_file(str(path))
+            else:
+                artifact.add_file(str(path))
             added = True
     if added:
         wandb.log_artifact(artifact, aliases=aliases)
@@ -1763,6 +1850,7 @@ class DistilledStudent(tf.keras.Model):
         local_soft_radius: int,
         class_weights: np.ndarray | None,
         kl_class_weights: np.ndarray | None,
+        image_learning_rate_scale: float,
     ):
         super().__init__(name="distilled_tallyqa_keras_student")
         self.student = student
@@ -1772,6 +1860,9 @@ class DistilledStudent(tf.keras.Model):
         self.target_distribution = target_distribution
         self.local_soft_sigma = float(local_soft_sigma)
         self.local_soft_radius = int(local_soft_radius)
+        self.image_learning_rate_scale = float(image_learning_rate_scale)
+        if self.image_learning_rate_scale <= 0:
+            raise ValueError("image_learning_rate_scale must be positive.")
         self.class_weights = (
             tf.constant(class_weights, dtype=tf.float32) if class_weights is not None else None
         )
@@ -1865,6 +1956,23 @@ class DistilledStudent(tf.keras.Model):
                 teacher_probs,
             )
         gradients = tape.gradient(loss, self.student.trainable_variables)
+        if self.image_learning_rate_scale != 1.0:
+            gradients = [
+                (
+                    gradient * self.image_learning_rate_scale
+                    if gradient is not None
+                    and (
+                        "mobilenet_v3_large_cutoff" in variable.name
+                        or "mobilenet_v3_small_cutoff" in variable.name
+                    )
+                    else gradient
+                )
+                for gradient, variable in zip(
+                    gradients,
+                    self.student.trainable_variables,
+                    strict=True,
+                )
+            ]
         non_none_gradients = [gradient for gradient in gradients if gradient is not None]
         if non_none_gradients:
             self.grad_global_norm_tracker.update_state(tf.linalg.global_norm(non_none_gradients))
@@ -2237,7 +2345,9 @@ class WandbEvaluationLogger(tf.keras.callbacks.Callback):
             figure_path = save_confusion_matrix_plot(
                 "val",
                 accumulator,
-                self.output_dir / f"val_confusion_matrix_epoch_{epoch + 1:03d}.png",
+                self.output_dir
+                / "validation_plots"
+                / f"confusion_matrix_epoch_{epoch + 1:03d}.png",
             )
             payload["val_plots/confusion_matrix"] = wandb.Image(str(figure_path))
             save_wandb_file(Path(figure_path), policy="now")
@@ -2245,11 +2355,26 @@ class WandbEvaluationLogger(tf.keras.callbacks.Callback):
             self.example_samples > 0
             and (epoch + 1) % self.example_every_n_epochs == 0
         ):
+            activation_path = save_activation_examples_plot(
+                "val",
+                self.model,
+                self.data,
+                self.output_dir
+                / "validation_plots"
+                / f"image_encoding_epoch_{epoch + 1:03d}.png",
+                self.example_samples,
+            )
+            if activation_path is not None:
+                payload["validation_plots/image_encoding"] = wandb.Image(str(activation_path))
+                payload["validation_plots/image_encoding_count"] = self.example_samples
+                save_wandb_file(activation_path, policy="now")
             examples_path = save_prediction_examples_plot(
                 "val",
                 self.model,
                 self.data,
-                self.output_dir / f"val_prediction_examples_epoch_{epoch + 1:03d}.png",
+                self.output_dir
+                / "validation_plots"
+                / f"prediction_examples_epoch_{epoch + 1:03d}.png",
                 self.example_samples,
             )
             if examples_path is not None:
@@ -2598,6 +2723,7 @@ def main(cfg: DictConfig) -> None:
         local_soft_radius=int(cfg.distillation.local_soft_radius),
         class_weights=class_weights,
         kl_class_weights=kl_weights,
+        image_learning_rate_scale=float(cfg.trainer.get("image_learning_rate_scale", 1.0)),
     )
     model.compile(
         optimizer=tf.keras.optimizers.AdamW(
@@ -2650,7 +2776,11 @@ def main(cfg: DictConfig) -> None:
         "dataset": {
             "root": str(absolute_path(cfg.paths.dataset_root)),
             "prompt_embeddings": str(absolute_path(cfg.paths.prompt_embeddings)),
-            "teacher_cache": str(absolute_path(cfg.paths.teacher_cache)),
+            "teacher_cache": (
+                str(absolute_path(cfg.paths.teacher_cache))
+                if cfg.paths.teacher_cache
+                else None
+            ),
             "split_sizes": data.split_sizes(),
             "full_split_sizes": data.full_split_sizes(),
             "teacher_cache_coverage": data.cache_coverage(),
@@ -2858,7 +2988,7 @@ def main(cfg: DictConfig) -> None:
         test_confusion_path = save_confusion_matrix_plot(
             "test",
             test_accumulator,
-            run_report_dir / "test_confusion_matrix.png",
+            run_report_dir / "test_plots" / "confusion_matrix.png",
         )
         final_global_step = int(model.optimizer.iterations.numpy())
         test_plot_payload: dict[str, Any] = {
@@ -2872,11 +3002,24 @@ def main(cfg: DictConfig) -> None:
             else 0
         )
         if test_example_samples > 0:
+            test_activation_path = save_activation_examples_plot(
+                "test",
+                model,
+                data,
+                run_report_dir / "test_plots" / "image_encoding.png",
+                test_example_samples,
+            )
+            if test_activation_path is not None:
+                test_plot_payload["test_plots/image_encoding"] = wandb.Image(
+                    str(test_activation_path)
+                )
+                test_plot_payload["test_plots/image_encoding_count"] = test_example_samples
+                save_wandb_file(test_activation_path, policy="now")
             test_examples_path = save_prediction_examples_plot(
                 "test",
                 model,
                 data,
-                run_report_dir / "test_prediction_examples.png",
+                run_report_dir / "test_plots" / "prediction_examples.png",
                 test_example_samples,
             )
             if test_examples_path is not None:
@@ -2942,11 +3085,13 @@ def main(cfg: DictConfig) -> None:
             result["quantized_test_results"] = {
                 key: float(value) for key, value in quantized_metrics.items()
             }
-            comparison_plot_path = run_report_dir / f"{run_name}_float_vs_quantized_test_metrics.png"
+            comparison_plot_path = (
+                run_report_dir / "test_quantized_plots" / "float_vs_quantized_metrics.png"
+            )
             quantized_confusion_path = save_confusion_matrix_plot(
                 "quantized test",
                 quantized_accumulator,
-                run_report_dir / "quantized_test_confusion_matrix.png",
+                run_report_dir / "test_quantized_plots" / "confusion_matrix.png",
             )
             wandb.log(
                 {
@@ -2982,7 +3127,7 @@ def main(cfg: DictConfig) -> None:
         *(Path(path) for path in readable_model_reports.values()),
         visualkeras_path,
         fusion_head_visualkeras_path,
-        *run_report_dir.glob("*.png"),
+        *run_report_dir.rglob("*.png"),
     ]
     checkpoint_path = Path(str(checkpoint_callback.filepath))
     if checkpoint_path.exists():
@@ -2993,6 +3138,7 @@ def main(cfg: DictConfig) -> None:
         f"{run_name}-outputs",
         "training-output",
         final_artifact_paths,
+        base_path=run_report_dir,
     )
     wandb.finish()
 

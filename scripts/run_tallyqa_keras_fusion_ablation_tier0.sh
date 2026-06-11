@@ -15,6 +15,8 @@ FUSION_HEADS="${FUSION_HEADS:-4}"
 FUSION_MLP_RATIO="${FUSION_MLP_RATIO:-4}"
 LEARNING_RATE="${LEARNING_RATE:-0.001}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
+FREEZE_IMAGE_FEATURES="${FREEZE_IMAGE_FEATURES:-true}"
+IMAGE_LEARNING_RATE_SCALE="${IMAGE_LEARNING_RATE_SCALE:-1.0}"
 KERAS_BATCH_WORKERS="${KERAS_BATCH_WORKERS:-8}"
 KERAS_PREFETCH_BATCHES="${KERAS_PREFETCH_BATCHES:-16}"
 STEPS_PER_EXECUTION="${STEPS_PER_EXECUTION:-16}"
@@ -79,6 +81,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --weight-decay)
       WEIGHT_DECAY="$2"
+      shift 2
+      ;;
+    --freeze-image-features)
+      FREEZE_IMAGE_FEATURES=true
+      shift
+      ;;
+    --unfreeze-image-features)
+      FREEZE_IMAGE_FEATURES=false
+      shift
+      ;;
+    --image-learning-rate-scale)
+      IMAGE_LEARNING_RATE_SCALE="$2"
       shift 2
       ;;
     --keras-batch-workers)
@@ -177,7 +191,7 @@ run_one() {
     "data.keras_batch_workers=${KERAS_BATCH_WORKERS}" \
     "data.keras_prefetch_batches=${KERAS_PREFETCH_BATCHES}" \
     "model.freeze_embeddings=true" \
-    "model.freeze_image_features=true" \
+    "model.freeze_image_features=${FREEZE_IMAGE_FEATURES}" \
     "model.image_pretrained=true" \
     "distillation.alpha=1.0" \
     "distillation.beta=0.25" \
@@ -211,6 +225,7 @@ run_one() {
     "trainer.max_epochs=${MAX_EPOCHS}" \
     "trainer.log_every_n_steps=25" \
     "trainer.steps_per_execution=${STEPS_PER_EXECUTION}" \
+    "trainer.image_learning_rate_scale=${IMAGE_LEARNING_RATE_SCALE}" \
     "trainer.log_train_eval_metrics=${LOG_TRAIN_EVAL_METRICS}" \
     "trainer.early_stopping.enabled=true" \
     "trainer.early_stopping.monitor=val/class_weighted_mae" \
