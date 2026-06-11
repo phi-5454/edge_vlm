@@ -419,7 +419,19 @@ class KerasTallyQAData:
             )
 
     def prediction_examples(self, split: str, max_samples: int) -> dict[str, Any]:
-        indices = list(self.indices[split])[: max(0, int(max_samples))]
+        indices: list[int] = []
+        seen_keys: set[tuple[str, str]] = set()
+        for index in self.indices[split]:
+            row = self.rows[index]
+            image_key = str(row.get("image_id", row["image_index"]))
+            prompt_key = str(row["student_prompt"])
+            key = (image_key, prompt_key)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            indices.append(index)
+            if len(indices) >= max(0, int(max_samples)):
+                break
         rows = [self.rows[index] for index in indices]
         item_class_ids = np.asarray([int(row["item_class_id"]) for row in rows], dtype=np.int64)
         return {
@@ -1066,10 +1078,11 @@ def save_activation_examples_plot(
     predictions = np.argmax(probabilities, axis=1)
     labels = examples["labels"]
 
+    class_names = class_labels(data.num_classes)
     height = max(3.2, 2.2 * len(rows))
-    fig, axes = plt.subplots(len(rows), 3, figsize=(10.8, height), squeeze=False)
+    fig, axes = plt.subplots(len(rows), 4, figsize=(14.4, height), squeeze=False)
     for row_index, row in enumerate(rows):
-        image_ax, activation_ax, projected_ax = axes[row_index]
+        image_ax, activation_ax, projected_ax, prob_ax = axes[row_index]
         image_ax.imshow(examples["display_images"][row_index])
         title = (
             f"{stage} idx={examples['indices'][row_index]} "
@@ -1087,6 +1100,17 @@ def save_activation_examples_plot(
         projected_ax.imshow(projected, cmap="magma")
         projected_ax.set_title("mean projected image tokens", fontsize=9)
         projected_ax.axis("off")
+
+        colors = ["#8a8f98"] * len(class_names)
+        colors[int(labels[row_index])] = "#2b8a3e"
+        colors[int(predictions[row_index])] = (
+            "#2f6fdd" if predictions[row_index] == labels[row_index] else "#c92a2a"
+        )
+        prob_ax.bar(class_names, probabilities[row_index], color=colors)
+        prob_ax.set_ylim(0, 1)
+        prob_ax.set_ylabel("p")
+        prob_ax.set_xlabel("count")
+        prob_ax.set_title("predicted count distribution", fontsize=9)
 
     fig.tight_layout()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -2086,7 +2110,7 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
             ),
             "Dropout exists only during training",
             "Keras training path currently does not mirror Lightning warmup scheduling.",
-            "Keras W&B logging mirrors scalar metrics, confusion matrices, example prediction plots, reports, results, and weights; Lightning-specific wandb.watch graph/gradient logging is not mirrored.",
+            "Keras W&B watch logging uses an explicit callback for weight and gradient histograms.",
         ],
         "quantization_mode": quantization_mode,
         "quantization_notes": {
@@ -2250,8 +2274,14 @@ class WandbKerasLogger(tf.keras.callbacks.Callback):
             learning_rate = learning_rate(optimizer.iterations)
         return float(tf.keras.backend.get_value(learning_rate))
 
+    def _optimizer_step(self) -> int:
+        optimizer = getattr(self.model, "optimizer", None)
+        if optimizer is None:
+            return self.global_train_step
+        return int(tf.keras.backend.get_value(optimizer.iterations))
+
     def on_train_batch_end(self, batch: int, logs: dict[str, Any] | None = None) -> None:
-        self.global_train_step += 1
+        self.global_train_step = self._optimizer_step()
         if self.global_train_step % self.log_every_n_steps != 0:
             return
         payload = {
@@ -2275,6 +2305,88 @@ class WandbKerasLogger(tf.keras.callbacks.Callback):
             payload[f"{self.prefix}train/lr_epoch"] = learning_rate
         payload["trainer/epoch"] = epoch
         payload["trainer/global_step"] = self.global_train_step
+        wandb.log(payload)
+
+
+class WandbKerasWeightsAndGradients(tf.keras.callbacks.Callback):
+    def __init__(
+        self,
+        sample_dataset: tf.data.Dataset,
+        log: str = "all",
+        log_freq: int = 100,
+    ):
+        super().__init__()
+        log = str(log)
+        if log not in {"all", "parameters", "gradients"}:
+            raise ValueError("wandb.watch.log for Keras must be one of {'all', 'parameters', 'gradients'}.")
+        self.sample_iterator = iter(sample_dataset)
+        self.log = log
+        self.log_freq = max(1, int(log_freq))
+        self.global_train_step = 0
+
+    def _optimizer_step(self) -> int:
+        optimizer = getattr(self.model, "optimizer", None)
+        if optimizer is None:
+            return self.global_train_step
+        return int(tf.keras.backend.get_value(optimizer.iterations))
+
+    @staticmethod
+    def _variable_key(variable: tf.Variable) -> str:
+        name = str(getattr(variable, "path", getattr(variable, "name", "variable")))
+        name = name.replace(":0", "")
+        return re.sub(r"[^A-Za-z0-9_.-]+", "/", name).strip("/") or "variable"
+
+    @staticmethod
+    def _histogram(tensor: tf.Tensor) -> wandb.Histogram:
+        values = tf.reshape(tf.cast(tensor, tf.float32), [-1]).numpy()
+        return wandb.Histogram(values)
+
+    def on_train_batch_end(self, batch: int, logs: dict[str, Any] | None = None) -> None:
+        self.global_train_step = self._optimizer_step()
+        if self.global_train_step % self.log_freq != 0:
+            return
+        inputs, targets = next(self.sample_iterator)
+        labels = targets["labels"]
+        teacher_probs = targets["teacher_probs"]
+        with tf.GradientTape() as tape:
+            logits = self.model.student(inputs, training=True)
+            loss, _ce_loss, _ce_loss_unweighted, _kl_loss = self.model.compute_distillation_losses(
+                logits,
+                labels,
+                teacher_probs,
+            )
+        variables = list(self.model.student.trainable_variables)
+        gradients = tape.gradient(loss, variables)
+        payload: dict[str, Any] = {
+            "trainer/global_step": int(self.global_train_step),
+            "wandb_watch/loss": float(loss.numpy()),
+        }
+        if self.log in {"all", "parameters"}:
+            for variable in variables:
+                key = self._variable_key(variable)
+                payload[f"weights/{key}"] = self._histogram(variable)
+        non_none_gradients: list[tf.Tensor] = []
+        if self.log in {"all", "gradients"}:
+            for variable, gradient in zip(variables, gradients, strict=True):
+                if gradient is None:
+                    continue
+                non_none_gradients.append(gradient)
+                key = self._variable_key(variable)
+                payload[f"gradients/{key}"] = self._histogram(gradient)
+            if non_none_gradients:
+                payload["gradients/global_norm"] = float(
+                    tf.linalg.global_norm(non_none_gradients).numpy()
+                )
+                payload["gradients/max_abs"] = float(
+                    tf.reduce_max(
+                        tf.stack(
+                            [
+                                tf.reduce_max(tf.abs(tf.cast(gradient, tf.float32)))
+                                for gradient in non_none_gradients
+                            ]
+                        )
+                    ).numpy()
+                )
         wandb.log(payload)
 
 
@@ -2868,6 +2980,9 @@ def main(cfg: DictConfig) -> None:
         "test/*",
         "test_quantized/*",
         "model/*",
+        "weights/*",
+        "gradients/*",
+        "wandb_watch/*",
         "val_plots/*",
         "test_plots/*",
         "test_quantized_plots/*",
@@ -2948,6 +3063,14 @@ def main(cfg: DictConfig) -> None:
         WandbKerasLogger(log_every_n_steps=int(cfg.trainer.log_every_n_steps)),
         checkpoint_callback,
     ]
+    if bool(cfg.wandb.get("watch", {}).get("enabled", False)):
+        callbacks.append(
+            WandbKerasWeightsAndGradients(
+                sample_dataset=train_ds,
+                log=str(cfg.wandb.watch.get("log", "all")),
+                log_freq=int(cfg.wandb.watch.get("log_freq", 100)),
+            )
+        )
     if bool(cfg.trainer.get("early_stopping", {}).get("enabled", False)):
         callbacks.append(
             tf.keras.callbacks.EarlyStopping(
