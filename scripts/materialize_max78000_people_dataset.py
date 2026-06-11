@@ -14,7 +14,7 @@ from vlm_micro.student.data import collapse_count, load_tallyqa_rows, split_for_
 
 
 DEFAULT_SOURCE = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
-DEFAULT_OUTPUT = Path("data/max78000_tallyqa_people_count_fold2_80")
+DEFAULT_OUTPUT = Path("data/max78000_tallyqa_people_count_fold2_56")
 LABELS = ("1", "2", "3", "4", "5+")
 
 
@@ -78,18 +78,17 @@ def main() -> None:
         ],
         "source_dataset": str(args.source),
         "task": "TallyQA people count, positive counts only, labels 1/2/3/4/5+",
-        "adapter_image_size": 160,
+        "adapter_image_size": 112,
         "folded_input": {
             "fold": "2x2 spatial-to-channel",
-            "shape": [12, 80, 80],
-            "per_channel_bytes": 80 * 80,
+            "shape": [12, 56, 56],
+            "per_channel_bytes": 56 * 56,
             "max78000_per_channel_limit_bytes": 8192,
         },
         "adapter_preprocessing": (
-            "ADI dataset adapter resizes the stored square 224x224 RGB tensor to 160x160, "
-            "then performs 2x2 spatial-to-channel folding to produce a 12x80x80 tensor. "
-            "A live 320x320 camera crop should be downsampled to 160x160 before the same "
-            "2x2 fold. A lossless 320x320 -> 80x80 fold would produce 48 channels, not 12."
+            "ADI dataset adapter resizes the stored square 224x224 RGB tensor to 112x112, "
+            "then performs 2x2 spatial-to-channel folding to produce a 12x56x56 tensor. "
+            "A direct lossless 224x224 -> 56x56 fold would produce 48 channels, not 12."
         ),
         "seed": args.seed,
         "labels": list(LABELS),

@@ -11,7 +11,8 @@ This is a conservative MAX78000 bring-up model, not a literal MobileNetV3 port.
 The intent is to mirror the "simple" MobileNet direction while staying within
 the ADI ai8x-training operator subset:
 
-- input: 12-channel 80x80 tensor produced by 2x2 folding a 160x160 RGB image
+- input: 12-channel 56x56 tensor produced by downsampling 224x224 RGB to
+  112x112 and then 2x2 folding
 - output classes: 1, 2, 3, 4, 5+ people
 - no prompt input
 - only ordinary 3x3 and 1x1 convolutions
@@ -22,9 +23,9 @@ the ADI ai8x-training operator subset:
 
 The requested spatial progression is:
 
-    80x80x12 -> first conv -> 40x40x30 -> 20x20x60 -> 10x10x120
+    56x56x12 -> 56x56x24 -> 28x28x40 -> 14x14x80 -> 14x14x112
 
-The classifier average-pools the 10x10x120 tensor to 1x1 before a linear head.
+The classifier average-pools the 14x14x112 tensor to 1x1 before a linear head.
 """
 
 from __future__ import annotations
@@ -90,27 +91,60 @@ class DownsampleConvStage(nn.Module):
         return self.layers(x)
 
 
-class TallyQAFoldedSimplePeople(nn.Module):
-    """People-only count classifier for 2x2-folded RGB inputs."""
+class SameResolutionConvStage(nn.Module):
+    """Ordinary same-resolution 3x3 conv stage."""
 
-    # Input is 12x80x80. Each per-channel plane has 6400 bytes, below 8192.
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        bias: bool,
+        **kwargs,
+    ):
+        super().__init__()
+        self.layers = nn.Sequential(
+            ai8x.FusedConv2dBNReLU(
+                in_channels,
+                out_channels,
+                3,
+                padding=1,
+                bias=bias,
+                **kwargs,
+            ),
+            ai8x.FusedConv2dBNReLU(
+                out_channels,
+                out_channels,
+                3,
+                padding=1,
+                bias=bias,
+                **kwargs,
+            ),
+        )
+
+    def forward(self, x):  # pylint: disable=arguments-differ
+        return self.layers(x)
+
+
+class TallyQAFoldedSimplePeople(nn.Module):
+    """People-only count classifier for folded RGB inputs."""
+
+    # Input is 12x56x56. Each per-channel plane has 3136 bytes, below 8192.
     stage_specs = (
-        StageSpec(out_channels=30, extra_convs=1),   # 80 -> 40
-        StageSpec(out_channels=60, extra_convs=1),   # 40 -> 20
-        StageSpec(out_channels=120, extra_convs=1),  # 20 -> 10
+        StageSpec(out_channels=40, extra_convs=1),  # 56 -> 28
+        StageSpec(out_channels=80, extra_convs=1),  # 28 -> 14
     )
 
     def __init__(
         self,
         num_classes: int = 5,
         num_channels: int = 12,
-        dimensions: tuple[int, int] = (80, 80),
+        dimensions: tuple[int, int] = (56, 56),
         bias: bool = True,
         **kwargs,
     ):
         super().__init__()
-        if dimensions != (80, 80):
-            raise ValueError("This MAX78000 folded model expects 80x80 inputs.")
+        if dimensions != (56, 56):
+            raise ValueError("This MAX78000 folded model expects 56x56 inputs.")
         if num_channels != 12:
             raise ValueError("This MAX78000 folded model expects 12 input channels.")
         if num_classes != 5:
@@ -125,7 +159,7 @@ class TallyQAFoldedSimplePeople(nn.Module):
         # subpixel position information before pooling.
         self.stem = ai8x.FusedConv2dBNReLU(
             num_channels,
-            30,
+            24,
             3,
             padding=1,
             bias=bias,
@@ -133,14 +167,15 @@ class TallyQAFoldedSimplePeople(nn.Module):
         )
 
         stages: list[nn.Module] = []
-        in_channels = 30
+        in_channels = 24
         for spec in self.stage_specs:
             stages.append(DownsampleConvStage(in_channels, spec, bias=bias, **kwargs))
             in_channels = spec.out_channels
         self.features = nn.Sequential(*stages)
+        self.cut_projection = SameResolutionConvStage(80, 112, bias=bias, **kwargs)
 
-        self.avgpool = ai8x.AvgPool2d(kernel_size=10, stride=10, **kwargs)
-        self.classifier = ai8x.Linear(120, num_classes, bias=True, wide=True, **kwargs)
+        self.avgpool = ai8x.AvgPool2d(kernel_size=14, stride=14, **kwargs)
+        self.classifier = ai8x.Linear(112, num_classes, bias=True, wide=True, **kwargs)
 
         self._initialize()
 
@@ -155,10 +190,15 @@ class TallyQAFoldedSimplePeople(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-    def forward(self, x):  # pylint: disable=arguments-differ
+    def forward_features(self, x):
         x = self.stem(x)
         x = self.features(x)
-        # Expected cut tensor for inspection/debug: N x 120 x 10 x 10.
+        x = self.cut_projection(x)
+        # Expected cut tensor for inspection/debug: N x 112 x 14 x 14.
+        return x
+
+    def forward(self, x):  # pylint: disable=arguments-differ
+        x = self.forward_features(x)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
         return self.classifier(x)
