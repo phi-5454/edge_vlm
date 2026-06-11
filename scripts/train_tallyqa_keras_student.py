@@ -9,6 +9,7 @@ import json
 import math
 import os
 import csv
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -712,7 +713,7 @@ def class_labels(num_classes: int) -> list[str]:
     return [str(index) for index in range(num_classes)]
 
 
-def confusion_matrix_plot(stage: str, accumulator: MulticlassAccumulator) -> wandb.Image:
+def confusion_matrix_figure(stage: str, accumulator: MulticlassAccumulator) -> plt.Figure:
     counts = accumulator.confusion
     row_totals = counts.sum(axis=1, keepdims=True)
     normalized = counts / np.clip(row_totals, a_min=1, a_max=None)
@@ -741,9 +742,43 @@ def confusion_matrix_plot(stage: str, accumulator: MulticlassAccumulator) -> wan
                 fontsize=8,
             )
     fig.tight_layout()
+    return fig
+
+
+def confusion_matrix_plot(stage: str, accumulator: MulticlassAccumulator) -> wandb.Image:
+    fig = confusion_matrix_figure(stage, accumulator)
     payload = wandb.Image(fig)
     plt.close(fig)
     return payload
+
+
+def save_confusion_matrix_plot(
+    stage: str,
+    accumulator: MulticlassAccumulator,
+    output: Path,
+) -> Path:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig = confusion_matrix_figure(stage, accumulator)
+    fig.savefig(output, dpi=160)
+    plt.close(fig)
+    return output
+
+
+def safe_artifact_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "artifact"
+
+
+def log_wandb_artifact(name: str, artifact_type: str, paths: Iterable[Path]) -> None:
+    if wandb.run is None:
+        return
+    artifact = wandb.Artifact(safe_artifact_name(name), type=artifact_type)
+    added = False
+    for path in paths:
+        if path.exists():
+            artifact.add_file(str(path))
+            added = True
+    if added:
+        wandb.log_artifact(artifact)
 
 
 def evaluate_split_metrics(
@@ -1094,12 +1129,13 @@ def static_normformer_block(
     return tokens
 
 
-def build_tallyqa_current_student_model(
+def tallyqa_fusion_head_logits(
+    image_features: tf.Tensor,
+    query: tf.Tensor,
+    query_token: tf.Tensor,
     cfg: DictConfig,
-    embedding_rows: np.ndarray,
-    prompt_length: int,
-) -> tf.keras.Model:
-    num_classes = int(cfg.model.num_outputs)
+    num_classes: int,
+) -> tf.Tensor:
     fusion_dim = int(cfg.keras_model.get("fusion_dim", cfg.model.fusion_dim))
     heads = int(cfg.keras_model.get("fusion_heads", cfg.model.fusion_heads))
     if fusion_dim % heads != 0:
@@ -1112,7 +1148,6 @@ def build_tallyqa_current_student_model(
     image_film_at = cfg.keras_model.get("image_film_at", None)
     attention_impl = str(cfg.keras_model.get("attention_impl", "keras"))
     attention_normalization = str(cfg.keras_model.get("attention_normalization", "softmax"))
-    use_prompt_identity = bool(cfg.keras_model.get("use_prompt_identity", cfg.model.use_prompt_identity))
     use_image_positional_embeddings = bool(
         cfg.keras_model.get(
             "use_image_positional_embeddings",
@@ -1120,48 +1155,6 @@ def build_tallyqa_current_student_model(
         )
     )
 
-    batch_size = cfg.keras_model.get("batch_size", None)
-    batch_size = None if batch_size is None else int(batch_size)
-    token_ids = tf.keras.Input(
-        shape=(prompt_length,),
-        batch_size=batch_size,
-        dtype=tf.int32,
-        name="token_ids",
-    )
-    images = tf.keras.Input(
-        shape=(int(cfg.keras_model.image_size), int(cfg.keras_model.image_size), 3),
-        batch_size=batch_size,
-        dtype=tf.float32,
-        name="images",
-    )
-
-    pad = np.zeros((1, embedding_rows.shape[1]), dtype=np.float32)
-    embedding_init = np.concatenate([pad, embedding_rows.astype(np.float32)], axis=0)
-    embedded = tf.keras.layers.Embedding(
-        input_dim=embedding_init.shape[0],
-        output_dim=embedding_init.shape[1],
-        embeddings_initializer=tf.keras.initializers.Constant(embedding_init),
-        trainable=not bool(cfg.model.freeze_embeddings),
-        mask_zero=bool(cfg.keras_model.get("mask_zero_prompt_embeddings", True)),
-        name="compact_prompt_embedding",
-    )(token_ids)
-    if bool(cfg.keras_model.get("static_single_prompt_token", False)):
-        query = tf.keras.layers.Lambda(lambda x: x[:, 0, :], name="first_prompt_embedding")(embedded)
-    else:
-        query = tf.keras.layers.GlobalAveragePooling1D(name="mean_prompt_embedding")(embedded)
-    query = tf.keras.layers.Dense(
-        fusion_dim,
-        activation=activation,
-        name="prompt_projection_dense",
-    )(query)
-    query = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="prompt_projection_norm")(query)
-    query_token = tf.keras.layers.Reshape((1, fusion_dim), name="prompt_token")(query)
-    if use_prompt_identity:
-        query_token = add_prompt_identity(query_token, fusion_dim)
-
-    backbone = build_keras_mobilenet(cfg, images)
-    backbone.trainable = not bool(cfg.model.freeze_image_features)
-    image_features = backbone(images)
     feature_height = int(image_features.shape[1])
     feature_width = int(image_features.shape[2])
     if feature_height <= 0 or feature_width <= 0:
@@ -1304,7 +1297,136 @@ def build_tallyqa_current_student_model(
             "{'normformer', 'mlp', 'film_mlp', 'prompt_patch_mlp'}."
         )
 
-    logits = tf.keras.layers.Dense(num_classes, name="logits")(fused)
+    return tf.keras.layers.Dense(num_classes, name="logits")(fused)
+
+
+def prompt_query_tensors(
+    token_ids: tf.Tensor,
+    cfg: DictConfig,
+    embedding_rows: np.ndarray,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    fusion_dim = int(cfg.keras_model.get("fusion_dim", cfg.model.fusion_dim))
+    activation = str(cfg.keras_model.get("activation", "gelu"))
+    pad = np.zeros((1, embedding_rows.shape[1]), dtype=np.float32)
+    embedding_init = np.concatenate([pad, embedding_rows.astype(np.float32)], axis=0)
+    embedded = tf.keras.layers.Embedding(
+        input_dim=embedding_init.shape[0],
+        output_dim=embedding_init.shape[1],
+        embeddings_initializer=tf.keras.initializers.Constant(embedding_init),
+        trainable=not bool(cfg.model.freeze_embeddings),
+        mask_zero=bool(cfg.keras_model.get("mask_zero_prompt_embeddings", True)),
+        name="compact_prompt_embedding",
+    )(token_ids)
+    if bool(cfg.keras_model.get("static_single_prompt_token", False)):
+        query = tf.keras.layers.Lambda(lambda x: x[:, 0, :], name="first_prompt_embedding")(embedded)
+    else:
+        query = tf.keras.layers.GlobalAveragePooling1D(name="mean_prompt_embedding")(embedded)
+    query = tf.keras.layers.Dense(
+        fusion_dim,
+        activation=activation,
+        name="prompt_projection_dense",
+    )(query)
+    query = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="prompt_projection_norm")(query)
+    query_token = tf.keras.layers.Reshape((1, fusion_dim), name="prompt_token")(query)
+    if bool(cfg.keras_model.get("use_prompt_identity", cfg.model.use_prompt_identity)):
+        query_token = add_prompt_identity(query_token, fusion_dim)
+    return query, query_token
+
+
+def build_fusion_head_visualization_model(
+    cfg: DictConfig,
+    embedding_rows: np.ndarray,
+    prompt_length: int,
+    image_feature_shape: tuple[int, int, int],
+) -> tf.keras.Model:
+    batch_size = cfg.keras_model.get("batch_size", None)
+    batch_size = None if batch_size is None else int(batch_size)
+    token_ids = tf.keras.Input(
+        shape=(prompt_length,),
+        batch_size=batch_size,
+        dtype=tf.int32,
+        name="token_ids",
+    )
+    image_features = tf.keras.Input(
+        shape=image_feature_shape,
+        batch_size=batch_size,
+        dtype=tf.float32,
+        name="mobilenet_cut_tensor",
+    )
+    query, query_token = prompt_query_tensors(token_ids, cfg, embedding_rows)
+    logits = tallyqa_fusion_head_logits(
+        image_features,
+        query,
+        query_token,
+        cfg,
+        int(cfg.model.num_outputs),
+    )
+    return tf.keras.Model(
+        inputs={"token_ids": token_ids, "mobilenet_cut_tensor": image_features},
+        outputs=logits,
+        name=f"tallyqa_{cfg.keras_model.get('fusion_mode', 'fusion')}_head_visualization",
+    )
+
+
+def infer_mobilenet_cut_shape(cfg: DictConfig) -> tuple[int, int, int] | None:
+    if str(cfg.keras_model.get("architecture", "legacy_prior")) != "current_student":
+        return None
+    image_size = int(cfg.keras_model.image_size)
+    images = tf.keras.Input(
+        shape=(image_size, image_size, 3),
+        dtype=tf.float32,
+        name="fusion_head_shape_probe_images",
+    )
+    backbone = build_keras_mobilenet(cfg, images)
+    output_shape = tuple(backbone.output_shape[1:])
+    if len(output_shape) != 3 or any(dim is None for dim in output_shape):
+        raise ValueError(f"Could not infer static MobileNet cut tensor shape: {output_shape}.")
+    return tuple(int(dim) for dim in output_shape)
+
+
+def build_tallyqa_current_student_model(
+    cfg: DictConfig,
+    embedding_rows: np.ndarray,
+    prompt_length: int,
+) -> tf.keras.Model:
+    num_classes = int(cfg.model.num_outputs)
+    fusion_dim = int(cfg.keras_model.get("fusion_dim", cfg.model.fusion_dim))
+    heads = int(cfg.keras_model.get("fusion_heads", cfg.model.fusion_heads))
+    if fusion_dim % heads != 0:
+        raise ValueError("fusion_dim must be divisible by fusion_heads.")
+    fusion_mode = str(cfg.keras_model.get("fusion_mode", "normformer"))
+
+    batch_size = cfg.keras_model.get("batch_size", None)
+    batch_size = None if batch_size is None else int(batch_size)
+    token_ids = tf.keras.Input(
+        shape=(prompt_length,),
+        batch_size=batch_size,
+        dtype=tf.int32,
+        name="token_ids",
+    )
+    images = tf.keras.Input(
+        shape=(int(cfg.keras_model.image_size), int(cfg.keras_model.image_size), 3),
+        batch_size=batch_size,
+        dtype=tf.float32,
+        name="images",
+    )
+
+    query, query_token = prompt_query_tensors(token_ids, cfg, embedding_rows)
+
+    backbone = build_keras_mobilenet(cfg, images)
+    backbone.trainable = not bool(cfg.model.freeze_image_features)
+    image_features = backbone(images)
+    feature_height = int(image_features.shape[1])
+    feature_width = int(image_features.shape[2])
+    if feature_height <= 0 or feature_width <= 0:
+        raise ValueError(f"Image feature spatial shape must be static; got {image_features.shape}.")
+    logits = tallyqa_fusion_head_logits(
+        image_features,
+        query,
+        query_token,
+        cfg,
+        num_classes,
+    )
     return tf.keras.Model(
         inputs={"token_ids": token_ids, "images": images},
         outputs=logits,
@@ -1768,11 +1890,13 @@ class WandbEvaluationLogger(tf.keras.callbacks.Callback):
         val_dataset: tf.data.Dataset,
         val_steps: int,
         num_classes: int,
+        output_dir: Path,
     ):
         super().__init__()
         self.val_dataset = val_dataset
         self.val_steps = val_steps
         self.num_classes = num_classes
+        self.output_dir = output_dir
 
     def on_epoch_end(self, epoch: int, logs: dict[str, Any] | None = None) -> None:
         logs = logs if logs is not None else {}
@@ -1783,17 +1907,22 @@ class WandbEvaluationLogger(tf.keras.callbacks.Callback):
             self.num_classes,
             description="val metrics",
         )
-        for name, value in accumulator.metrics().items():
+        metrics = accumulator.metrics()
+        for name, value in metrics.items():
             logs[f"val_{name}"] = float(value)
+        payload: dict[str, Any] = {
+            **{f"val/{name}": float(value) for name, value in metrics.items()},
+            "trainer/epoch": epoch,
+        }
         if int(accumulator.confusion.sum()) > 0:
-            wandb.log(
-                {
-                    "val_plots/confusion_matrix": confusion_matrix_plot("val", accumulator),
-                    "trainer/epoch": epoch,
-                },
-                step=epoch + 1,
+            figure_path = save_confusion_matrix_plot(
+                "val",
+                accumulator,
+                self.output_dir / f"val_confusion_matrix_epoch_{epoch + 1:03d}.png",
             )
-
+            payload["val_plots/confusion_matrix"] = wandb.Image(str(figure_path))
+            wandb.save(str(figure_path), policy="now")
+        wandb.log(payload, step=epoch + 1)
 
 class TqdmKerasProgress(tf.keras.callbacks.Callback):
     def __init__(self, train_steps: int, val_steps: int):
@@ -2132,18 +2261,39 @@ def main(cfg: DictConfig) -> None:
 
     run_name = str(cfg.experiment.run_name)
     report_dir = absolute_path(cfg.paths.report_dir)
+    run_report_dir = report_dir / run_name
     ckpt_dir = absolute_path(cfg.paths.checkpoint_dir) / run_name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
+    run_report_dir.mkdir(parents=True, exist_ok=True)
     counts = parameter_counts(student)
 
     readable_model_reports = write_model_readable_reports(
         student,
-        report_dir / f"{run_name}_model",
+        run_report_dir / f"{run_name}_model",
     )
     visualkeras_report = maybe_write_visualkeras(
         student,
-        report_dir / f"{run_name}_visualkeras.png",
+        run_report_dir / f"{run_name}_visualkeras.png",
+    )
+    mobilenet_cut_shape = infer_mobilenet_cut_shape(cfg)
+    fusion_head_model = (
+        build_fusion_head_visualization_model(
+            cfg,
+            data.embedding_rows,
+            prompt_length,
+            mobilenet_cut_shape,
+        )
+        if mobilenet_cut_shape is not None
+        else None
+    )
+    fusion_head_visualkeras_report = (
+        maybe_write_visualkeras(
+            fusion_head_model,
+            run_report_dir / f"{run_name}_fusion_head_visualkeras.png",
+        )
+        if fusion_head_model is not None
+        else {"enabled": False, "status": "not_available"}
     )
     report = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -2164,6 +2314,7 @@ def main(cfg: DictConfig) -> None:
         "model": compatibility_report(student, cfg),
         "visualization": {
             "visualkeras": visualkeras_report,
+            "fusion_head_visualkeras": fusion_head_visualkeras_report,
             "readable_model_reports": readable_model_reports,
         },
         "quantization": {
@@ -2185,7 +2336,7 @@ def main(cfg: DictConfig) -> None:
         },
     }
     report["model"]["parameter_counts"] = counts
-    report_path = report_dir / f"{run_name}_architecture.json"
+    report_path = run_report_dir / f"{run_name}_architecture.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     split_rows = [
         {
@@ -2234,8 +2385,16 @@ def main(cfg: DictConfig) -> None:
     if parameter_plot_path.exists():
         model_log_payload["model/layer_parameter_bars"] = wandb.Image(str(parameter_plot_path))
     visualkeras_path = Path(str(visualkeras_report.get("output", "")))
+    fusion_head_visualkeras_path = Path(str(fusion_head_visualkeras_report.get("output", "")))
     if visualkeras_report.get("status") == "written" and visualkeras_path.exists():
         model_log_payload["model/visualkeras"] = wandb.Image(str(visualkeras_path))
+    if (
+        fusion_head_visualkeras_report.get("status") == "written"
+        and fusion_head_visualkeras_path.exists()
+    ):
+        model_log_payload["model/fusion_head_visualkeras"] = wandb.Image(
+            str(fusion_head_visualkeras_path)
+        )
     wandb.log(model_log_payload)
     wandb.save(str(report_path), policy="now")
     for artifact_path in readable_model_reports.values():
@@ -2243,6 +2402,18 @@ def main(cfg: DictConfig) -> None:
             wandb.save(str(artifact_path), policy="now")
     if visualkeras_path.exists():
         wandb.save(str(visualkeras_path), policy="now")
+    if fusion_head_visualkeras_path.exists():
+        wandb.save(str(fusion_head_visualkeras_path), policy="now")
+    log_wandb_artifact(
+        f"{run_name}-model-report",
+        "model-report",
+        [
+            report_path,
+            *(Path(path) for path in readable_model_reports.values()),
+            visualkeras_path,
+            fusion_head_visualkeras_path,
+        ],
+    )
 
     train_ds = make_tf_dataset(data, "train", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
     val_ds = make_tf_dataset(data, "val", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
@@ -2261,6 +2432,7 @@ def main(cfg: DictConfig) -> None:
             val_dataset=val_ds,
             val_steps=val_steps,
             num_classes=int(cfg.model.num_outputs),
+            output_dir=run_report_dir,
         ),
         WandbKerasLogger(log_every_n_steps=int(cfg.trainer.log_every_n_steps)),
         checkpoint_callback,
@@ -2301,13 +2473,19 @@ def main(cfg: DictConfig) -> None:
     test_metric_results = test_accumulator.metrics()
     test_results.update(test_metric_results)
     if int(test_accumulator.confusion.sum()) > 0:
+        test_confusion_path = save_confusion_matrix_plot(
+            "test",
+            test_accumulator,
+            run_report_dir / "test_confusion_matrix.png",
+        )
         wandb.log(
             {
-                "test_plots/confusion_matrix": confusion_matrix_plot("test", test_accumulator),
+                "test_plots/confusion_matrix": wandb.Image(str(test_confusion_path)),
                 **{f"test/{key}": float(value) for key, value in test_metric_results.items()},
             },
             step=int(cfg.trainer.max_epochs) + 1,
         )
+        wandb.save(str(test_confusion_path), policy="now")
     result = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_name": run_name,
@@ -2363,13 +2541,15 @@ def main(cfg: DictConfig) -> None:
             result["quantized_test_results"] = {
                 key: float(value) for key, value in quantized_metrics.items()
             }
-            comparison_plot_path = report_dir / f"{run_name}_float_vs_quantized_test_metrics.png"
+            comparison_plot_path = run_report_dir / f"{run_name}_float_vs_quantized_test_metrics.png"
+            quantized_confusion_path = save_confusion_matrix_plot(
+                "quantized test",
+                quantized_accumulator,
+                run_report_dir / "quantized_test_confusion_matrix.png",
+            )
             wandb.log(
                 {
-                    "test_quantized_plots/confusion_matrix": confusion_matrix_plot(
-                        "quantized test",
-                        quantized_accumulator,
-                    ),
+                    "test_quantized_plots/confusion_matrix": wandb.Image(str(quantized_confusion_path)),
                     "test_plots/float_vs_quantized_metrics": metric_comparison_plot(
                         test_metric_results,
                         quantized_metrics,
@@ -2380,9 +2560,28 @@ def main(cfg: DictConfig) -> None:
                 step=int(cfg.trainer.max_epochs) + 1,
             )
             wandb.save(str(comparison_plot_path), policy="now")
-    result_path = report_dir / f"{run_name}_results.json"
+            wandb.save(str(quantized_confusion_path), policy="now")
+    result_path = run_report_dir / f"{run_name}_results.json"
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     wandb.save(str(result_path), policy="now")
+    final_artifact_paths: list[Path] = [
+        result_path,
+        report_path,
+        *(Path(path) for path in readable_model_reports.values()),
+        visualkeras_path,
+        fusion_head_visualkeras_path,
+        *run_report_dir.glob("*.png"),
+    ]
+    checkpoint_path = Path(str(checkpoint_callback.filepath))
+    if checkpoint_path.exists():
+        final_artifact_paths.append(checkpoint_path)
+    for tflite_path in result.get("tflite", {}).values():
+        final_artifact_paths.append(Path(str(tflite_path)))
+    log_wandb_artifact(
+        f"{run_name}-outputs",
+        "training-output",
+        final_artifact_paths,
+    )
     wandb.finish()
 
 

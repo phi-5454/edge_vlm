@@ -27,8 +27,9 @@ dependencies = [
 tf = [
     "aggdraw>=1.3",
     "pydot>=2.0",
-    "tensorflow>=2.16,<2.20",
-    "tf-keras>=2.16,<2.20",
+    "protobuf>=6.31.1,<7",
+    "tensorflow>=2.20,<2.22",
+    "tf-keras>=2.20,<2.22",
     "visualkeras>=0.2.0",
 ]
 coral = [
@@ -36,8 +37,9 @@ coral = [
     "requests>=2.32",
     "aggdraw>=1.3",
     "pydot>=2.0",
-    "tensorflow>=2.16,<2.20",
-    "tf-keras>=2.16,<2.20",
+    "protobuf>=6.31.1,<7",
+    "tensorflow>=2.20,<2.22",
+    "tf-keras>=2.20,<2.22",
     "visualkeras>=0.2.0",
 ]
 max78000 = [
@@ -45,7 +47,8 @@ max78000 = [
 ]
 qat = [
     "tensorflow-model-optimization>=0.8,<0.9",
-    "tf-keras>=2.16,<2.20",
+    "protobuf>=6.31.1,<7",
+    "tf-keras>=2.20,<2.22",
 ]
 dev = [
     "pytest>=8.2",
