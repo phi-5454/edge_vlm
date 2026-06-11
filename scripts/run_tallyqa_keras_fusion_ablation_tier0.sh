@@ -2,6 +2,7 @@
 set -euo pipefail
 
 TIER_FILE="${TIER_FILE:-artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_0_acc_ge_0p60_n_ge_1000/prompt_classes.txt}"
+TIER_LABEL="${TIER_LABEL:-tier0}"
 TEACHER_CACHE="${TEACHER_CACHE:-artifacts/teacher_cache/composite_ece_temp_smol1p1_frcnn2p2_beta12p968_tallyqa_target_mobilenet224.jsonl}"
 RUNS="${RUNS:-all}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -29,6 +30,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tier-file)
       TIER_FILE="$2"
+      shift 2
+      ;;
+    --tier-label)
+      TIER_LABEL="$2"
       shift 2
       ;;
     --teacher-cache)
@@ -241,11 +246,11 @@ run_one() {
 
 echo "Selected RUNS=${RUNS}"
 
-run_one "mlp" "tallyqa-keras-tier0-current-prompt-patch-mlp-ptq" "prompt_patch_mlp" \
+run_one "mlp" "tallyqa-keras-${TIER_LABEL}-current-prompt-patch-mlp-ptq" "prompt_patch_mlp" \
   "keras_model.use_prompt_identity=false" \
   "keras_model.use_image_positional_embeddings=false"
-run_one "film_mlp" "tallyqa-keras-tier0-current-film-mlp-ptq" "film_mlp" \
+run_one "film_mlp" "tallyqa-keras-${TIER_LABEL}-current-film-mlp-ptq" "film_mlp" \
   "keras_model.image_film_at=image_tokens" \
   "keras_model.use_prompt_identity=false" \
   "keras_model.use_image_positional_embeddings=false"
-run_one "normformer" "tallyqa-keras-tier0-current-normformer-ptq" "normformer"
+run_one "normformer" "tallyqa-keras-${TIER_LABEL}-current-normformer-ptq" "normformer"

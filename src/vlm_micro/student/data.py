@@ -630,6 +630,7 @@ def collate_tallyqa_student_batch(rows: list[dict[str, Any]]) -> dict[str, torch
         "labels": torch.tensor([row["label"] for row in rows], dtype=torch.long),
         "teacher_probs": torch.stack([row["teacher_probs"] for row in rows]).float(),
         "item_class_ids": torch.tensor([row["item_class_id"] for row in rows], dtype=torch.long),
+        "image_ids": [str(row["image_id"]) for row in rows],
         "student_prompts": [str(row["student_prompt"]) for row in rows],
     }
 

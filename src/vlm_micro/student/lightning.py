@@ -433,6 +433,8 @@ class TallyQAStudentModule(L.LightningModule):
         }
         self._validation_plot_rows: list[dict[str, Any]] = []
         self._test_plot_rows: list[dict[str, Any]] = []
+        self._validation_plot_keys: set[tuple[str, str]] = set()
+        self._test_plot_keys: set[tuple[str, str]] = set()
 
     def forward(self, token_ids: torch.Tensor, attention_mask: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
         return self.model(token_ids, attention_mask, images)
@@ -632,12 +634,14 @@ class TallyQAStudentModule(L.LightningModule):
         self._log_confusion_matrix("val")
         self._log_validation_plots()
         self._validation_plot_rows = []
+        self._validation_plot_keys = set()
 
     def on_test_epoch_end(self) -> None:
         self._log_epoch_metrics("test")
         self._log_confusion_matrix("test")
         self._log_example_plots("test")
         self._test_plot_rows = []
+        self._test_plot_keys = set()
 
     def configure_optimizers(self) -> Any:
         image_parameters = [
@@ -717,6 +721,7 @@ class TallyQAStudentModule(L.LightningModule):
     def _collect_example_plots(self, batch: dict[str, torch.Tensor], stage: str) -> None:
         max_samples = int(self.hparams.validation_plot_samples)
         rows = self._validation_plot_rows if stage == "val" else self._test_plot_rows
+        seen_keys = self._validation_plot_keys if stage == "val" else self._test_plot_keys
         if max_samples == 0 or len(rows) >= max_samples:
             return
         if (
@@ -727,11 +732,36 @@ class TallyQAStudentModule(L.LightningModule):
         if not hasattr(self.model, "image_features"):
             return
         remaining = max_samples - len(rows)
-        images = batch["images"][:remaining]
+        batch_size = int(batch["images"].shape[0])
+        batch_prompts = [str(prompt) for prompt in batch.get("student_prompts", [])]
+        batch_image_ids = [str(image_id) for image_id in batch.get("image_ids", [])]
+        if len(batch_prompts) != batch_size:
+            batch_prompts = [""] * batch_size
+        if len(batch_image_ids) != batch_size:
+            batch_image_ids = [
+                str(int(index.detach().cpu())) for index in batch["dataset_index"]
+            ]
+        selected_indices: list[int] = []
+        selected_keys: list[tuple[str, str]] = []
+        for index, (image_id, prompt) in enumerate(zip(batch_image_ids, batch_prompts, strict=True)):
+            key = (image_id, prompt)
+            if key in seen_keys:
+                continue
+            selected_indices.append(index)
+            selected_keys.append(key)
+            if len(selected_indices) >= remaining:
+                break
+        if not selected_indices:
+            return
+
+        batch_indices = torch.tensor(selected_indices, device=batch["images"].device)
+        images = batch["images"].index_select(0, batch_indices)
+        token_ids = batch["token_ids"].index_select(0, batch_indices)
+        attention_mask = batch["attention_mask"].index_select(0, batch_indices)
         with torch.no_grad():
             query = self.model.encode_query(
-                batch["token_ids"][:remaining],
-                batch["attention_mask"][:remaining],
+                token_ids,
+                attention_mask,
             )
             features_device = self.model.encode_image_features(images, query)
             features = features_device.detach().float().cpu()
@@ -752,18 +782,23 @@ class TallyQAStudentModule(L.LightningModule):
                     feature_width,
                 )
             projected_activation = projected_activation.detach().float().cpu()
-            logits = self(batch["token_ids"][:remaining], batch["attention_mask"][:remaining], images)
-            predictions = torch.argmax(logits.detach().cpu(), dim=1)
+            logits = self(token_ids, attention_mask, images)
+            probabilities = torch.softmax(logits.detach().float().cpu(), dim=1)
+            predictions = torch.argmax(probabilities, dim=1)
         for index in range(images.shape[0]):
+            source_index = selected_indices[index]
+            seen_keys.add(selected_keys[index])
             rows.append(
                 {
-                    "dataset_index": int(batch["dataset_index"][index].detach().cpu()),
+                    "dataset_index": int(batch["dataset_index"][source_index].detach().cpu()),
+                    "image_id": batch_image_ids[source_index],
                     "image": images[index].detach().float().cpu(),
                     "activation": features[index].mean(dim=0),
                     "projected_activation": projected_activation[index],
-                    "label": int(batch["labels"][index].detach().cpu()),
+                    "probabilities": probabilities[index],
+                    "label": int(batch["labels"][source_index].detach().cpu()),
                     "prediction": int(predictions[index]),
-                    "student_prompt": str(batch.get("student_prompts", [""] * images.shape[0])[index]),
+                    "student_prompt": batch_prompts[source_index],
                 }
             )
 
@@ -784,10 +819,13 @@ class TallyQAStudentModule(L.LightningModule):
         image = self._denormalized_image(row["image"]).permute(1, 2, 0).numpy()
         activation = self._normalized_activation(row["activation"]).numpy()
         projected_activation = self._normalized_activation(row["projected_activation"]).numpy()
-        fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.2))
+        probabilities = row["probabilities"].float().numpy()
+        labels = self._class_labels()
+        fig, axes = plt.subplots(1, 4, figsize=(12.8, 3.2))
         axes[0].imshow(image)
         title = (
-            f"idx={row['dataset_index']} true={row['label']} pred={row['prediction']} "
+            f"idx={row['dataset_index']} image={row.get('image_id', '')} "
+            f"true={row['label']} pred={row['prediction']} "
             f"prompt={row['student_prompt']}"
         )
         axes[0].set_title(
@@ -801,6 +839,16 @@ class TallyQAStudentModule(L.LightningModule):
         axes[2].imshow(projected_activation, cmap="magma")
         axes[2].set_title("mean projected image tokens", fontsize=9)
         axes[2].axis("off")
+        colors = ["#4c78a8"] * len(probabilities)
+        if 0 <= int(row["label"]) < len(colors):
+            colors[int(row["label"])] = "#54a24b"
+        if 0 <= int(row["prediction"]) < len(colors):
+            colors[int(row["prediction"])] = "#e45756"
+        axes[3].bar(range(len(probabilities)), probabilities, color=colors)
+        axes[3].set_xticks(range(len(labels)), labels=labels)
+        axes[3].set_ylim(0, 1)
+        axes[3].set_title("predicted distribution", fontsize=9)
+        axes[3].set_ylabel("probability")
         fig.tight_layout()
         image_payload = wandb.Image(fig)
         plt.close(fig)
