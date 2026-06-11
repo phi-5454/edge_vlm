@@ -8,13 +8,13 @@ import io
 import json
 import math
 import os
+import csv
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 os.environ["MPLBACKEND"] = "Agg"
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
@@ -34,6 +34,13 @@ from tqdm.auto import tqdm
 
 def absolute_path(value: str) -> Path:
     return Path(to_absolute_path(value))
+
+
+def export_path_for_run(path_value: str, run_name: str, cfg: DictConfig) -> Path:
+    path = absolute_path(path_value)
+    if not bool(cfg.export.get("use_run_subdir", True)):
+        return path
+    return path.parent / run_name / path.name
 
 
 def git_revision() -> str | None:
@@ -530,6 +537,112 @@ def parameter_counts(model: tf.keras.Model) -> dict[str, int]:
     }
 
 
+def layer_parameter_rows(model: tf.keras.Model) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    def visit(layer: tf.keras.layers.Layer, prefix: str = "") -> None:
+        path = f"{prefix}/{layer.name}" if prefix else layer.name
+        if isinstance(layer, tf.keras.Model) and layer.layers:
+            for child in layer.layers:
+                visit(child, path)
+            return
+        trainable = int(sum(np.prod(weight.shape) for weight in layer.trainable_weights))
+        non_trainable = int(sum(np.prod(weight.shape) for weight in layer.non_trainable_weights))
+        rows.append(
+            {
+                "name": path,
+                "class": layer.__class__.__name__,
+                "output_shape": str(getattr(layer, "output_shape", "unknown")),
+                "trainable": trainable,
+                "non_trainable": non_trainable,
+                "total": trainable + non_trainable,
+            }
+        )
+
+    for top_layer in model.layers:
+        visit(top_layer)
+    return rows
+
+
+def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
+    if not rows:
+        return ""
+    widths = {
+        column: max(len(column), *(len(str(row.get(column, ""))) for row in rows))
+        for column in columns
+    }
+    header = "  ".join(column.ljust(widths[column]) for column in columns)
+    divider = "  ".join("-" * widths[column] for column in columns)
+    body = [
+        "  ".join(str(row.get(column, "")).ljust(widths[column]) for column in columns)
+        for row in rows
+    ]
+    return "\n".join([header, divider, *body])
+
+
+def write_model_readable_reports(
+    model: tf.keras.Model,
+    output_prefix: Path,
+) -> dict[str, str]:
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    summary_path = output_prefix.with_suffix(".summary.txt")
+    layer_csv_path = output_prefix.with_suffix(".layers.csv")
+    layer_table_path = output_prefix.with_suffix(".layers.txt")
+    parameter_plot_path = output_prefix.with_suffix(".parameter_bars.png")
+
+    summary_buffer = io.StringIO()
+    try:
+        model.summary(
+            print_fn=lambda line: summary_buffer.write(line + "\n"),
+            expand_nested=True,
+            show_trainable=True,
+        )
+    except TypeError:
+        model.summary(print_fn=lambda line: summary_buffer.write(line + "\n"))
+    summary_path.write_text(summary_buffer.getvalue(), encoding="utf-8")
+
+    rows = layer_parameter_rows(model)
+    with layer_csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["name", "class", "output_shape", "trainable", "non_trainable", "total"],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    sorted_rows = sorted(rows, key=lambda row: int(row["total"]), reverse=True)
+    table_rows = sorted_rows[:80]
+    table_text = format_table(
+        table_rows,
+        ["name", "class", "output_shape", "trainable", "non_trainable", "total"],
+    )
+    layer_table_path.write_text(
+        "Layer parameter table, sorted by parameter count. "
+        f"Showing {len(table_rows)} of {len(rows)} leaf layers.\n\n{table_text}\n",
+        encoding="utf-8",
+    )
+
+    plot_rows = [row for row in sorted_rows if int(row["total"]) > 0][:25]
+    if plot_rows:
+        fig_height = max(4.0, 0.28 * len(plot_rows))
+        fig, ax = plt.subplots(figsize=(10.0, fig_height))
+        names = [str(row["name"])[-70:] for row in reversed(plot_rows)]
+        totals = [int(row["total"]) for row in reversed(plot_rows)]
+        ax.barh(names, totals, color="#4c78a8")
+        ax.set_xlabel("Parameters")
+        ax.set_title("Largest Leaf Layers by Parameter Count")
+        ax.grid(axis="x", alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(parameter_plot_path, dpi=160)
+        plt.close(fig)
+    return {
+        "summary_txt": str(summary_path),
+        "layer_csv": str(layer_csv_path),
+        "layer_table_txt": str(layer_table_path),
+        "parameter_plot_png": str(parameter_plot_path),
+    }
+
+
 class MulticlassAccumulator:
     def __init__(self, num_classes: int):
         self.num_classes = num_classes
@@ -760,6 +873,7 @@ def build_keras_mobilenet(
         "include_top": False,
         "weights": weights,
         "input_tensor": images,
+        "minimalistic": bool(cfg.keras_model.get("mobilenet_minimalistic", False)),
         "include_preprocessing": bool(cfg.keras_model.get("include_mobilenet_preprocessing", True)),
     }
     if backbone_name == "mobilenet_v3_large":
@@ -853,6 +967,27 @@ def apply_feature_film_tokens(
     shift = tf.keras.layers.Reshape((1, channels), name=f"{name}_shift_reshape")(shift)
     delta = tf.keras.layers.Multiply(name=f"{name}_scale_mul")([tokens, scale])
     return tf.keras.layers.Add(name=f"{name}_add")([tokens, delta, shift])
+
+
+def broadcast_query_to_feature_map(
+    query: tf.Tensor,
+    features: tf.Tensor,
+    channels: int,
+    name: str,
+) -> tf.Tensor:
+    query_map = tf.keras.layers.Reshape((1, 1, channels), name=f"{name}_reshape")(query)
+    return tf.keras.layers.Lambda(
+        lambda parts: tf.tile(
+            parts[0],
+            [
+                1,
+                tf.shape(parts[1])[1],
+                tf.shape(parts[1])[2],
+                1,
+            ],
+        ),
+        name=f"{name}_tile",
+    )([query_map, features])
 
 
 def normformer_block(
@@ -1027,6 +1162,10 @@ def build_tallyqa_current_student_model(
     backbone = build_keras_mobilenet(cfg, images)
     backbone.trainable = not bool(cfg.model.freeze_image_features)
     image_features = backbone(images)
+    feature_height = int(image_features.shape[1])
+    feature_width = int(image_features.shape[2])
+    if feature_height <= 0 or feature_width <= 0:
+        raise ValueError(f"Image feature spatial shape must be static; got {image_features.shape}.")
     image_tokens = tf.keras.layers.Conv2D(
         fusion_dim,
         kernel_size=1,
@@ -1076,6 +1215,38 @@ def build_tallyqa_current_student_model(
             activation=activation,
             name="fusion_mlp_1",
         )(fused)
+    elif fusion_mode == "prompt_patch_mlp":
+        query_map = broadcast_query_to_feature_map(
+            query,
+            image_features,
+            fusion_dim,
+            name="prompt_patch_query",
+        )
+        conditioned = tf.keras.layers.Concatenate(axis=-1, name="prompt_patch_concat")(
+            [image_features, query_map]
+        )
+        conditioned = tf.keras.layers.Conv2D(
+            fusion_dim * mlp_ratio,
+            kernel_size=1,
+            padding="same",
+            activation=activation,
+            name="prompt_patch_conv1x1",
+        )(conditioned)
+        if dropout > 0:
+            conditioned = tf.keras.layers.SpatialDropout2D(
+                dropout,
+                name="prompt_patch_dropout",
+            )(conditioned)
+        conditioned = tf.keras.layers.Conv2D(
+            128,
+            kernel_size=3,
+            padding="same",
+            activation=activation,
+            name="prompt_patch_conv3x3",
+        )(conditioned)
+        fused = tf.keras.layers.GlobalAveragePooling2D(name="prompt_patch_mean_pool")(
+            conditioned
+        )
     elif fusion_mode == "film_mlp":
         image = tf.keras.layers.GlobalAveragePooling1D(name="image_token_mean")(image_tokens)
         fused = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="fusion_mlp_input_norm")(image)
@@ -1128,7 +1299,10 @@ def build_tallyqa_current_student_model(
         fused = tf.keras.layers.GlobalAveragePooling1D(name="fusion_token_mean")(tokens)
         fused = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="fusion_output_norm")(fused)
     else:
-        raise ValueError("keras_model.fusion_mode must be one of {'normformer', 'mlp', 'film_mlp'}.")
+        raise ValueError(
+            "keras_model.fusion_mode must be one of "
+            "{'normformer', 'mlp', 'film_mlp', 'prompt_patch_mlp'}."
+        )
 
     logits = tf.keras.layers.Dense(num_classes, name="logits")(fused)
     return tf.keras.Model(
@@ -1769,6 +1943,152 @@ def export_ptq_tflite(
     output.write_bytes(tflite)
 
 
+def quantize_tflite_input(value: np.ndarray, detail: dict[str, Any]) -> np.ndarray:
+    dtype = detail["dtype"]
+    if np.issubdtype(dtype, np.floating):
+        return value.astype(dtype)
+    if dtype == np.int32:
+        return value.astype(np.int32)
+    scale, zero_point = detail.get("quantization", (0.0, 0))
+    if not scale:
+        return value.astype(dtype)
+    quantized = np.round(value / float(scale) + int(zero_point))
+    info = np.iinfo(dtype)
+    return np.clip(quantized, info.min, info.max).astype(dtype)
+
+
+def dequantize_tflite_output(value: np.ndarray, detail: dict[str, Any]) -> np.ndarray:
+    if np.issubdtype(value.dtype, np.floating):
+        return value.astype(np.float32)
+    scale, zero_point = detail.get("quantization", (0.0, 0))
+    if not scale:
+        return value.astype(np.float32)
+    return (value.astype(np.float32) - int(zero_point)) * float(scale)
+
+
+def map_tflite_inputs(
+    details: list[dict[str, Any]],
+    inputs: dict[str, tf.Tensor],
+) -> dict[int, np.ndarray]:
+    mapped: dict[int, np.ndarray] = {}
+    token_ids = inputs["token_ids"].numpy()
+    images = inputs["images"].numpy()
+    for detail in details:
+        name = str(detail.get("name", "")).lower()
+        shape = list(detail.get("shape_signature", detail.get("shape", [])))
+        rank = len(shape)
+        if "token" in name or (rank == 2 and detail["dtype"] == np.int32):
+            mapped[int(detail["index"])] = token_ids
+        elif "image" in name or rank == 4:
+            mapped[int(detail["index"])] = images
+        else:
+            raise ValueError(
+                "Could not map TFLite input "
+                f"{detail.get('name')} with shape {detail.get('shape')} and dtype {detail['dtype']}."
+            )
+    return mapped
+
+
+def evaluate_tflite_split_metrics(
+    tflite_path: Path,
+    dataset: tf.data.Dataset,
+    steps: int,
+    num_classes: int,
+    description: str | None = None,
+) -> MulticlassAccumulator:
+    interpreter = tf.lite.Interpreter(
+        model_path=str(tflite_path),
+        experimental_delegates=[],
+        experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES,
+    )
+    interpreter.allocate_tensors()
+    accumulator = MulticlassAccumulator(num_classes)
+    iterator = iter(dataset)
+    progress = tqdm(
+        range(steps),
+        desc=description,
+        unit="batch",
+        leave=False,
+        disable=description is None,
+    )
+    for _ in progress:
+        inputs, targets = next(iterator)
+        input_details = interpreter.get_input_details()
+        raw_inputs = map_tflite_inputs(input_details, inputs)
+        resized = False
+        for detail in input_details:
+            tensor = raw_inputs[int(detail["index"])]
+            current_shape = list(detail["shape"])
+            desired_shape = list(tensor.shape)
+            if current_shape != desired_shape:
+                interpreter.resize_tensor_input(int(detail["index"]), desired_shape, strict=False)
+                resized = True
+        if resized:
+            interpreter.allocate_tensors()
+            input_details = interpreter.get_input_details()
+            raw_inputs = map_tflite_inputs(input_details, inputs)
+        for detail in input_details:
+            tensor = raw_inputs[int(detail["index"])]
+            interpreter.set_tensor(
+                int(detail["index"]),
+                quantize_tflite_input(tensor, detail),
+            )
+        interpreter.invoke()
+        output_detail = interpreter.get_output_details()[0]
+        logits = dequantize_tflite_output(
+            interpreter.get_tensor(int(output_detail["index"])),
+            output_detail,
+        )
+        if logits.ndim == 1:
+            logits = logits[np.newaxis, :]
+        labels = targets["labels"].numpy()
+        accumulator.update(labels, logits)
+    return accumulator
+
+
+def metric_comparison_plot(
+    float_metrics: dict[str, float],
+    quantized_metrics: dict[str, float],
+    output: Path,
+) -> wandb.Image:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    metric_keys = [
+        "accuracy",
+        "within_1_accuracy",
+        "class_weighted_accuracy",
+        "class_weighted_within_1_accuracy",
+        "mae",
+        "class_weighted_mae",
+    ]
+    labels = [key.replace("_", "\n") for key in metric_keys]
+    x = np.arange(len(metric_keys))
+    width = 0.38
+    fig, ax = plt.subplots(figsize=(11.5, 4.8))
+    ax.bar(
+        x - width / 2,
+        [float(float_metrics.get(key, np.nan)) for key in metric_keys],
+        width,
+        label="Keras float",
+        color="#4c78a8",
+    )
+    ax.bar(
+        x + width / 2,
+        [float(quantized_metrics.get(key, np.nan)) for key in metric_keys],
+        width,
+        label="TFLite quantized",
+        color="#f58518",
+    )
+    ax.set_xticks(x, labels=labels)
+    ax.set_title("Float vs Quantized Test Metrics")
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output, dpi=160)
+    payload = wandb.Image(fig)
+    plt.close(fig)
+    return payload
+
+
 @hydra.main(version_base=None, config_path="../conf", config_name="tallyqa_keras_student")
 def main(cfg: DictConfig) -> None:
     quantization_mode = str(cfg.export.quantization.mode)
@@ -1817,13 +2137,13 @@ def main(cfg: DictConfig) -> None:
     report_dir.mkdir(parents=True, exist_ok=True)
     counts = parameter_counts(student)
 
-    visualkeras_report = (
-        maybe_write_visualkeras(
-            student,
-            report_dir / f"{run_name}_visualkeras.png",
-        )
-        if bool(cfg.keras_model.get("visualkeras", {}).get("enabled", False))
-        else {"enabled": False, "status": "disabled"}
+    readable_model_reports = write_model_readable_reports(
+        student,
+        report_dir / f"{run_name}_model",
+    )
+    visualkeras_report = maybe_write_visualkeras(
+        student,
+        report_dir / f"{run_name}_visualkeras.png",
     )
     report = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -1844,6 +2164,7 @@ def main(cfg: DictConfig) -> None:
         "model": compatibility_report(student, cfg),
         "visualization": {
             "visualkeras": visualkeras_report,
+            "readable_model_reports": readable_model_reports,
         },
         "quantization": {
             "representative_indices": data.representative_indices(
@@ -1866,8 +2187,21 @@ def main(cfg: DictConfig) -> None:
     report["model"]["parameter_counts"] = counts
     report_path = report_dir / f"{run_name}_architecture.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(report["dataset"], indent=2))
-    print(json.dumps(counts, indent=2))
+    split_rows = [
+        {
+            "split": split,
+            "active": report["dataset"]["split_sizes"][split],
+            "full": report["dataset"]["full_split_sizes"][split],
+        }
+        for split in ["train", "val", "test"]
+    ]
+    count_rows = [{"scope": key, "parameters": value} for key, value in counts.items()]
+    print("Dataset splits")
+    print(format_table(split_rows, ["split", "active", "full"]))
+    print("\nParameter counts")
+    print(format_table(count_rows, ["scope", "parameters"]))
+    print(f"\nModel summary: {readable_model_reports['summary_txt']}")
+    print(f"Layer parameter table: {readable_model_reports['layer_table_txt']}")
     print(f"Full architecture report: {report_path}")
 
     wandb.init(
@@ -1888,10 +2222,27 @@ def main(cfg: DictConfig) -> None:
         },
         allow_val_change=True,
     )
-    summary_buffer = io.StringIO()
-    student.summary(print_fn=lambda line: summary_buffer.write(line + "\n"))
-    wandb.log({"model/architecture": wandb.Html(f"<pre>{html.escape(summary_buffer.getvalue())}</pre>")})
+    summary_text = Path(readable_model_reports["summary_txt"]).read_text(encoding="utf-8")
+    layer_table_text = Path(readable_model_reports["layer_table_txt"]).read_text(encoding="utf-8")
+    model_log_payload: dict[str, Any] = {
+        "model/architecture": wandb.Html(f"<pre>{html.escape(summary_text)}</pre>"),
+        "model/layer_parameter_table": wandb.Html(
+            f"<pre>{html.escape(layer_table_text)}</pre>"
+        ),
+    }
+    parameter_plot_path = Path(readable_model_reports["parameter_plot_png"])
+    if parameter_plot_path.exists():
+        model_log_payload["model/layer_parameter_bars"] = wandb.Image(str(parameter_plot_path))
+    visualkeras_path = Path(str(visualkeras_report.get("output", "")))
+    if visualkeras_report.get("status") == "written" and visualkeras_path.exists():
+        model_log_payload["model/visualkeras"] = wandb.Image(str(visualkeras_path))
+    wandb.log(model_log_payload)
     wandb.save(str(report_path), policy="now")
+    for artifact_path in readable_model_reports.values():
+        if Path(artifact_path).exists():
+            wandb.save(str(artifact_path), policy="now")
+    if visualkeras_path.exists():
+        wandb.save(str(visualkeras_path), policy="now")
 
     train_ds = make_tf_dataset(data, "train", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
     val_ds = make_tf_dataset(data, "val", cfg, prompt_length).prefetch(tf.data.AUTOTUNE)
@@ -1973,27 +2324,65 @@ def main(cfg: DictConfig) -> None:
         "teacher_cache_coverage": data.cache_coverage(),
         "history": {key: [float(value) for value in values] for key, values in history.history.items()},
         "test_results": {key: float(value) for key, value in test_results.items()},
+        "quantized_test_results": None,
         "checkpoint": str(ckpt_dir / "best.weights.h5"),
         "quantization_mode": quantization_mode,
+        "tflite": {},
     }
-    result_path = report_dir / f"{run_name}_results.json"
-    result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    wandb.save(str(result_path), policy="now")
     if checkpoint_callback.filepath.exists():
         wandb.save(str(checkpoint_callback.filepath), policy="now")
 
     if bool(cfg.export.export_tflite):
-        export_float_tflite(student, absolute_path(cfg.export.tflite_float))
-        wandb.save(str(absolute_path(cfg.export.tflite_float)), policy="now")
+        float_tflite_path = export_path_for_run(str(cfg.export.tflite_float), run_name, cfg)
+        quantized_tflite_path = export_path_for_run(
+            str(cfg.export.tflite_quantized),
+            run_name,
+            cfg,
+        )
+        export_float_tflite(student, float_tflite_path)
+        result["tflite"]["float"] = str(float_tflite_path)
+        wandb.save(str(float_tflite_path), policy="now")
         if quantization_mode in {"ptq", "qat"}:
             export_ptq_tflite(
                 student,
-                absolute_path(cfg.export.tflite_quantized),
+                quantized_tflite_path,
                 data,
                 cfg,
                 int(cfg.export.quantization.representative_samples),
             )
-            wandb.save(str(absolute_path(cfg.export.tflite_quantized)), policy="now")
+            result["tflite"]["quantized"] = str(quantized_tflite_path)
+            wandb.save(str(quantized_tflite_path), policy="now")
+            quantized_accumulator = evaluate_tflite_split_metrics(
+                quantized_tflite_path,
+                test_ds,
+                test_steps,
+                int(cfg.model.num_outputs),
+                description="quantized test metrics",
+            )
+            quantized_metrics = quantized_accumulator.metrics()
+            result["quantized_test_results"] = {
+                key: float(value) for key, value in quantized_metrics.items()
+            }
+            comparison_plot_path = report_dir / f"{run_name}_float_vs_quantized_test_metrics.png"
+            wandb.log(
+                {
+                    "test_quantized_plots/confusion_matrix": confusion_matrix_plot(
+                        "quantized test",
+                        quantized_accumulator,
+                    ),
+                    "test_plots/float_vs_quantized_metrics": metric_comparison_plot(
+                        test_metric_results,
+                        quantized_metrics,
+                        comparison_plot_path,
+                    ),
+                    **{f"test_quantized/{key}": float(value) for key, value in quantized_metrics.items()},
+                },
+                step=int(cfg.trainer.max_epochs) + 1,
+            )
+            wandb.save(str(comparison_plot_path), policy="now")
+    result_path = report_dir / f"{run_name}_results.json"
+    result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    wandb.save(str(result_path), policy="now")
     wandb.finish()
 
 

@@ -25,10 +25,15 @@ adjacent ADI checkout when training:
 - `max78000/ai8x_training/policies/schedule-tallyqa-people.yaml`
 
 Materialize a MAX78000-specific manifest at
-`data/max78000_tallyqa_people_count_224/` before training. The materialized view
+`data/max78000_tallyqa_people_count_88/` before training. The materialized view
 filters TallyQA to `people`, drops zero-count examples because the current head
 has no zero class, collapses answers above five into `5+`, and records the
 deterministic image-hash split.
+
+The MAX78000 demo input is 88x88 RGB. For live camera frames, firmware must
+center-crop the sensor frame to square, slicing off the longer dimension, then
+downsample the square crop to 88x88 before normalization/loading. This keeps
+each channel below the 8192-byte constraint: 88 * 88 = 7744 bytes.
 
 Use QAT from the start of this training route:
 
@@ -65,7 +70,7 @@ Adapter smoke test:
 
 ```text
 train records: 19620
-sample tensor: (3, 224, 224)
+sample tensor: (3, 88, 88)
 sample normalized range: [-128.0, 126.0]
 ```
 

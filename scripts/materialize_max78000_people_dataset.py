@@ -14,7 +14,7 @@ from vlm_micro.student.data import collapse_count, load_tallyqa_rows, split_for_
 
 
 DEFAULT_SOURCE = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
-DEFAULT_OUTPUT = Path("data/max78000_tallyqa_people_count_224")
+DEFAULT_OUTPUT = Path("data/max78000_tallyqa_people_count_88")
 LABELS = ("1", "2", "3", "4", "5+")
 
 
@@ -78,6 +78,12 @@ def main() -> None:
         ],
         "source_dataset": str(args.source),
         "task": "TallyQA people count, positive counts only, labels 1/2/3/4/5+",
+        "adapter_image_size": 88,
+        "adapter_preprocessing": (
+            "ADI dataset adapter resizes the stored square 224x224 RGB tensor to 88x88. "
+            "Live camera firmware must center-crop the sensor frame to square first, then "
+            "downsample to 88x88 before normalization/loading."
+        ),
         "seed": args.seed,
         "labels": list(LABELS),
         "classes": {str(index): label for index, label in enumerate(LABELS)},

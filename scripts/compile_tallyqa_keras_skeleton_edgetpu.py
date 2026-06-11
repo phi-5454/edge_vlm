@@ -23,7 +23,9 @@ from omegaconf import OmegaConf
 
 from scripts.train_tallyqa_keras_student import (
     apply_feature_film_tokens,
+    broadcast_query_to_feature_map,
     build_keras_student_model,
+    build_keras_mobilenet,
     static_normformer_block,
 )
 
@@ -47,7 +49,11 @@ def parse_args() -> argparse.Namespace:
             "fixed prompt/image tokens directly to isolate fusion-layer compiler support."
         ),
     )
-    parser.add_argument("--fusion-mode", choices=["normformer", "mlp", "film_mlp"], default="normformer")
+    parser.add_argument(
+        "--fusion-mode",
+        choices=["normformer", "mlp", "film_mlp", "prompt_patch_mlp"],
+        default="normformer",
+    )
     parser.add_argument(
         "--image-film-at",
         choices=["none", "image_tokens", "token_projection"],
@@ -75,6 +81,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--image-backbone", choices=["mobilenet_v3_small", "mobilenet_v3_large"], default="mobilenet_v3_small")
     parser.add_argument("--image-feature-cutoff", default="auto")
+    parser.add_argument(
+        "--mobilenet-minimalistic",
+        action="store_true",
+        help="Use Keras MobileNetV3 minimalistic blocks with ReLU-style activations for compiler probing.",
+    )
     parser.add_argument("--fusion-dim", type=int, default=128)
     parser.add_argument("--fusion-depth", type=int, default=4)
     parser.add_argument("--fusion-heads", type=int, default=4)
@@ -98,8 +109,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--representative-samples", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--pretrained-mobilenet", action="store_true")
+    parser.add_argument(
+        "--fold-static-prompt",
+        action="store_true",
+        help=(
+            "For prompt_patch_mlp, compile the deployable per-prompt graph with "
+            "prompt conditioning folded into the first patch Conv2D. This removes "
+            "runtime prompt lookup/broadcast ops such as TILE."
+        ),
+    )
     parser.add_argument("--keep-float", action="store_true", help="Also export a float TFLite model.")
     parser.add_argument("--skip-compile", action="store_true", help="Only export TFLite; do not call edgetpu_compiler.")
+    parser.add_argument(
+        "--skip-visualkeras",
+        action="store_true",
+        help="Do not write a VisualKeras architecture PNG next to the compiler report.",
+    )
     parser.add_argument("--compiler-bin", default="edgetpu_compiler")
     parser.add_argument("--compiler-extra-arg", action="append", default=[])
     parser.add_argument(
@@ -124,6 +149,29 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     return parser.parse_args()
+
+
+def maybe_write_visualkeras(model: tf.keras.Model, output: Path) -> dict[str, str | bool]:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import visualkeras
+    except ImportError:
+        return {
+            "enabled": True,
+            "status": "missing_dependency",
+            "message": "Install visualkeras to generate model architecture PNGs.",
+            "output": str(output),
+        }
+    try:
+        visualkeras.layered_view(model, legend=True, to_file=str(output))
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "output": str(output),
+        }
+    return {"enabled": True, "status": "written", "output": str(output)}
 
 
 def skeleton_cfg(args: argparse.Namespace):
@@ -154,6 +202,7 @@ def skeleton_cfg(args: argparse.Namespace):
                 "batch_size": 1,
                 "image_backbone": args.image_backbone,
                 "image_feature_cutoff": args.image_feature_cutoff,
+                "mobilenet_minimalistic": bool(args.mobilenet_minimalistic),
                 "include_mobilenet_preprocessing": False,
                 "fusion_mode": args.fusion_mode,
                 "image_film_at": None if image_film_at == "none" else image_film_at,
@@ -185,6 +234,16 @@ def representative_dataset(
         token_ids = rng.integers(1, prompt_vocab_size + 1, size=(1, prompt_length), dtype=np.int32)
         images = rng.uniform(-1.0, 1.0, size=(1, image_size, image_size, 3)).astype(np.float32)
         yield [token_ids, images]
+
+
+def representative_image_dataset(
+    rng: np.random.Generator,
+    samples: int,
+    image_size: int,
+) -> Iterable[list[np.ndarray]]:
+    for _ in range(samples):
+        images = rng.uniform(-1.0, 1.0, size=(1, image_size, image_size, 3)).astype(np.float32)
+        yield [images]
 
 
 def representative_fusion_dataset(
@@ -246,6 +305,40 @@ def build_fusion_only_model(args: argparse.Namespace) -> tf.keras.Model:
         fused = tf.keras.layers.Dense(args.fusion_dim, activation=args.activation, name="fusion_mlp_2")(
             fused
         )
+    elif args.fusion_mode == "prompt_patch_mlp":
+        image_map = tf.keras.layers.Reshape(
+            (14, 14, args.fusion_dim),
+            name="image_token_map",
+        )(image_tokens)
+        prompt = tf.keras.layers.Lambda(lambda x: x[:, 0, :], name="prompt_token_flat")(
+            prompt_token
+        )
+        prompt_map = broadcast_query_to_feature_map(
+            prompt,
+            image_map,
+            args.fusion_dim,
+            name="prompt_patch_query",
+        )
+        conditioned = tf.keras.layers.Concatenate(axis=-1, name="prompt_patch_concat")(
+            [image_map, prompt_map]
+        )
+        conditioned = tf.keras.layers.Conv2D(
+            args.fusion_dim * args.fusion_mlp_ratio,
+            kernel_size=1,
+            padding="same",
+            activation=args.activation,
+            name="prompt_patch_conv1x1",
+        )(conditioned)
+        conditioned = tf.keras.layers.Conv2D(
+            128,
+            kernel_size=3,
+            padding="same",
+            activation=args.activation,
+            name="prompt_patch_conv3x3",
+        )(conditioned)
+        fused = tf.keras.layers.GlobalAveragePooling2D(name="prompt_patch_mean_pool")(
+            conditioned
+        )
     else:
         tokens = tf.keras.layers.Concatenate(axis=1, name="prompt_image_tokens")(
             [prompt_token, image_tokens]
@@ -273,6 +366,43 @@ def build_fusion_only_model(args: argparse.Namespace) -> tf.keras.Model:
     )
 
 
+def build_static_prompt_patch_model(args: argparse.Namespace) -> tf.keras.Model:
+    if args.fusion_mode != "prompt_patch_mlp":
+        raise ValueError("--fold-static-prompt is currently only valid for prompt_patch_mlp.")
+
+    images = tf.keras.Input(
+        shape=(args.image_size, args.image_size, 3),
+        batch_size=1,
+        dtype=tf.float32,
+        name="images",
+    )
+    cfg = skeleton_cfg(args)
+    backbone = build_keras_mobilenet(cfg, images)
+    backbone.trainable = False
+    image_features = backbone(images)
+    x = tf.keras.layers.Conv2D(
+        args.fusion_dim * args.fusion_mlp_ratio,
+        kernel_size=1,
+        padding="same",
+        activation=args.activation,
+        name="prompt_folded_patch_conv1x1",
+    )(image_features)
+    x = tf.keras.layers.Conv2D(
+        128,
+        kernel_size=3,
+        padding="same",
+        activation=args.activation,
+        name="prompt_patch_conv3x3",
+    )(x)
+    x = tf.keras.layers.GlobalAveragePooling2D(name="prompt_patch_mean_pool")(x)
+    logits = tf.keras.layers.Dense(args.num_outputs, name="logits")(x)
+    return tf.keras.Model(
+        inputs={"images": images},
+        outputs=logits,
+        name="tallyqa_static_prompt_patch_mlp_student",
+    )
+
+
 def export_float_tflite(model: tf.keras.Model, output: Path) -> None:
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     output.write_bytes(converter.convert())
@@ -288,6 +418,12 @@ def export_int8_tflite(model: tf.keras.Model, output: Path, args: argparse.Names
             args.representative_samples,
             14 * 14,
             args.fusion_dim,
+        )
+    elif args.fold_static_prompt:
+        converter.representative_dataset = lambda: representative_image_dataset(
+            rng,
+            args.representative_samples,
+            args.image_size,
         )
     else:
         converter.representative_dataset = lambda: representative_dataset(
@@ -479,11 +615,18 @@ def main() -> None:
     tf.keras.utils.set_random_seed(args.seed)
     if args.skeleton_kind == "fusion_only":
         model = build_fusion_only_model(args)
+    elif args.fold_static_prompt:
+        model = build_static_prompt_patch_model(args)
     else:
         model = build_keras_student_model(skeleton_cfg(args), embedding_rows, args.prompt_length)
     model_summary: list[str] = []
     model.summary(print_fn=model_summary.append)
     (report_dir / "keras_model_summary.txt").write_text("\n".join(model_summary) + "\n", encoding="utf-8")
+    visualkeras_report = (
+        {"enabled": False, "status": "skipped", "reason": "--skip-visualkeras was set"}
+        if args.skip_visualkeras
+        else maybe_write_visualkeras(model, report_dir / "model_architecture_visualkeras.png")
+    )
 
     if args.keep_float:
         export_float_tflite(model, tflite_dir / "model_float.tflite")
@@ -510,6 +653,7 @@ def main() -> None:
             "report_dir": str(report_dir),
             "tflite_dir": str(tflite_dir),
             "quantized_tflite": str(quantized_path),
+            "visualkeras": visualkeras_report,
         },
         "tflite_inspection": inspection,
         "edgetpu_compiler": compiler,

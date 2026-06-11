@@ -112,9 +112,9 @@ handle zero separately before using this exact head.
 
 Important implementation choices:
 
-- 224x224 RGB input
-- cut tensor: `14x14x114`
-- average pool `14x14 -> 1x1`
+- 88x88 RGB input
+- cut tensor: `5x5x114`
+- average pool `5x5 -> 1x1`
 - linear head `114 -> 5`
 - only 1x1 and 3x3 convolutions
 - no strided convolutions; downsampling is max pooling
@@ -143,7 +143,7 @@ cd /home/younes/Courses/ETH/ML_Micro/edge_vlm
 uv run python scripts/materialize_max78000_people_dataset.py --force
 ```
 
-This writes `data/max78000_tallyqa_people_count_224/manifest.jsonl` and
+This writes `data/max78000_tallyqa_people_count_88/manifest.jsonl` and
 `metadata.json`. The current materialized view contains 28,180 examples:
 19,620 train, 2,744 validation, and 5,816 test. Labels are positive people
 counts only: `1`, `2`, `3`, `4`, and `5+`.
@@ -172,8 +172,8 @@ uv run python train.py \
   --lr 0.0002 \
   --model ai85tallyqambv3smallpeople \
   --use-bias \
-  --dataset tallyqa_people_count_224 \
-  --data ../../edge_vlm/data/max78000_tallyqa_people_count_224 \
+  --dataset tallyqa_people_count_88 \
+  --data ../../edge_vlm/data/max78000_tallyqa_people_count_88 \
   --device MAX78000 \
   --qat-policy policies/qat_policy_tallyqa_people.yaml \
   --compress policies/schedule-tallyqa-people.yaml \
@@ -376,7 +376,8 @@ The generated CNN API sequence is:
 For the live preview app, wrap that sequence in a loop:
 
 1. Capture a frame from the FTHR camera.
-2. Resize/crop/normalize to the exact training and synthesis input layout.
+2. Center-crop the sensor frame to square, downsample to 88x88, then normalize
+   to the exact training and synthesis input layout.
 3. Load the input through generated `load_input()` or a customized equivalent.
 4. Start the accelerator with `cnn_start()`.
 5. Wait for completion, then call `cnn_unload()`.
@@ -396,6 +397,23 @@ Use hardware timers or cycle counters around at least:
 
 Record whether the emitted image is pre- or post-normalization. For operator
 preview, it should usually be the display-space frame before normalization.
+
+The demo camera input is not assumed to arrive as 88x88. The firmware wrapper
+must explicitly crop and resize:
+
+1. Read camera RGB frame with dimensions `camera_width x camera_height`.
+2. Let `side = min(camera_width, camera_height)`.
+3. Let `crop_x = (camera_width - side) / 2` and
+   `crop_y = (camera_height - side) / 2`.
+4. Sample only the centered square
+   `[crop_x, crop_x + side) x [crop_y, crop_y + side)`.
+5. Downsample that square to `88x88`.
+6. Convert/reorder to the generated model input layout.
+
+This keeps each input channel below the MAX78000 8192-byte per-channel limit:
+`88 * 88 = 7744` bytes. Do not feed a larger camera tensor into the generated
+CNN app and rely on later layers to shrink it; the input itself must satisfy the
+memory layout constraint.
 
 ## Build And Flash
 

@@ -182,8 +182,8 @@ def plot_examples(rows: list[dict[str, Any]], images: np.memmap, args: argparse.
             if probability > 0.01:
                 bar_axis.text(probability + 0.01, index, f"{probability:.2f}", va="center", fontsize=7)
 
-    fig.suptitle(f"TallyQA teacher numeric answer probabilities from {args.cache}", fontsize=12)
-    fig.tight_layout()
+    fig.suptitle(f"TallyQA teacher numeric answer probabilities: {args.cache.name}", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.output, dpi=180)
     plt.close(fig)

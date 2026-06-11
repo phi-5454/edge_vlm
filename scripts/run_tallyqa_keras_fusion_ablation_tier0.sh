@@ -169,16 +169,18 @@ run_one() {
     "trainer.early_stopping.monitor=val/class_weighted_mae" \
     "trainer.early_stopping.mode=min" \
     "trainer.early_stopping.patience=${PATIENCE}" \
-    "export.export_tflite=false" \
-    "export.quantization.mode=none" \
+    "export.export_tflite=true" \
+    "export.quantization.mode=ptq" \
     "$@"
 }
 
 echo "Selected RUNS=${RUNS}"
 
-run_one "mlp" "tallyqa-keras-tier0-current-mlp-float" "mlp"
-run_one "film_mlp" "tallyqa-keras-tier0-current-film-mlp-float" "film_mlp" \
+run_one "mlp" "tallyqa-keras-tier0-current-prompt-patch-mlp-ptq" "prompt_patch_mlp" \
+  "keras_model.use_prompt_identity=false" \
+  "keras_model.use_image_positional_embeddings=false"
+run_one "film_mlp" "tallyqa-keras-tier0-current-film-mlp-ptq" "film_mlp" \
   "keras_model.image_film_at=image_tokens" \
   "keras_model.use_prompt_identity=false" \
   "keras_model.use_image_positional_embeddings=false"
-run_one "normformer" "tallyqa-keras-tier0-current-normformer-float" "normformer"
+run_one "normformer" "tallyqa-keras-tier0-current-normformer-ptq" "normformer"

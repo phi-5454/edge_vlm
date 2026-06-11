@@ -39,6 +39,7 @@ export:
   tflite_quantized: artifacts/exports/coral/keras_tallyqa_quantized.tflite
   compiler_report_dir: artifacts/reports/coral/edgetpu_compiler
   export_tflite: true
+  use_run_subdir: true
   quantization:
     # none: export float TFLite only.
     # ptq: train float model, then representative-dataset post-training quantization.
