@@ -25,15 +25,19 @@ adjacent ADI checkout when training:
 - `max78000/ai8x_training/policies/schedule-tallyqa-people.yaml`
 
 Materialize a MAX78000-specific manifest at
-`data/max78000_tallyqa_people_count_88/` before training. The materialized view
-filters TallyQA to `people`, drops zero-count examples because the current head
-has no zero class, collapses answers above five into `5+`, and records the
+`data/max78000_tallyqa_people_count_fold2_80/` before training. The materialized
+view filters TallyQA to `people`, drops zero-count examples because the current
+head has no zero class, collapses answers above five into `5+`, and records the
 deterministic image-hash split.
 
-The MAX78000 demo input is 88x88 RGB. For live camera frames, firmware must
-center-crop the sensor frame to square, slicing off the longer dimension, then
-downsample the square crop to 88x88 before normalization/loading. This keeps
-each channel below the 8192-byte constraint: 88 * 88 = 7744 bytes.
+The MAX78000 demo input is a folded 12x80x80 tensor. The dataset adapter resizes
+the source RGB image to 160x160, then performs a 2x2 spatial-to-channel fold:
+`3x160x160 -> 12x80x80`. For live camera frames, firmware should center-crop to
+square, downsample to 160x160, and apply the same 2x2 fold before
+normalization/loading. This keeps each channel below the 8192-byte constraint:
+80 * 80 = 6400 bytes. A lossless 320x320 -> 80x80 fold would produce 48
+channels, not 12, so 320x320 camera frames need a resize step before the 12
+channel fold.
 
 Use QAT from the start of this training route:
 
@@ -70,7 +74,7 @@ Adapter smoke test:
 
 ```text
 train records: 19620
-sample tensor: (3, 88, 88)
+sample tensor: (12, 80, 80)
 sample normalized range: [-128.0, 126.0]
 ```
 
