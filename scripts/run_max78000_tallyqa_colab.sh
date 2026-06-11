@@ -322,9 +322,10 @@ fi
 
 if [[ "${SETUP_AI8X_ENV}" == "1" || "${SETUP_AI8X_ENV}" == "true" ]]; then
   run_shell "cd '${ai8x_abs}' && uv venv --python 3.11 .venv"
-  run_shell "cd '${ai8x_abs}' && uv pip install --python .venv/bin/python -r requirements-base.txt -r requirements-datasets.txt pycocotools==2.0.8"
+  ai8x_python="${ai8x_abs}/.venv/bin/python"
+  run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -r requirements-base.txt -r requirements-datasets.txt pycocotools==2.0.8"
   if [[ -d "${ai8x_abs}/distiller" ]]; then
-    run_shell "cd '${ai8x_abs}' && uv pip install --python .venv/bin/python -e distiller --config-settings editable_mode=strict"
+    run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -e distiller --config-settings editable_mode=strict"
   else
     echo "Warning: ${ai8x_abs}/distiller is missing; continuing without editable distiller install." >&2
   fi

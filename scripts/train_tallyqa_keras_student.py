@@ -2903,7 +2903,10 @@ def main(cfg: DictConfig) -> None:
     if initial_weights is not None:
         if not initial_weights.exists():
             raise FileNotFoundError(f"Initial Keras weights not found: {initial_weights}")
-        student.load_weights(initial_weights)
+        student.load_weights(
+            initial_weights,
+            skip_mismatch=bool(cfg.paths.get("initial_weights_skip_mismatch", False)),
+        )
 
     run_name = str(cfg.experiment.run_name)
     report_dir = absolute_path(cfg.paths.report_dir)
@@ -2963,6 +2966,9 @@ def main(cfg: DictConfig) -> None:
         },
         "model": compatibility_report(student, cfg),
         "initial_weights": str(initial_weights) if initial_weights is not None else None,
+        "initial_weights_skip_mismatch": bool(
+            cfg.paths.get("initial_weights_skip_mismatch", False)
+        ),
         "visualization": {
             "visualkeras": visualkeras_report,
             "fusion_head_visualkeras": fusion_head_visualkeras_report,

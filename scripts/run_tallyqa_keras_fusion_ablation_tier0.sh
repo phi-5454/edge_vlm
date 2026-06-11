@@ -27,6 +27,7 @@ LOG_TRAIN_EVAL_METRICS="${LOG_TRAIN_EVAL_METRICS:-false}"
 VALIDATION_PLOTS_ENABLED="${VALIDATION_PLOTS_ENABLED:-false}"
 VALIDATION_PLOTS_SAMPLES="${VALIDATION_PLOTS_SAMPLES:-4}"
 VALIDATION_PLOTS_EVERY_N_EPOCHS="${VALIDATION_PLOTS_EVERY_N_EPOCHS:-1}"
+QUANTIZATION_MODE="${QUANTIZATION_MODE:-ptq}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -146,6 +147,10 @@ while [[ $# -gt 0 ]]; do
       VALIDATION_PLOTS_EVERY_N_EPOCHS="$2"
       shift 2
       ;;
+    --quantization-mode)
+      QUANTIZATION_MODE="$2"
+      shift 2
+      ;;
     -*)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -252,17 +257,17 @@ run_one() {
     "validation_plots.samples=${VALIDATION_PLOTS_SAMPLES}" \
     "validation_plots.every_n_epochs=${VALIDATION_PLOTS_EVERY_N_EPOCHS}" \
     "export.export_tflite=true" \
-    "export.quantization.mode=ptq" \
+    "export.quantization.mode=${QUANTIZATION_MODE}" \
     "$@"
 }
 
 echo "Selected RUNS=${RUNS}"
 
-run_one "mlp" "tallyqa-keras-${TIER_LABEL}-current-prompt-patch-mlp-ptq" "prompt_patch_mlp" \
+run_one "mlp" "tallyqa-keras-${TIER_LABEL}-current-prompt-patch-mlp-${QUANTIZATION_MODE}" "prompt_patch_mlp" \
   "keras_model.use_prompt_identity=false" \
   "keras_model.use_image_positional_embeddings=false"
-run_one "film_mlp" "tallyqa-keras-${TIER_LABEL}-current-film-mlp-ptq" "film_mlp" \
+run_one "film_mlp" "tallyqa-keras-${TIER_LABEL}-current-film-mlp-${QUANTIZATION_MODE}" "film_mlp" \
   "keras_model.image_film_at=image_tokens" \
   "keras_model.use_prompt_identity=false" \
   "keras_model.use_image_positional_embeddings=false"
-run_one "normformer" "tallyqa-keras-${TIER_LABEL}-current-normformer-ptq" "normformer"
+run_one "normformer" "tallyqa-keras-${TIER_LABEL}-current-normformer-${QUANTIZATION_MODE}" "normformer"
