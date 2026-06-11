@@ -52,6 +52,14 @@ void PrintError(const char* error) {
   printf("VLM_MICRO_ERROR {\"error\":\"%s\"}\r\n", error);
 }
 
+void PrintEvent(const char* event, const InputHeader& header) {
+  printf("VLM_MICRO_EVENT {\"event\":\"%s\",\"dataset_index\":%lu,"
+         "\"image_index\":%lu,\"bytes\":%lu}\r\n",
+         event, static_cast<unsigned long>(header.dataset_index),
+         static_cast<unsigned long>(header.image_index),
+         static_cast<unsigned long>(header.bytes));
+}
+
 bool ReadExact(uint8_t* data, size_t bytes) {
   size_t offset = 0;
   while (offset < bytes) {
@@ -360,11 +368,13 @@ void PrintResultJson(const InputHeader& header, uint64_t receive_us,
     const uint64_t receive_start_us = TimerMicros();
     ReadExact(image.data(), image.size());
     const uint64_t receive_us = TimerMicros() - receive_start_us;
+    PrintEvent("payload_received", header);
 
     const uint64_t copy_start_us = TimerMicros();
     std::memcpy(input->data.raw, image.data(), image.size());
     const uint64_t copy_us = TimerMicros() - copy_start_us;
 
+    PrintEvent("invoke_start", header);
     const uint64_t invoke_start_us = TimerMicros();
     if (interpreter.Invoke() != kTfLiteOk) {
       printf("VLM_MICRO_ERROR {\"dataset_index\":%lu,\"error\":\"invoke\"}\r\n",

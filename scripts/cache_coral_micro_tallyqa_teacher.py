@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+from collections import deque
 from datetime import datetime, timezone
 import hashlib
 import json
-import math
 from pathlib import Path
 import sys
 from time import perf_counter, sleep
@@ -39,6 +39,7 @@ PREFIX_RESULT = "VLM_MICRO_RESULT "
 PREFIX_ERROR = "VLM_MICRO_ERROR "
 PREFIX_INPUT = "VLM_MICRO_INPUT "
 PREFIX_RX_READY = "VLM_MICRO_RX_READY "
+PREFIX_EVENT = "VLM_MICRO_EVENT "
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,6 +126,7 @@ def prefixed_payload(line: str) -> tuple[str, dict[str, Any]] | None:
         ("rx_ready", PREFIX_RX_READY),
         ("result", PREFIX_RESULT),
         ("error", PREFIX_ERROR),
+        ("event", PREFIX_EVENT),
     ):
         if line.startswith(prefix):
             payload = line[len(prefix) :]
@@ -137,12 +139,20 @@ def prefixed_payload(line: str) -> tuple[str, dict[str, Any]] | None:
     return None
 
 
-def read_prefixed(ser: Any, raw_handle: Any) -> tuple[str, dict[str, Any]]:
+def read_prefixed(
+    ser: Any,
+    raw_handle: Any,
+    recent_lines: deque[str] | None = None,
+    phase: str | None = None,
+) -> tuple[str, dict[str, Any]]:
     while True:
         raw = ser.readline()
         if not raw:
-            raise TimeoutError("Timed out waiting for Coral Micro serial output.")
+            suffix = f" during {phase}" if phase else ""
+            raise TimeoutError(f"Timed out waiting for Coral Micro serial output{suffix}.")
         line = raw.decode("utf-8", errors="replace").strip()
+        if recent_lines is not None:
+            recent_lines.append(line)
         raw_handle.write(line + "\n")
         raw_handle.flush()
         parsed = prefixed_payload(line)
@@ -151,9 +161,9 @@ def read_prefixed(ser: Any, raw_handle: Any) -> tuple[str, dict[str, Any]]:
         print(line)
 
 
-def wait_ready(ser: Any, raw_handle: Any) -> dict[str, Any]:
+def wait_ready(ser: Any, raw_handle: Any, recent_lines: deque[str] | None = None) -> dict[str, Any]:
     while True:
-        event, payload = read_prefixed(ser, raw_handle)
+        event, payload = read_prefixed(ser, raw_handle, recent_lines, "waiting for board_ready")
         if event == "ready":
             return payload
         if event == "error":
@@ -192,9 +202,21 @@ def raw_log_size(path: Path) -> int | None:
         return None
 
 
-def serial_timeout_message(args: argparse.Namespace, serial_module: Any, exc: TimeoutError) -> str:
+def serial_timeout_message(
+    args: argparse.Namespace,
+    serial_module: Any,
+    exc: TimeoutError,
+    recent_lines: deque[str] | None = None,
+    dataset_index: int | None = None,
+) -> str:
     ports = serial_port_summary(serial_module)
     raw_size = raw_log_size(args.raw_log)
+    context = []
+    if dataset_index is not None:
+        context.append(f"Current dataset index: {dataset_index}")
+    if recent_lines:
+        context.append("Recent serial lines:")
+        context.extend(f"  {line}" for line in recent_lines)
     return "\n".join(
         [
             f"{exc}",
@@ -203,6 +225,7 @@ def serial_timeout_message(args: argparse.Namespace, serial_module: Any, exc: Ti
             f"Raw serial log: {args.raw_log} (size={raw_size} bytes)",
             "Available serial ports:",
             *(f"  - {port}" for port in ports),
+            *context,
             "Checks: confirm the benchmark app flashed successfully, press board reset, "
             "or rerun with a longer --serial-timeout-s and the explicit --port.",
         ]
@@ -424,10 +447,11 @@ def main() -> None:
         args.raw_log.open("a", encoding="utf-8") as raw_log,
         args.output.open(output_mode, encoding="utf-8") as handle,
     ):
+        recent_lines: deque[str] = deque(maxlen=20)
         try:
-            board_ready = wait_ready(ser, raw_log)
+            board_ready = wait_ready(ser, raw_log, recent_lines)
         except TimeoutError as exc:
-            raise TimeoutError(serial_timeout_message(args, serial, exc)) from exc
+            raise TimeoutError(serial_timeout_message(args, serial, exc, recent_lines)) from exc
         print(json.dumps({"event": "board_ready", **board_ready}, sort_keys=True))
         progress = tqdm(
             total=len(selected),
@@ -445,21 +469,47 @@ def main() -> None:
             roundtrip_start = perf_counter()
             send_header(ser, dataset_index, int(row["image_index"]), len(payload))
             while True:
-                event, result = read_prefixed(ser, raw_log)
+                try:
+                    event, result = read_prefixed(
+                        ser,
+                        raw_log,
+                        recent_lines,
+                        f"waiting for RX_READY for dataset index {dataset_index}",
+                    )
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        serial_timeout_message(args, serial, exc, recent_lines, dataset_index)
+                    ) from exc
                 if event == "error":
                     if int(result.get("dataset_index", -1)) == int(dataset_index):
                         raise RuntimeError(f"Board error for dataset index {dataset_index}: {result}")
                     print(json.dumps({"board_error": result}, sort_keys=True), file=sys.stderr)
                     continue
+                if event == "event":
+                    print(json.dumps({"board_event": result}, sort_keys=True))
+                    continue
                 if event == "rx_ready" and int(result["dataset_index"]) == int(dataset_index):
                     break
             send_payload(ser, payload, args.payload_chunk_size, args.payload_chunk_delay_s)
             while True:
-                event, result = read_prefixed(ser, raw_log)
+                try:
+                    event, result = read_prefixed(
+                        ser,
+                        raw_log,
+                        recent_lines,
+                        f"waiting for RESULT for dataset index {dataset_index}",
+                    )
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        serial_timeout_message(args, serial, exc, recent_lines, dataset_index)
+                    ) from exc
                 if event == "error":
                     if int(result.get("dataset_index", -1)) == int(dataset_index):
                         raise RuntimeError(f"Board error for dataset index {dataset_index}: {result}")
                     print(json.dumps({"board_error": result}, sort_keys=True), file=sys.stderr)
+                    continue
+                if event == "event":
+                    print(json.dumps({"board_event": result}, sort_keys=True))
                     continue
                 if event == "result" and int(result["dataset_index"]) == int(dataset_index):
                     break

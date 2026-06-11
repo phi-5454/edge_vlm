@@ -341,8 +341,10 @@ for src, dst in zip(sys.argv[1::2], sys.argv[2::2], strict=True):
 PY
   run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' 'setuptools<81' wheel"
   run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' --no-build-isolation-package visdom -r '${req_tmp}/requirements-base.txt' -r '${req_tmp}/requirements-datasets.txt' pycocotools==2.0.8"
-  if [[ -d "${ai8x_abs}/distiller" ]]; then
+  if [[ -f "${ai8x_abs}/distiller/setup.py" || -f "${ai8x_abs}/distiller/pyproject.toml" ]]; then
     run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -e distiller --config-settings editable_mode=strict"
+  elif [[ -d "${ai8x_abs}/distiller" ]]; then
+    echo "Warning: ${ai8x_abs}/distiller has no setup.py or pyproject.toml; continuing without editable distiller install." >&2
   else
     echo "Warning: ${ai8x_abs}/distiller is missing; continuing without editable distiller install." >&2
   fi
