@@ -17,6 +17,7 @@ LEARNING_RATE="${LEARNING_RATE:-0.0002}"
 OPTIMIZER="${OPTIMIZER:-Adam}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0}"
 PRINT_FREQ="${PRINT_FREQ:-100}"
+WORKERS="${WORKERS:-0}"
 SEED="${SEED:-0}"
 EXTRA_TRAIN_ARGS="${EXTRA_TRAIN_ARGS:-}"
 MATERIALIZE="${MATERIALIZE:-1}"
@@ -55,6 +56,7 @@ Common options:
   --lr FLOAT
   --optimizer NAME
   --weight-decay FLOAT
+  --workers N                  DataLoader workers. Defaults to 0 for Colab stability.
   --seed N
   --extra-train-args STRING    Extra raw args appended to train.py.
   --skip-materialize
@@ -148,6 +150,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --print-freq)
       PRINT_FREQ="$2"
+      shift 2
+      ;;
+    --workers)
+      WORKERS="$2"
       shift 2
       ;;
     --seed)
@@ -420,6 +426,7 @@ train_args=(
   --compress "${SCHEDULE}"
   --validation-split 0
   --print-freq "${PRINT_FREQ}"
+  --workers "${WORKERS}"
   --name "${RUN_NAME}"
 )
 
@@ -445,6 +452,7 @@ python3 - "$manifest_path" \
   "$LEARNING_RATE" \
   "$OPTIMIZER" \
   "$WEIGHT_DECAY" \
+  "$WORKERS" \
   "${PROMPT_CLASS_NAMES_FILE}" \
   "$TRAIN" \
   "${train_args[@]}" <<'PY'
@@ -470,6 +478,7 @@ from pathlib import Path
     learning_rate,
     optimizer,
     weight_decay,
+    workers,
     prompt_class_names_file,
     train_enabled,
     *train_command,
@@ -504,6 +513,7 @@ payload = {
     "learning_rate": float(learning_rate),
     "optimizer": optimizer,
     "weight_decay": float(weight_decay),
+    "workers": int(workers),
     "train_enabled": train_enabled in {"1", "true", "True"},
     "train_command": train_command,
 }
