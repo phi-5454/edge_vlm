@@ -55,6 +55,7 @@ export:
     full_integer: true
     inference_input_type: uint8
     inference_output_type: int8
+    require_full_qat_coverage: true
 
 data:
   # mobilenet_v3_keras: raw 0..255 float images, with Keras preprocessing inside MobileNetV3.
@@ -67,6 +68,7 @@ data:
 trainer:
   max_epochs: 10
   skip_fit: false
+  preflight_only: false
   log_every_n_steps: 25
   steps_per_execution: 1
   image_learning_rate_scale: 1.0

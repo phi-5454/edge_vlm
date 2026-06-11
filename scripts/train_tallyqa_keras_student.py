@@ -618,6 +618,19 @@ def parameter_counts(model: tf.keras.Model) -> dict[str, int]:
     }
 
 
+def iter_leaf_layers(model: tf.keras.Model) -> Iterable[tuple[str, tf.keras.layers.Layer]]:
+    def visit(layer: tf.keras.layers.Layer, prefix: str = "") -> Iterable[tuple[str, tf.keras.layers.Layer]]:
+        path = f"{prefix}/{layer.name}" if prefix else layer.name
+        if isinstance(layer, tf.keras.Model) and layer.layers:
+            for child in layer.layers:
+                yield from visit(child, path)
+            return
+        yield path, layer
+
+    for top_layer in model.layers:
+        yield from visit(top_layer)
+
+
 def layer_parameter_rows(model: tf.keras.Model) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -1847,6 +1860,70 @@ def build_keras_student_model(
     raise ValueError("keras_model.architecture must be one of {'legacy_prior', 'current_student'}.")
 
 
+def qat_quantizable_layer_types() -> tuple[type[tf.keras.layers.Layer], ...]:
+    return (
+        tf.keras.layers.Conv1D,
+        tf.keras.layers.Conv2D,
+        tf.keras.layers.DepthwiseConv2D,
+        tf.keras.layers.Dense,
+    )
+
+
+def is_quantize_wrapper(layer: tf.keras.layers.Layer) -> bool:
+    return layer.__class__.__name__.startswith("QuantizeWrapper")
+
+
+def qat_coverage_report(model: tf.keras.Model) -> dict[str, Any]:
+    quantizable_types = qat_quantizable_layer_types()
+    wrapped: list[dict[str, str]] = []
+    unwrapped: list[dict[str, str]] = []
+    wrappers: list[dict[str, str]] = []
+    for path, layer in iter_leaf_layers(model):
+        if is_quantize_wrapper(layer):
+            inner = getattr(layer, "layer", None)
+            inner_class = inner.__class__.__name__ if inner is not None else "unknown"
+            wrappers.append({"name": path, "wrapped_class": inner_class})
+            if inner is not None and isinstance(inner, quantizable_types):
+                wrapped.append({"name": path, "class": inner_class})
+            continue
+        if isinstance(layer, quantizable_types):
+            unwrapped.append({"name": path, "class": layer.__class__.__name__})
+    total = len(wrapped) + len(unwrapped)
+    return {
+        "quantize_wrapper_layers": len(wrappers),
+        "wrapped_quantizable_leaf_layers": len(wrapped),
+        "unwrapped_quantizable_leaf_layers": len(unwrapped),
+        "quantizable_leaf_layers": total,
+        "wrapped_fraction": float(len(wrapped) / total) if total else 1.0,
+        "wrapped_layers": wrapped,
+        "unwrapped_layers": unwrapped,
+        "all_wrappers": wrappers,
+    }
+
+
+def assert_qat_coverage(model: tf.keras.Model, cfg: DictConfig) -> dict[str, Any]:
+    coverage = qat_coverage_report(model)
+    if str(cfg.export.quantization.mode) != "qat":
+        return coverage
+    if not bool(cfg.export.quantization.get("require_full_qat_coverage", True)):
+        return coverage
+    unwrapped = coverage["unwrapped_layers"]
+    if not unwrapped:
+        return coverage
+    preview = "\n".join(
+        f"  - {layer['name']} ({layer['class']})" for layer in unwrapped[:30]
+    )
+    remainder = len(unwrapped) - min(len(unwrapped), 30)
+    if remainder > 0:
+        preview += f"\n  ... {remainder} more"
+    raise RuntimeError(
+        "QAT coverage is incomplete. Refusing to train a run labeled QAT because "
+        f"{len(unwrapped)} quantizable leaf layers are not wrapped with fake quantization.\n"
+        f"{preview}\n"
+        "Set export.quantization.require_full_qat_coverage=false only for diagnostic runs."
+    )
+
+
 def maybe_apply_qat(student: tf.keras.Model, cfg: DictConfig) -> tf.keras.Model:
     mode = str(cfg.export.quantization.mode)
     if mode != "qat":
@@ -1862,17 +1939,34 @@ def maybe_apply_qat(student: tf.keras.Model, cfg: DictConfig) -> tf.keras.Model:
     quantize = tfmot.quantization.keras
 
     def annotate(layer: tf.keras.layers.Layer) -> tf.keras.layers.Layer:
-        quantized_types = (
-            tf.keras.layers.Conv2D,
-            tf.keras.layers.DepthwiseConv2D,
-            tf.keras.layers.Dense,
-        )
-        if isinstance(layer, quantized_types):
+        if isinstance(layer, qat_quantizable_layer_types()):
             return quantize.quantize_annotate_layer(layer)
         return layer
 
-    annotated = tf.keras.models.clone_model(student, clone_function=annotate)
-    return quantize.quantize_apply(annotated)
+    try:
+        annotated = tf.keras.models.clone_model(
+            student,
+            clone_function=annotate,
+            recursive=True,
+        )
+    except TypeError:
+        annotated = tf.keras.models.clone_model(student, clone_function=annotate)
+        print(
+            "Warning: tf.keras.models.clone_model does not support recursive=True; "
+            "nested models may not be QAT-annotated."
+        )
+    quantized = quantize.quantize_apply(annotated)
+    coverage = qat_coverage_report(quantized)
+    if coverage["unwrapped_quantizable_leaf_layers"]:
+        preview = ", ".join(
+            layer["name"] for layer in coverage["unwrapped_layers"][:10]
+        )
+        print(
+            "Warning: QAT left "
+            f"{coverage['unwrapped_quantizable_leaf_layers']} quantizable leaf layers "
+            f"unwrapped. First unwrapped layers: {preview}"
+        )
+    return quantized
 
 
 def local_soft_targets(labels: tf.Tensor, num_classes: int, sigma: float, radius: int) -> tf.Tensor:
@@ -2677,7 +2771,7 @@ def representative_dataset(
     data: KerasTallyQAData,
     max_samples: int,
     cfg: DictConfig,
-) -> Iterable[list[np.ndarray]]:
+) -> Iterable[dict[str, np.ndarray]]:
     quant_cfg = cfg.export.quantization
     for token_ids, image in data.representative_examples(
         max_samples=max_samples,
@@ -2686,7 +2780,10 @@ def representative_dataset(
         min_per_prompt=int(quant_cfg.get("representative_min_per_prompt", 4)),
         min_per_output_class=int(quant_cfg.get("representative_min_per_output_class", 32)),
     ):
-        yield [token_ids.astype(np.int32), image.astype(np.float32)]
+        yield {
+            "token_ids": token_ids.astype(np.int32),
+            "images": image.astype(np.float32),
+        }
 
 
 def export_ptq_tflite(
@@ -2735,6 +2832,76 @@ def dequantize_tflite_output(value: np.ndarray, detail: dict[str, Any]) -> np.nd
     if not scale:
         return value.astype(np.float32)
     return (value.astype(np.float32) - int(zero_point)) * float(scale)
+
+
+def serialize_tflite_tensor_detail(detail: dict[str, Any]) -> dict[str, Any]:
+    scale, zero_point = detail.get("quantization", (0.0, 0))
+    quantization_parameters = detail.get("quantization_parameters", {})
+    return {
+        "name": str(detail.get("name", "")),
+        "index": int(detail["index"]),
+        "shape": [int(value) for value in detail.get("shape", [])],
+        "shape_signature": [
+            int(value) for value in detail.get("shape_signature", detail.get("shape", []))
+        ],
+        "dtype": str(np.dtype(detail["dtype"])),
+        "quantization": [float(scale), int(zero_point)],
+        "quantization_parameters": {
+            "scales": [
+                float(value)
+                for value in np.asarray(quantization_parameters.get("scales", []))
+                .reshape(-1)
+                .tolist()
+            ],
+            "zero_points": [
+                int(value)
+                for value in np.asarray(quantization_parameters.get("zero_points", []))
+                .reshape(-1)
+                .tolist()
+            ],
+            "quantized_dimension": int(
+                quantization_parameters.get("quantized_dimension", 0) or 0
+            ),
+        },
+    }
+
+
+def inspect_tflite_model(path: Path) -> dict[str, Any]:
+    interpreter = tf.lite.Interpreter(
+        model_path=str(path),
+        experimental_delegates=[],
+        experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES,
+    )
+    interpreter.allocate_tensors()
+    try:
+        ops = [
+            {
+                "index": int(index),
+                "op_name": str(op.get("op_name", "")),
+                "inputs": [int(value) for value in op.get("inputs", [])],
+                "outputs": [int(value) for value in op.get("outputs", [])],
+            }
+            for index, op in enumerate(interpreter._get_ops_details())  # noqa: SLF001
+        ]
+    except AttributeError:
+        ops = []
+    return {
+        "path": str(path),
+        "size_bytes": int(path.stat().st_size),
+        "inputs": [
+            serialize_tflite_tensor_detail(detail)
+            for detail in interpreter.get_input_details()
+        ],
+        "outputs": [
+            serialize_tflite_tensor_detail(detail)
+            for detail in interpreter.get_output_details()
+        ],
+        "operators": ops,
+        "operator_counts": {
+            op_name: sum(1 for op in ops if op["op_name"] == op_name)
+            for op_name in sorted({op["op_name"] for op in ops})
+        },
+    }
 
 
 def map_tflite_inputs(
@@ -2824,6 +2991,9 @@ def metric_comparison_plot(
     float_metrics: dict[str, float],
     quantized_metrics: dict[str, float],
     output: Path,
+    baseline_label: str = "Keras float",
+    quantized_label: str = "TFLite quantized",
+    title: str = "Float vs Quantized Test Metrics",
 ) -> wandb.Image:
     output.parent.mkdir(parents=True, exist_ok=True)
     metric_keys = [
@@ -2848,18 +3018,18 @@ def metric_comparison_plot(
         x - width / 2,
         [float(float_metrics.get(key, np.nan)) for key in metric_keys],
         width,
-        label="Keras float",
+        label=baseline_label,
         color="#4c78a8",
     )
     ax.bar(
         x + width / 2,
         [float(quantized_metrics.get(key, np.nan)) for key in metric_keys],
         width,
-        label="TFLite quantized",
+        label=quantized_label,
         color="#f58518",
     )
     ax.set_xticks(x, labels=labels)
-    ax.set_title("Float vs Quantized Test Metrics")
+    ax.set_title(title)
     ax.grid(axis="y", alpha=0.25)
     ax.legend()
     fig.tight_layout()
@@ -2867,6 +3037,19 @@ def metric_comparison_plot(
     payload = wandb.Image(fig)
     plt.close(fig)
     return payload
+
+
+def metric_deltas(
+    baseline: dict[str, float] | None,
+    candidate: dict[str, float] | None,
+) -> dict[str, float] | None:
+    if baseline is None or candidate is None:
+        return None
+    return {
+        key: float(candidate[key]) - float(baseline[key])
+        for key in sorted(set(baseline).intersection(candidate))
+        if np.isscalar(baseline[key]) and np.isscalar(candidate[key])
+    }
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="tallyqa_keras_student")
@@ -2886,6 +3069,7 @@ def main(cfg: DictConfig) -> None:
 
     student = build_keras_student_model(cfg, data.embedding_rows, prompt_length)
     student = maybe_apply_qat(student, cfg)
+    quantization_coverage = assert_qat_coverage(student, cfg)
     class_weights = class_weights_from_config(cfg, data)
     kl_weights = (
         np.asarray([float(weight) for weight in cfg.distillation.kl_class_weights], dtype=np.float32)
@@ -2997,6 +3181,8 @@ def main(cfg: DictConfig) -> None:
             "readable_model_reports": readable_model_reports,
         },
         "quantization": {
+            "mode": quantization_mode,
+            "qat_coverage": quantization_coverage,
             "representative_indices": data.representative_indices(
                 max_samples=int(cfg.export.quantization.representative_samples),
                 strategy=str(cfg.export.quantization.get("representative_strategy", "prompt_tempered")),
@@ -3033,6 +3219,16 @@ def main(cfg: DictConfig) -> None:
     print(f"\nModel summary: {readable_model_reports['summary_txt']}")
     print(f"Layer parameter table: {readable_model_reports['layer_table_txt']}")
     print(f"Full architecture report: {report_path}")
+    if quantization_mode == "qat":
+        print(
+            "QAT coverage: "
+            f"{quantization_coverage['wrapped_quantizable_leaf_layers']}/"
+            f"{quantization_coverage['quantizable_leaf_layers']} quantizable leaf layers wrapped "
+            f"({quantization_coverage['wrapped_fraction']:.3f})"
+        )
+    if bool(cfg.trainer.get("preflight_only", False)):
+        print("Preflight-only run complete; exiting before W&B init, training, eval, and export.")
+        return
 
     wandb.init(
         project=str(cfg.wandb.project),
@@ -3050,6 +3246,10 @@ def main(cfg: DictConfig) -> None:
             "teacher_cache_coverage": data.cache_coverage(),
             "keras_parameter_count": student.count_params(),
             "initial_weights": str(initial_weights) if initial_weights is not None else None,
+            "qat_wrapped_fraction": float(quantization_coverage["wrapped_fraction"]),
+            "qat_unwrapped_quantizable_leaf_layers": int(
+                quantization_coverage["unwrapped_quantizable_leaf_layers"]
+            ),
         },
         allow_val_change=True,
     )
@@ -3068,6 +3268,7 @@ def main(cfg: DictConfig) -> None:
         "train/*",
         "val/*",
         "test/*",
+        "test_float_tflite/*",
         "test_quantized/*",
         "model/*",
         "weights/*",
@@ -3266,10 +3467,14 @@ def main(cfg: DictConfig) -> None:
         "fit_skipped": bool(cfg.trainer.get("skip_fit", False)),
         "history": history_dict,
         "test_results": {key: float(value) for key, value in test_results.items()},
+        "float_tflite_test_results": None,
         "quantized_test_results": None,
+        "metric_deltas": {},
         "checkpoint": str(ckpt_dir / "best.weights.h5"),
         "quantization_mode": quantization_mode,
+        "qat_coverage": quantization_coverage,
         "tflite": {},
+        "tflite_inspection": {},
     }
     if checkpoint_callback.filepath.exists():
         save_wandb_file(Path(checkpoint_callback.filepath), policy="now")
@@ -3283,7 +3488,33 @@ def main(cfg: DictConfig) -> None:
         )
         export_float_tflite(student, float_tflite_path)
         result["tflite"]["float"] = str(float_tflite_path)
+        result["tflite_inspection"]["float"] = inspect_tflite_model(float_tflite_path)
         save_wandb_file(Path(float_tflite_path), policy="now")
+        float_tflite_accumulator = evaluate_tflite_split_metrics(
+            float_tflite_path,
+            test_ds,
+            test_steps,
+            int(cfg.model.num_outputs),
+            data,
+            description="float TFLite test metrics",
+        )
+        float_tflite_metrics = float_tflite_accumulator.metrics()
+        result["float_tflite_test_results"] = {
+            key: float(value) for key, value in float_tflite_metrics.items()
+        }
+        result["metric_deltas"]["float_tflite_minus_keras"] = metric_deltas(
+            test_metric_results,
+            float_tflite_metrics,
+        )
+        wandb.log(
+            {
+                "trainer/global_step": int(model.optimizer.iterations.numpy()),
+                **{
+                    f"test_float_tflite/{key}": float(value)
+                    for key, value in float_tflite_metrics.items()
+                },
+            }
+        )
         if quantization_mode in {"ptq", "qat"}:
             export_ptq_tflite(
                 student,
@@ -3293,6 +3524,9 @@ def main(cfg: DictConfig) -> None:
                 int(cfg.export.quantization.representative_samples),
             )
             result["tflite"]["quantized"] = str(quantized_tflite_path)
+            result["tflite_inspection"]["quantized"] = inspect_tflite_model(
+                quantized_tflite_path
+            )
             save_wandb_file(Path(quantized_tflite_path), policy="now")
             quantized_accumulator = evaluate_tflite_split_metrics(
                 quantized_tflite_path,
@@ -3306,6 +3540,14 @@ def main(cfg: DictConfig) -> None:
             result["quantized_test_results"] = {
                 key: float(value) for key, value in quantized_metrics.items()
             }
+            result["metric_deltas"]["quantized_minus_keras"] = metric_deltas(
+                test_metric_results,
+                quantized_metrics,
+            )
+            result["metric_deltas"]["quantized_minus_float_tflite"] = metric_deltas(
+                float_tflite_metrics,
+                quantized_metrics,
+            )
             comparison_plot_path = (
                 run_report_dir / "test_quantized_plots" / "float_vs_quantized_metrics.png"
             )
@@ -3322,6 +3564,16 @@ def main(cfg: DictConfig) -> None:
                         test_metric_results,
                         quantized_metrics,
                         comparison_plot_path,
+                        baseline_label=(
+                            "Keras QAT simulated"
+                            if quantization_mode == "qat"
+                            else "Keras float"
+                        ),
+                        title=(
+                            "QAT-Simulated vs TFLite Quantized Test Metrics"
+                            if quantization_mode == "qat"
+                            else "Float vs Quantized Test Metrics"
+                        ),
                     ),
                     **{f"test_quantized/{key}": float(value) for key, value in quantized_metrics.items()},
                 }
