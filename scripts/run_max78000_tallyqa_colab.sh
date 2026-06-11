@@ -339,7 +339,7 @@ for src, dst in zip(sys.argv[1::2], sys.argv[2::2], strict=True):
             lines.append(line)
     Path(dst).write_text("\n".join(lines) + "\n")
 PY
-  run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' setuptools wheel"
+  run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' 'setuptools<81' wheel"
   run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' --no-build-isolation-package visdom -r '${req_tmp}/requirements-base.txt' -r '${req_tmp}/requirements-datasets.txt' pycocotools==2.0.8"
   if [[ -d "${ai8x_abs}/distiller" ]]; then
     run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -e distiller --config-settings editable_mode=strict"
