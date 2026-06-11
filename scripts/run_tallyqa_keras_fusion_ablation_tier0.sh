@@ -18,6 +18,8 @@ LEARNING_RATE="${LEARNING_RATE:-0.001}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
 FREEZE_IMAGE_FEATURES="${FREEZE_IMAGE_FEATURES:-true}"
 IMAGE_LEARNING_RATE_SCALE="${IMAGE_LEARNING_RATE_SCALE:-1.0}"
+IMAGE_LEARNING_RATE_SCALE_SCHEDULE="${IMAGE_LEARNING_RATE_SCALE_SCHEDULE:-constant}"
+IMAGE_LEARNING_RATE_SCALE_WARMUP_STEPS="${IMAGE_LEARNING_RATE_SCALE_WARMUP_STEPS:-1500}"
 KERAS_BATCH_WORKERS="${KERAS_BATCH_WORKERS:-8}"
 KERAS_PREFETCH_BATCHES="${KERAS_PREFETCH_BATCHES:-16}"
 STEPS_PER_EXECUTION="${STEPS_PER_EXECUTION:-16}"
@@ -98,6 +100,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --image-learning-rate-scale)
       IMAGE_LEARNING_RATE_SCALE="$2"
+      shift 2
+      ;;
+    --image-learning-rate-scale-schedule)
+      IMAGE_LEARNING_RATE_SCALE_SCHEDULE="$2"
+      shift 2
+      ;;
+    --image-learning-rate-scale-warmup-steps)
+      IMAGE_LEARNING_RATE_SCALE_WARMUP_STEPS="$2"
       shift 2
       ;;
     --keras-batch-workers)
@@ -231,6 +241,8 @@ run_one() {
     "trainer.log_every_n_steps=25" \
     "trainer.steps_per_execution=${STEPS_PER_EXECUTION}" \
     "trainer.image_learning_rate_scale=${IMAGE_LEARNING_RATE_SCALE}" \
+    "trainer.image_learning_rate_scale_schedule=${IMAGE_LEARNING_RATE_SCALE_SCHEDULE}" \
+    "trainer.image_learning_rate_scale_warmup_steps=${IMAGE_LEARNING_RATE_SCALE_WARMUP_STEPS}" \
     "trainer.log_train_eval_metrics=${LOG_TRAIN_EVAL_METRICS}" \
     "trainer.early_stopping.enabled=true" \
     "trainer.early_stopping.monitor=val/class_weighted_mae" \

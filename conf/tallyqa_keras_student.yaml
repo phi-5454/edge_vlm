@@ -67,6 +67,11 @@ trainer:
   log_every_n_steps: 25
   steps_per_execution: 1
   image_learning_rate_scale: 1.0
+  # constant: always use image_learning_rate_scale.
+  # linear_warmup: lerp from 0 to image_learning_rate_scale over
+  # image_learning_rate_scale_warmup_steps optimizer steps, then hold.
+  image_learning_rate_scale_schedule: constant
+  image_learning_rate_scale_warmup_steps: 1500
   log_train_eval_metrics: true
   early_stopping:
     monitor: val_loss

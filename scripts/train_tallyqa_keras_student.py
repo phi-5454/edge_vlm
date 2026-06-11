@@ -1875,6 +1875,8 @@ class DistilledStudent(tf.keras.Model):
         class_weights: np.ndarray | None,
         kl_class_weights: np.ndarray | None,
         image_learning_rate_scale: float,
+        image_learning_rate_scale_schedule: str,
+        image_learning_rate_scale_warmup_steps: int,
     ):
         super().__init__(name="distilled_tallyqa_keras_student")
         self.student = student
@@ -1885,8 +1887,18 @@ class DistilledStudent(tf.keras.Model):
         self.local_soft_sigma = float(local_soft_sigma)
         self.local_soft_radius = int(local_soft_radius)
         self.image_learning_rate_scale = float(image_learning_rate_scale)
-        if self.image_learning_rate_scale <= 0:
-            raise ValueError("image_learning_rate_scale must be positive.")
+        if self.image_learning_rate_scale < 0:
+            raise ValueError("image_learning_rate_scale must be non-negative.")
+        self.image_learning_rate_scale_schedule = str(image_learning_rate_scale_schedule)
+        if self.image_learning_rate_scale_schedule not in {"constant", "linear_warmup"}:
+            raise ValueError(
+                "image_learning_rate_scale_schedule must be one of "
+                "{'constant', 'linear_warmup'}."
+            )
+        self.image_learning_rate_scale_warmup_steps = max(
+            1,
+            int(image_learning_rate_scale_warmup_steps),
+        )
         self.class_weights = (
             tf.constant(class_weights, dtype=tf.float32) if class_weights is not None else None
         )
@@ -1899,6 +1911,7 @@ class DistilledStudent(tf.keras.Model):
         self.kl_tracker = tf.keras.metrics.Mean(name="kl_loss")
         self.grad_global_norm_tracker = tf.keras.metrics.Mean(name="grad_global_norm")
         self.grad_max_norm_tracker = tf.keras.metrics.Mean(name="grad_max_norm")
+        self.image_lr_scale_tracker = tf.keras.metrics.Mean(name="image_lr_scale")
         self.accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name="accuracy")
         self.mae = tf.keras.metrics.Mean(name="mae")
         self.within_one = tf.keras.metrics.Mean(name="within_1_accuracy")
@@ -1919,6 +1932,7 @@ class DistilledStudent(tf.keras.Model):
         super().reset_metrics()
         self.grad_global_norm_tracker.reset_state()
         self.grad_max_norm_tracker.reset_state()
+        self.image_lr_scale_tracker.reset_state()
 
     def call(self, inputs: dict[str, tf.Tensor], training: bool = False) -> tf.Tensor:
         return self.student(inputs, training=training)
@@ -1968,6 +1982,17 @@ class DistilledStudent(tf.keras.Model):
         self.mae.update_state(tf.cast(absolute_error, tf.float32))
         self.within_one.update_state(tf.cast(absolute_error <= 1, tf.float32))
 
+    def effective_image_learning_rate_scale(self) -> tf.Tensor:
+        scale = tf.constant(self.image_learning_rate_scale, dtype=tf.float32)
+        if self.image_learning_rate_scale_schedule == "constant":
+            return scale
+        step = tf.cast(self.optimizer.iterations, tf.float32)
+        progress = tf.minimum(
+            step / float(self.image_learning_rate_scale_warmup_steps),
+            1.0,
+        )
+        return scale * progress
+
     def train_step(self, data: tuple[dict[str, tf.Tensor], dict[str, tf.Tensor]]) -> dict[str, tf.Tensor]:
         inputs, targets = data
         labels = targets["labels"]
@@ -1980,10 +2005,11 @@ class DistilledStudent(tf.keras.Model):
                 teacher_probs,
             )
         gradients = tape.gradient(loss, self.student.trainable_variables)
-        if self.image_learning_rate_scale != 1.0:
+        image_learning_rate_scale = self.effective_image_learning_rate_scale()
+        if self.image_learning_rate_scale_schedule != "constant" or self.image_learning_rate_scale != 1.0:
             gradients = [
                 (
-                    gradient * self.image_learning_rate_scale
+                    gradient * image_learning_rate_scale
                     if gradient is not None
                     and (
                         "mobilenet_v3_large_cutoff" in variable.name
@@ -1997,6 +2023,7 @@ class DistilledStudent(tf.keras.Model):
                     strict=True,
                 )
             ]
+        self.image_lr_scale_tracker.update_state(image_learning_rate_scale)
         non_none_gradients = [gradient for gradient in gradients if gradient is not None]
         if non_none_gradients:
             self.grad_global_norm_tracker.update_state(tf.linalg.global_norm(non_none_gradients))
@@ -2016,6 +2043,7 @@ class DistilledStudent(tf.keras.Model):
             **{metric.name: metric.result() for metric in self.metrics},
             self.grad_global_norm_tracker.name: self.grad_global_norm_tracker.result(),
             self.grad_max_norm_tracker.name: self.grad_max_norm_tracker.result(),
+            self.image_lr_scale_tracker.name: self.image_lr_scale_tracker.result(),
         }
 
     def test_step(self, data: tuple[dict[str, tf.Tensor], dict[str, tf.Tensor]]) -> dict[str, tf.Tensor]:
@@ -2519,7 +2547,15 @@ class TqdmKerasProgress(tf.keras.callbacks.Callback):
                 {
                     key: f"{float(value):.4g}"
                     for key, value in logs.items()
-                    if key in {"loss", "ce_loss", "kl_loss", "accuracy", "mae"}
+                    if key
+                    in {
+                        "loss",
+                        "ce_loss",
+                        "kl_loss",
+                        "accuracy",
+                        "mae",
+                        "image_lr_scale",
+                    }
                 },
                 refresh=False,
             )
@@ -2538,7 +2574,16 @@ class TqdmKerasProgress(tf.keras.callbacks.Callback):
                     {
                         key: f"{float(value):.4g}"
                         for key, value in logs.items()
-                        if key in {"loss", "val_loss", "accuracy", "val_accuracy", "mae", "val_mae"}
+                        if key
+                        in {
+                            "loss",
+                            "val_loss",
+                            "accuracy",
+                            "val_accuracy",
+                            "mae",
+                            "val_mae",
+                            "image_lr_scale",
+                        }
                     },
                     refresh=False,
                 )
@@ -2836,6 +2881,12 @@ def main(cfg: DictConfig) -> None:
         class_weights=class_weights,
         kl_class_weights=kl_weights,
         image_learning_rate_scale=float(cfg.trainer.get("image_learning_rate_scale", 1.0)),
+        image_learning_rate_scale_schedule=str(
+            cfg.trainer.get("image_learning_rate_scale_schedule", "constant")
+        ),
+        image_learning_rate_scale_warmup_steps=int(
+            cfg.trainer.get("image_learning_rate_scale_warmup_steps", 1500)
+        ),
     )
     model.compile(
         optimizer=tf.keras.optimizers.AdamW(
