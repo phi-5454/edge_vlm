@@ -271,6 +271,14 @@ if [[ ! -d "${AI8X_TRAINING}" ]]; then
   fi
 fi
 
+if [[ -d "${AI8X_TRAINING}/.git" ]] && {
+  [[ "${CLONE_AI8X}" == "1" || "${CLONE_AI8X}" == "true" ]] ||
+  [[ ! -f "${AI8X_TRAINING}/distiller/distiller/__init__.py" ]]
+}; then
+  require_cmd git
+  run_cmd git -C "${AI8X_TRAINING}" submodule update --init --recursive
+fi
+
 if [[ "${MATERIALIZE}" == "1" || "${MATERIALIZE}" == "true" ]]; then
   materialize_args=(
     uv run python scripts/materialize_max78000_tallyqa_dataset.py
