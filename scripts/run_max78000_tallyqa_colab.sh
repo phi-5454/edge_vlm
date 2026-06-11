@@ -346,6 +346,18 @@ PY
     run_shell "cd '${ai8x_abs}' && uv pip install --python '${ai8x_python}' -e distiller --config-settings editable_mode=strict"
   elif [[ -d "${ai8x_abs}/distiller" ]]; then
     echo "Warning: ${ai8x_abs}/distiller has no setup.py or pyproject.toml; continuing without editable distiller install." >&2
+    "${ai8x_python}" - "${distiller_pythonpath}" <<'PY'
+import sys
+import sysconfig
+from pathlib import Path
+
+distiller_path = Path(sys.argv[1]).resolve()
+site_packages = Path(sysconfig.get_paths()["purelib"])
+site_packages.mkdir(parents=True, exist_ok=True)
+pth_path = site_packages / "edge_vlm_distiller.pth"
+pth_path.write_text(f"{distiller_path}\n", encoding="utf-8")
+print(f"Wrote {pth_path} -> {distiller_path}")
+PY
   else
     echo "Warning: ${ai8x_abs}/distiller is missing; continuing without editable distiller install." >&2
   fi
@@ -471,6 +483,18 @@ if [[ "${TRAIN}" == "1" || "${TRAIN}" == "true" ]]; then
     (
       cd "${ai8x_abs}"
       export PYTHONPATH="${distiller_pythonpath}:${PYTHONPATH:-}"
+      .venv/bin/python - <<'PY'
+import distiller
+
+print(
+    "Resolved distiller:",
+    getattr(distiller, "__file__", None),
+    list(getattr(distiller, "__path__", [])),
+)
+from distiller import apputils, model_summaries
+
+print("Resolved distiller imports:", apputils.__name__, model_summaries.__name__)
+PY
       "${train_args[@]}"
     ) 2>&1 | tee "${report_abs}/train.log"
   fi
