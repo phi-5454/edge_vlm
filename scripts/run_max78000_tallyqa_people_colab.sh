@@ -3,6 +3,7 @@ set -euo pipefail
 
 SOURCE_DATASET="${SOURCE_DATASET:-data/tallyqa_cauldron_target_mobilenet224_letterbox}"
 DATASET_OUTPUT="${DATASET_OUTPUT:-data/max78000_tallyqa_people_count_fold2_56}"
+PROMPT_CLASS_NAMES_FILE="${PROMPT_CLASS_NAMES_FILE:-}"
 AI8X_TRAINING="${AI8X_TRAINING:-../MAX78000/ai8x-training}"
 AI8X_TRAINING_REPO="${AI8X_TRAINING_REPO:-https://github.com/analogdevicesinc/ai8x-training.git}"
 RUN_NAME="${RUN_NAME:-tallyqa_people_mbv3small}"
@@ -44,6 +45,8 @@ keeping the ADI ai8x-training checkout external to this repo.
 Common options:
   --source DATASET             Source TallyQA target dataset.
   --dataset-output DIR         Materialized MAX78000 dataset output.
+  --prompt-class-names-file FILE
+                               Optional prompt class subset. Enables 0/1/2/3/4/5+ general count mode.
   --ai8x-training DIR          Path to sibling ai8x-training checkout.
   --clone-ai8x                 Clone ai8x-training if --ai8x-training is absent.
   --run-name NAME              ADI training run name.
@@ -85,6 +88,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dataset-output)
       DATASET_OUTPUT="$2"
+      shift 2
+      ;;
+    --prompt-class-names-file)
+      PROMPT_CLASS_NAMES_FILE="$2"
       shift 2
       ;;
     --ai8x-training)
@@ -271,6 +278,9 @@ if [[ "${MATERIALIZE}" == "1" || "${MATERIALIZE}" == "true" ]]; then
     --output "${DATASET_OUTPUT}"
     --seed "${SEED}"
   )
+  if [[ -n "${PROMPT_CLASS_NAMES_FILE}" ]]; then
+    materialize_args+=(--prompt-class-names-file "${PROMPT_CLASS_NAMES_FILE}")
+  fi
   if [[ "${FORCE}" == "1" || "${FORCE}" == "true" ]]; then
     materialize_args+=(--force)
   fi
@@ -361,6 +371,7 @@ python3 - "$manifest_path" \
   "$LEARNING_RATE" \
   "$OPTIMIZER" \
   "$WEIGHT_DECAY" \
+  "${PROMPT_CLASS_NAMES_FILE}" \
   "$TRAIN" \
   "${train_args[@]}" <<'PY'
 import json
@@ -384,6 +395,7 @@ from pathlib import Path
     learning_rate,
     optimizer,
     weight_decay,
+    prompt_class_names_file,
     train_enabled,
     *train_command,
 ) = sys.argv[1:]
@@ -406,6 +418,7 @@ payload = {
     "ai8x_training": ai8x_training,
     "ai8x_training_git_head": git_head(ai8x_training),
     "data_dir": data_dir,
+    "prompt_class_names_file": prompt_class_names_file or None,
     "model_name": model_name,
     "dataset_name": dataset_name,
     "qat_policy": qat_policy,

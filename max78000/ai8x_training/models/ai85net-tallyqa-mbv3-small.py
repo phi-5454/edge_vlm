@@ -5,7 +5,7 @@
 # Stage this file into ../MAX78000/ai8x-training/models/ before running ADI train.py.
 #
 ###################################################################################################
-"""Folded-input simple-conv people-count classifier for MAX78000.
+"""Folded-input simple-conv count classifier for MAX78000.
 
 This is a conservative MAX78000 bring-up model, not a literal MobileNetV3 port.
 The intent is to mirror the "simple" MobileNet direction while staying within
@@ -13,7 +13,8 @@ the ADI ai8x-training operator subset:
 
 - input: 12-channel 56x56 tensor produced by downsampling 224x224 RGB to
   112x112 and then 2x2 folding
-- output classes: 1, 2, 3, 4, 5+ people
+- output classes: 1, 2, 3, 4, 5+ for people-only bring-up, or 0, 1, 2, 3, 4, 5+
+  for prompt-subset runs
 - no prompt input
 - only ordinary 3x3 and 1x1 convolutions
 - no depthwise or depth-separable convolutions
@@ -126,7 +127,7 @@ class SameResolutionConvStage(nn.Module):
 
 
 class TallyQAFoldedSimplePeople(nn.Module):
-    """People-only count classifier for folded RGB inputs."""
+    """Count classifier for folded RGB inputs."""
 
     # Input is 12x56x56. Each per-channel plane has 3136 bytes, below 8192.
     stage_specs = (
@@ -147,8 +148,8 @@ class TallyQAFoldedSimplePeople(nn.Module):
             raise ValueError("This MAX78000 folded model expects 56x56 inputs.")
         if num_channels != 12:
             raise ValueError("This MAX78000 folded model expects 12 input channels.")
-        if num_classes != 5:
-            raise ValueError("People-count head is fixed to classes 1, 2, 3, 4, 5+.")
+        if num_classes not in {5, 6}:
+            raise ValueError("Count head supports either 5 classes (1..5+) or 6 classes (0..5+).")
 
         self.num_classes = num_classes
         self.num_channels = num_channels
