@@ -1,0 +1,6 @@
+giraffes
+zebras
+elephants
+people
+buses
+horses

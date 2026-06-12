@@ -1,0 +1,91 @@
+{
+  "title": "Tier 10: top tier-0 prompt classes by teacher output-class-weighted accuracy, excluding animals, plus horses",
+  "selection": {
+    "source_tier": "tier_0_acc_ge_0p60_n_ge_1000",
+    "criterion": "top 5 prompt classes by trainval teacher output_class_weighted_accuracy after excluding animals, plus horses",
+    "prompt_classes": [
+      "giraffes",
+      "zebras",
+      "elephants",
+      "people",
+      "buses",
+      "horses"
+    ]
+  },
+  "trainval_teacher_metrics": {
+    "records": 31803,
+    "accuracy": 0.7517844228531899,
+    "output_class_weighted_accuracy": 0.7265842147862899,
+    "within_1_accuracy": 0.9209822972675534,
+    "output_class_weighted_within_1_accuracy": 0.9214013864875478,
+    "mae": 0.3673552809483382,
+    "output_class_weighted_mae": 0.3861197111820156,
+    "output_classes_present": 6,
+    "prompt_counts": {
+      "people": 23466,
+      "giraffes": 2062,
+      "zebras": 1740,
+      "elephants": 1615,
+      "horses": 1687,
+      "buses": 1233
+    },
+    "label_counts": {
+      "0": 2978,
+      "1": 5719,
+      "2": 10529,
+      "3": 4892,
+      "4": 2779,
+      "5": 4906
+    }
+  },
+  "test_teacher_metrics": {
+    "records": 7966,
+    "accuracy": 0.7506904343459704,
+    "output_class_weighted_accuracy": 0.722691172237243,
+    "within_1_accuracy": 0.9187798142103942,
+    "output_class_weighted_within_1_accuracy": 0.9179537910442367,
+    "mae": 0.3689430077830781,
+    "output_class_weighted_mae": 0.3909413824785692,
+    "output_classes_present": 6,
+    "prompt_counts": {
+      "people": 5978,
+      "giraffes": 455,
+      "elephants": 450,
+      "horses": 415,
+      "zebras": 369,
+      "buses": 299
+    },
+    "label_counts": {
+      "0": 743,
+      "1": 1459,
+      "2": 2642,
+      "3": 1189,
+      "4": 688,
+      "5": 1245
+    }
+  },
+  "existing_max78000_tier0_manifest_filter": {
+    "records": 39860,
+    "split_counts": {
+      "train": 27790,
+      "val": 3965,
+      "test": 8105
+    },
+    "label_counts": {
+      "0": 3750,
+      "1": 7199,
+      "2": 13191,
+      "3": 6085,
+      "4": 3472,
+      "5+": 6163
+    },
+    "prompt_counts": {
+      "people": 29512,
+      "giraffes": 2531,
+      "zebras": 2109,
+      "elephants": 2072,
+      "horses": 2104,
+      "buses": 1532
+    }
+  }
+}

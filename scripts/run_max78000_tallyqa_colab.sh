@@ -416,6 +416,11 @@ if [[ "${DATASET_NAME}" == *"prompt_planes16"* && "${MODEL_INPUT_CHANNELS_SET}" 
   MODEL_INPUT_CHANNELS=28
 fi
 
+if [[ "${DATASET_TIER}" == "tier_10_promptplane16_c40" ]]; then
+  echo "Warning: --dataset-tier tier_10_promptplane16_c40 was renamed to tier_10_top5_teacher_quality." >&2
+  DATASET_TIER="tier_10_top5_teacher_quality"
+fi
+
 if [[ "${keras_comparison_enabled}" == "1" ]]; then
   if [[ "${RUN_NAME_SET}" == "0" ]]; then
     RUN_NAME="max78000-tier0-keras-comparison-qat"

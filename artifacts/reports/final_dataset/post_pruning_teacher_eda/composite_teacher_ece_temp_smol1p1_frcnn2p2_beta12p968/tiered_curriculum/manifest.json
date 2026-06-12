@@ -1,0 +1,277 @@
+{
+  "source_prompt_metrics": "artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/trainval/composite_ece_temperature_scaled/tables/prompt_output_class_weighted_accuracy.csv",
+  "tier_definitions": {
+    "tier_0_acc_ge_0p60_n_ge_1000": {
+      "title": "Tier 0: acc >= 0.60, n >= 1000",
+      "min_output_class_weighted_accuracy": 0.6,
+      "min_trainval_composite_records": 1000,
+      "prompt_classes": 16,
+      "prompt_classes_file": "artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_0_acc_ge_0p60_n_ge_1000/prompt_classes.txt"
+    },
+    "tier_10_top5_teacher_quality": {
+      "title": "Tier 10: top tier-0 prompt classes by teacher quality, excluding animals, plus horses",
+      "source_tier": "tier_0_acc_ge_0p60_n_ge_1000",
+      "selection": "top 5 prompt classes by trainval output_class_weighted_accuracy after excluding animals, plus horses",
+      "prompt_classes": 6,
+      "prompt_classes_file": "artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_10_top5_teacher_quality/prompt_classes.txt"
+    },
+    "tier_1_acc_ge_0p60_n_ge_500": {
+      "title": "Tier 1: acc >= 0.60, n >= 500",
+      "min_output_class_weighted_accuracy": 0.6,
+      "min_trainval_composite_records": 500,
+      "prompt_classes": 27,
+      "prompt_classes_file": "artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_1_acc_ge_0p60_n_ge_500/prompt_classes.txt"
+    },
+    "tier_2_acc_ge_0p60": {
+      "title": "Tier 2: acc >= 0.60, no n limit",
+      "min_output_class_weighted_accuracy": 0.6,
+      "min_trainval_composite_records": null,
+      "prompt_classes": 34,
+      "prompt_classes_file": "artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_2_acc_ge_0p60/prompt_classes.txt"
+    },
+    "tier_3_acc_ge_0p55": {
+      "title": "Tier 3: acc >= 0.55, no n limit",
+      "min_output_class_weighted_accuracy": 0.55,
+      "min_trainval_composite_records": null,
+      "prompt_classes": 52,
+      "prompt_classes_file": "artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_3_acc_ge_0p55/prompt_classes.txt"
+    },
+    "tier_4_acc_ge_0p40": {
+      "title": "Tier 4: acc >= 0.40, no n limit",
+      "min_output_class_weighted_accuracy": 0.4,
+      "min_trainval_composite_records": null,
+      "prompt_classes": 67,
+      "prompt_classes_file": "artifacts/reports/final_dataset/post_pruning_teacher_eda/composite_teacher_ece_temp_smol1p1_frcnn2p2_beta12p968/tiered_curriculum/tier_4_acc_ge_0p40/prompt_classes.txt"
+    }
+  },
+  "splits": {
+    "tier_10_top5_teacher_quality": {
+      "trainval": {
+        "records": 31803,
+        "accuracy": 0.7517844228531899,
+        "mae": 0.3673552809483382,
+        "within_1_accuracy": 0.9209822972675534,
+        "output_class_weighted_accuracy": 0.7265842147862899,
+        "output_class_weighted_mae": 0.3861197111820156,
+        "output_class_weighted_within_1_accuracy": 0.9214013864875478,
+        "prompt_classes": 6,
+        "output_classes_present": 6,
+        "materialized_examples": 39860,
+        "composite_cached_examples": 31803
+      },
+      "test": {
+        "records": 7966,
+        "accuracy": 0.7506904343459704,
+        "mae": 0.3689430077830781,
+        "within_1_accuracy": 0.9187798142103942,
+        "output_class_weighted_accuracy": 0.722691172237243,
+        "output_class_weighted_mae": 0.3909413824785692,
+        "output_class_weighted_within_1_accuracy": 0.9179537910442367,
+        "prompt_classes": 6,
+        "output_classes_present": 6,
+        "materialized_examples": 8105,
+        "composite_cached_examples": 7966
+      }
+    },
+    "tier_0_acc_ge_0p60_n_ge_1000": {
+      "trainval": {
+        "records": 43538,
+        "accuracy": 0.7460379438651293,
+        "mae": 0.37064173825164226,
+        "within_1_accuracy": 0.9213790252193487,
+        "output_class_weighted_accuracy": 0.7172302014988668,
+        "output_class_weighted_mae": 0.3996675539209038,
+        "output_class_weighted_within_1_accuracy": 0.9178790994331202,
+        "prompt_class_weighted_accuracy": 0.7514201124249559,
+        "prompt_class_weighted_mae": 0.34910465164457893,
+        "prompt_class_weighted_within_1_accuracy": 0.9308885413785875,
+        "prompt_class_output_weighted_accuracy": 0.6975412454600074,
+        "prompt_class_output_weighted_mae": 0.4569469331100883,
+        "prompt_class_output_weighted_within_1_accuracy": 0.9012210968624109,
+        "prompt_classes": 16,
+        "output_classes_present": 6,
+        "materialized_examples": 43626,
+        "composite_cached_examples": 43538
+      },
+      "test": {
+        "records": 10871,
+        "accuracy": 0.7426179744273755,
+        "mae": 0.3733787140097507,
+        "within_1_accuracy": 0.9205224910311839,
+        "output_class_weighted_accuracy": 0.7151077171988846,
+        "output_class_weighted_mae": 0.4008022451683675,
+        "output_class_weighted_within_1_accuracy": 0.9162932597858996,
+        "prompt_class_weighted_accuracy": 0.7479837880120666,
+        "prompt_class_weighted_mae": 0.35223531897073956,
+        "prompt_class_weighted_within_1_accuracy": 0.9302258959691162,
+        "prompt_class_output_weighted_accuracy": 0.6967958194546097,
+        "prompt_class_output_weighted_mae": 0.4676045910085876,
+        "prompt_class_output_weighted_within_1_accuracy": 0.897396209880978,
+        "prompt_classes": 16,
+        "output_classes_present": 6,
+        "materialized_examples": 10893,
+        "composite_cached_examples": 10871
+      }
+    },
+    "tier_1_acc_ge_0p60_n_ge_500": {
+      "trainval": {
+        "records": 50828,
+        "accuracy": 0.7475013771936728,
+        "mae": 0.36737624931140317,
+        "within_1_accuracy": 0.9227197607617849,
+        "output_class_weighted_accuracy": 0.7158879520476839,
+        "output_class_weighted_mae": 0.40511857406048274,
+        "output_class_weighted_within_1_accuracy": 0.9157781904302918,
+        "prompt_class_weighted_accuracy": 0.7535555502870902,
+        "prompt_class_weighted_mae": 0.34729412633592505,
+        "prompt_class_weighted_within_1_accuracy": 0.9315672406431852,
+        "prompt_class_output_weighted_accuracy": 0.6898284903947295,
+        "prompt_class_output_weighted_mae": 0.4933597633736757,
+        "prompt_class_output_weighted_within_1_accuracy": 0.8887442518013624,
+        "prompt_classes": 27,
+        "output_classes_present": 6,
+        "materialized_examples": 50985,
+        "composite_cached_examples": 50828
+      },
+      "test": {
+        "records": 12719,
+        "accuracy": 0.7421967135781115,
+        "mae": 0.3707052441229656,
+        "within_1_accuracy": 0.9235788977120842,
+        "output_class_weighted_accuracy": 0.7124523474974023,
+        "output_class_weighted_mae": 0.4067758919137113,
+        "output_class_weighted_within_1_accuracy": 0.9156546574954919,
+        "prompt_class_weighted_accuracy": 0.746150053333361,
+        "prompt_class_weighted_mae": 0.3511441441820943,
+        "prompt_class_weighted_within_1_accuracy": 0.9353527180100313,
+        "prompt_class_output_weighted_accuracy": 0.68686265480379,
+        "prompt_class_output_weighted_mae": 0.4937451611007327,
+        "prompt_class_output_weighted_within_1_accuracy": 0.8885685684011181,
+        "prompt_classes": 27,
+        "output_classes_present": 6,
+        "materialized_examples": 12763,
+        "composite_cached_examples": 12719
+      }
+    },
+    "tier_2_acc_ge_0p60": {
+      "trainval": {
+        "records": 53104,
+        "accuracy": 0.7467234106658632,
+        "mae": 0.3679572160289244,
+        "within_1_accuracy": 0.9225858692377222,
+        "output_class_weighted_accuracy": 0.7146343540129068,
+        "output_class_weighted_mae": 0.407148173607129,
+        "output_class_weighted_within_1_accuracy": 0.9151369527928904,
+        "prompt_class_weighted_accuracy": 0.7472744843077761,
+        "prompt_class_weighted_mae": 0.35565692844487196,
+        "prompt_class_weighted_within_1_accuracy": 0.9287108828782339,
+        "prompt_class_output_weighted_accuracy": 0.6881729512424358,
+        "prompt_class_output_weighted_mae": 0.4980238599874866,
+        "prompt_class_output_weighted_within_1_accuracy": 0.8872765189427122,
+        "prompt_classes": 34,
+        "output_classes_present": 6,
+        "materialized_examples": 53288,
+        "composite_cached_examples": 53104
+      },
+      "test": {
+        "records": 13341,
+        "accuracy": 0.7403492991529871,
+        "mae": 0.3727606626189941,
+        "within_1_accuracy": 0.9228693501236789,
+        "output_class_weighted_accuracy": 0.7111614458837795,
+        "output_class_weighted_mae": 0.4085934923955492,
+        "output_class_weighted_within_1_accuracy": 0.914831235262476,
+        "prompt_class_weighted_accuracy": 0.7338929806873848,
+        "prompt_class_weighted_mae": 0.368906191386071,
+        "prompt_class_weighted_within_1_accuracy": 0.9290770330453146,
+        "prompt_class_output_weighted_accuracy": 0.6804935473814508,
+        "prompt_class_output_weighted_mae": 0.4897560831391479,
+        "prompt_class_output_weighted_within_1_accuracy": 0.8899905453811571,
+        "prompt_classes": 34,
+        "output_classes_present": 6,
+        "materialized_examples": 13393,
+        "composite_cached_examples": 13341
+      }
+    },
+    "tier_3_acc_ge_0p55": {
+      "trainval": {
+        "records": 63093,
+        "accuracy": 0.7232022569857195,
+        "mae": 0.40622573027118697,
+        "within_1_accuracy": 0.912969743077679,
+        "output_class_weighted_accuracy": 0.6959161091258986,
+        "output_class_weighted_mae": 0.44263836397304784,
+        "output_class_weighted_within_1_accuracy": 0.9048006018288491,
+        "prompt_class_weighted_accuracy": 0.7050792987096577,
+        "prompt_class_weighted_mae": 0.429173177789135,
+        "prompt_class_weighted_within_1_accuracy": 0.9093065630711225,
+        "prompt_class_output_weighted_accuracy": 0.6488076671105488,
+        "prompt_class_output_weighted_mae": 0.5803654854374579,
+        "prompt_class_output_weighted_within_1_accuracy": 0.863297395743547,
+        "prompt_classes": 52,
+        "output_classes_present": 6,
+        "materialized_examples": 63467,
+        "composite_cached_examples": 63093
+      },
+      "test": {
+        "records": 15778,
+        "accuracy": 0.7155533020661681,
+        "mae": 0.40936747369755355,
+        "within_1_accuracy": 0.9147547217644821,
+        "output_class_weighted_accuracy": 0.6920750765319443,
+        "output_class_weighted_mae": 0.4404817459468004,
+        "output_class_weighted_within_1_accuracy": 0.9067639895207775,
+        "prompt_class_weighted_accuracy": 0.6902321659803545,
+        "prompt_class_weighted_mae": 0.43465884297752855,
+        "prompt_class_weighted_within_1_accuracy": 0.9137927665734185,
+        "prompt_class_output_weighted_accuracy": 0.643219068095246,
+        "prompt_class_output_weighted_mae": 0.5508172178846448,
+        "prompt_class_output_weighted_within_1_accuracy": 0.8768672715850422,
+        "prompt_classes": 52,
+        "output_classes_present": 6,
+        "materialized_examples": 15877,
+        "composite_cached_examples": 15778
+      }
+    },
+    "tier_4_acc_ge_0p40": {
+      "trainval": {
+        "records": 75183,
+        "accuracy": 0.6806591915725629,
+        "mae": 0.48822207147892477,
+        "within_1_accuracy": 0.8880997033903941,
+        "output_class_weighted_accuracy": 0.6663078816785774,
+        "output_class_weighted_mae": 0.5024666297242578,
+        "output_class_weighted_within_1_accuracy": 0.8862243555275193,
+        "prompt_class_weighted_accuracy": 0.6572528409699994,
+        "prompt_class_weighted_mae": 0.5282994826594815,
+        "prompt_class_weighted_within_1_accuracy": 0.879811373073617,
+        "prompt_class_output_weighted_accuracy": 0.6141224374789697,
+        "prompt_class_output_weighted_mae": 0.652052664621099,
+        "prompt_class_output_weighted_within_1_accuracy": 0.842143181511695,
+        "prompt_classes": 67,
+        "output_classes_present": 6,
+        "materialized_examples": 75589,
+        "composite_cached_examples": 75183
+      },
+      "test": {
+        "records": 18788,
+        "accuracy": 0.6746859697679369,
+        "mae": 0.4922290823930168,
+        "within_1_accuracy": 0.8880136257185437,
+        "output_class_weighted_accuracy": 0.6626780608397774,
+        "output_class_weighted_mae": 0.5034229435506629,
+        "output_class_weighted_within_1_accuracy": 0.8855713416537098,
+        "prompt_class_weighted_accuracy": 0.6469444972754953,
+        "prompt_class_weighted_mae": 0.538073670718527,
+        "prompt_class_weighted_within_1_accuracy": 0.8782909249259231,
+        "prompt_class_output_weighted_accuracy": 0.6081287951732839,
+        "prompt_class_output_weighted_mae": 0.6386094205938493,
+        "prompt_class_output_weighted_within_1_accuracy": 0.8466894254403852,
+        "prompt_classes": 67,
+        "output_classes_present": 6,
+        "materialized_examples": 18893,
+        "composite_cached_examples": 18788
+      }
+    }
+  }
+}

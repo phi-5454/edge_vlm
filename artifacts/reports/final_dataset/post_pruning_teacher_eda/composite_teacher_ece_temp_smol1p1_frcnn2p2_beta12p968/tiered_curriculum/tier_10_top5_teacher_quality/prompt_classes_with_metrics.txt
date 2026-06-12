@@ -1,0 +1,7 @@
+# rank	student_prompt	output_class_weighted_accuracy	trainval_composite_records	output_classes_present	accuracy
+1	giraffes	0.799114	2062	6	0.858875
+2	zebras	0.773844	1740	6	0.832759
+3	elephants	0.757994	1615	6	0.816718
+4	people	0.717988	23466	6	0.732464
+5	buses	0.714790	1233	6	0.774534
+6	horses	0.609689	1687	6	0.727327
