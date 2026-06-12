@@ -143,6 +143,7 @@ class KerasTallyQAData:
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
         self.dataset_root = absolute_path(cfg.paths.dataset_root)
+        self.prompt_input_mode = prompt_input_mode(cfg)
         prompt_payload = torch.load(
             absolute_path(cfg.paths.prompt_embeddings),
             map_location="cpu",
@@ -153,6 +154,7 @@ class KerasTallyQAData:
             prompt_payload["prompt_attention_mask"].bool().numpy().astype(np.float32)
         )
         self.embedding_rows = prompt_payload["embedding_rows"].float().numpy().astype(np.float32)
+        self.prompt_embeddings = self._pooled_prompt_embeddings()
         self.rows = load_tallyqa_rows(self.dataset_root)
         self.num_classes = int(cfg.model.num_outputs)
         self.collapse_at = int(cfg.data.collapse_at)
@@ -191,6 +193,24 @@ class KerasTallyQAData:
         self._images: np.memmap | None = None
         self.mean = np.asarray([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
         self.std = np.asarray([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+
+    def _pooled_prompt_embeddings(self) -> np.ndarray:
+        pad = np.zeros((1, self.embedding_rows.shape[1]), dtype=np.float32)
+        embedding_init = np.concatenate([pad, self.embedding_rows.astype(np.float32)], axis=0)
+        token_ids = self.prompt_token_ids.astype(np.int64)
+        if token_ids.min(initial=0) < 0 or token_ids.max(initial=0) >= embedding_init.shape[0]:
+            raise ValueError(
+                "Prompt token IDs are outside the compact embedding table range: "
+                f"min={int(token_ids.min())}, max={int(token_ids.max())}, "
+                f"rows={embedding_init.shape[0]}"
+            )
+        embedded = embedding_init[token_ids]
+        if bool(self.cfg.keras_model.get("static_single_prompt_token", False)):
+            return embedded[:, 0, :].astype(np.float32)
+        mask = self.prompt_attention_mask.astype(np.float32)[..., np.newaxis]
+        summed = np.sum(embedded * mask, axis=1)
+        counts = np.maximum(np.sum(mask, axis=1), 1.0)
+        return (summed / counts).astype(np.float32)
 
     @property
     def images(self) -> np.memmap:
@@ -403,7 +423,7 @@ class KerasTallyQAData:
         prompt_temperature: float,
         min_per_prompt: int,
         min_per_output_class: int,
-    ) -> Iterable[tuple[np.ndarray, np.ndarray]]:
+    ) -> Iterable[dict[str, np.ndarray]]:
         for index in self.representative_indices(
             max_samples,
             strategy,
@@ -413,10 +433,29 @@ class KerasTallyQAData:
         ):
             row = self.rows[index]
             item_class_id = int(row["item_class_id"])
-            yield (
-                self.prompt_token_ids[item_class_id : item_class_id + 1],
+            yield self.model_inputs_for_item_class_ids(
+                np.asarray([item_class_id], dtype=np.int64),
                 self.image(int(row["image_index"]))[np.newaxis, ...],
             )
+
+    def model_inputs_for_item_class_ids(
+        self,
+        item_class_ids: np.ndarray,
+        images: np.ndarray,
+    ) -> dict[str, np.ndarray]:
+        if self.prompt_input_mode == "token_ids":
+            return {
+                "token_ids": self.prompt_token_ids[item_class_ids],
+                "images": images,
+            }
+        if self.prompt_input_mode == "raw_embedding":
+            return {
+                "prompt_embedding": self.prompt_embeddings[item_class_ids],
+                "images": images,
+            }
+        raise ValueError(
+            "keras_model.prompt_input_mode must be one of {'token_ids', 'raw_embedding'}."
+        )
 
     def prediction_examples(self, split: str, max_samples: int) -> dict[str, Any]:
         indices: list[int] = []
@@ -434,23 +473,23 @@ class KerasTallyQAData:
                 break
         rows = [self.rows[index] for index in indices]
         item_class_ids = np.asarray([int(row["item_class_id"]) for row in rows], dtype=np.int64)
+        images = (
+            np.stack([self.image(int(row["image_index"])) for row in rows])
+            if rows
+            else np.empty(
+                (
+                    0,
+                    int(self.cfg.keras_model.image_size),
+                    int(self.cfg.keras_model.image_size),
+                    3,
+                ),
+                dtype=np.float32,
+            )
+        )
         return {
             "indices": indices,
             "rows": rows,
-            "inputs": {
-                "token_ids": self.prompt_token_ids[item_class_ids],
-                "images": np.stack([self.image(int(row["image_index"])) for row in rows])
-                if rows
-                else np.empty(
-                    (
-                        0,
-                        int(self.cfg.keras_model.image_size),
-                        int(self.cfg.keras_model.image_size),
-                        3,
-                    ),
-                    dtype=np.float32,
-                ),
-            },
+            "inputs": self.model_inputs_for_item_class_ids(item_class_ids, images),
             "display_images": [
                 self.display_image(int(row["image_index"]))
                 for row in rows
@@ -482,10 +521,7 @@ class KerasTallyQAData:
             ]
         ).astype(np.float32)
         return (
-            {
-                "token_ids": self.prompt_token_ids[item_class_ids],
-                "images": images,
-            },
+            self.model_inputs_for_item_class_ids(item_class_ids, images),
             {
                 "labels": labels,
                 "teacher_probs": teacher_probs,
