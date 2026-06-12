@@ -19,6 +19,7 @@ PREFIX_RESULT = "VLM_MICRO_SELFTEST_RESULT "
 PREFIX_SUMMARY = "VLM_MICRO_SELFTEST_SUMMARY "
 PREFIX_BEGIN = "VLM_MICRO_SELFTEST_BEGIN "
 PREFIX_ERROR = "VLM_MICRO_ERROR "
+PREFIX_EVENT = "VLM_MICRO_EVENT "
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +39,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=100,
         help="Require at least this many non-warmup result records.",
+    )
+    parser.add_argument(
+        "--echo-raw",
+        action="store_true",
+        help="Print raw serial lines that do not match the benchmark protocol.",
     )
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
@@ -120,6 +126,7 @@ def main() -> None:
     summary: dict[str, Any] | None = None
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
     recent_lines: list[str] = []
 
     try:
@@ -138,6 +145,10 @@ def main() -> None:
                     if (payload := parse_prefixed(line, PREFIX_READY)) is not None:
                         ready = payload
                         print(json.dumps({"event": "ready", **payload}))
+                        continue
+                    if (payload := parse_prefixed(line, PREFIX_EVENT)) is not None:
+                        events.append(payload)
+                        print(json.dumps({"event": "board_stage", **payload}))
                         continue
                     if (payload := parse_prefixed(line, PREFIX_BEGIN)) is not None:
                         begin = payload
@@ -180,6 +191,9 @@ def main() -> None:
                     if (payload := parse_prefixed(line, PREFIX_ERROR)) is not None:
                         errors.append(payload)
                         print(json.dumps({"event": "board_error", **payload}))
+                        continue
+                    if args.echo_raw:
+                        print(json.dumps({"event": "serial_line", "line": line}))
     except serial.SerialException as exc:
         raise RuntimeError(
             f"Serial failure on {args.port}: {exc}\n"
@@ -206,6 +220,7 @@ def main() -> None:
         "board_summary": summary,
         "host_summary": summarize_results(results),
         "errors": errors,
+        "events": events,
         "results": results,
         "raw_log": str(args.raw_log),
     }

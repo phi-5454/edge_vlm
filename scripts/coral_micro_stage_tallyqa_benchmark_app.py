@@ -148,7 +148,8 @@ def main() -> None:
     print(f"Model kind: {model_kind}")
 
     print("\nBuild and flash from the Coral SDK root:")
-    print("  bash build.sh")
+    print("  bash build.sh -c")
+    print(f"  make -C build -j \"$(nproc)\" {APP_NAME}")
     print(
         "  if [[ -e build/examples/{app}/{app} ]]; then "
         "python3 scripts/flashtool.py -e {app}; "

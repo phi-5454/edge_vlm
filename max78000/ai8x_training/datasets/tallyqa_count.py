@@ -38,6 +38,7 @@ FOLDED_SIZE = 56
 FOLDED_CHANNELS = 12
 PROMPT_EMBEDDING_CHANNELS = 576
 PROMPT_PLANE_CHANNELS = 16
+PROMPT_PLANE_INT_SCALE = 128.0
 DEFAULT_PROMPT_EMBEDDINGS = "artifacts/models/tallyqa_smolvlm_prompt_embeddings_letterbox.pt"
 DEFAULT_PROMPT_PLANE_LOOKUP = "max78000/prompt_embeddings/tallyqa_prompt_planes16_random.json"
 
@@ -253,6 +254,18 @@ def _prompt_planes(prompt_vector: torch.Tensor, height: int, width: int) -> torc
     return prompt_vector.view(PROMPT_PLANE_CHANNELS, 1, 1).expand(-1, height, width)
 
 
+def _integer_encoded_prompt_planes(
+    prompt_planes: torch.Tensor,
+    *,
+    act_mode_8bit: bool,
+) -> torch.Tensor:
+    """Encode prompt planes with the same integer convention as ai8x inputs."""
+    encoded = prompt_planes.mul(PROMPT_PLANE_INT_SCALE).round().clamp(min=-128, max=127)
+    if act_mode_8bit:
+        return encoded
+    return encoded.div(PROMPT_PLANE_INT_SCALE)
+
+
 class TallyQACount(Dataset):
     """TallyQA count classification dataset from a materialized manifest."""
 
@@ -264,6 +277,7 @@ class TallyQACount(Dataset):
         seed: int = 0,
         prompt_embedding_channels: int = 0,
         prompt_plane_channels: int = 0,
+        prompt_planes_act_mode_8bit: bool = False,
     ):
         if d_type not in {"train", "val", "test"}:
             raise ValueError(f"Unsupported split {d_type!r}; expected train, val, or test.")
@@ -272,6 +286,7 @@ class TallyQACount(Dataset):
         self.transform = transform
         self.prompt_embedding_channels = int(prompt_embedding_channels)
         self.prompt_plane_channels = int(prompt_plane_channels)
+        self.prompt_planes_act_mode_8bit = bool(prompt_planes_act_mode_8bit)
         if self.prompt_embedding_channels and self.prompt_plane_channels:
             raise ValueError("Use either prompt_embedding_channels or prompt_plane_channels, not both.")
         self.records = _load_records(self.root_dir, d_type, seed)
@@ -356,6 +371,10 @@ class TallyQACount(Dataset):
                     )
                 else:
                     prompt_planes = _prompt_planes(prompt_vector, image.shape[-2], image.shape[-1])
+                prompt_planes = _integer_encoded_prompt_planes(
+                    prompt_planes,
+                    act_mode_8bit=self.prompt_planes_act_mode_8bit,
+                )
                 image = torch.cat((image, prompt_planes.to(dtype=image.dtype)), dim=0)
         if "teacher_probs" in record:
             teacher_probs = torch.tensor(record["teacher_probs"], dtype=torch.float32)
@@ -375,7 +394,7 @@ class TallyQACount(Dataset):
 
 
 class Fold2x2:
-    """Fold a 3xHxW tensor into 12x(H/2)x(W/2)."""
+    """Fold a 3xHxW tensor into 12x(H/2)x(W/2) using ai8x.fold ordering."""
 
     def __call__(self, image: torch.Tensor) -> torch.Tensor:
         if image.ndim != 3:
@@ -385,9 +404,14 @@ class Fold2x2:
             raise ValueError(f"Expected RGB tensor with 3 channels, got {channels}.")
         if height % 2 != 0 or width % 2 != 0:
             raise ValueError(f"Fold2x2 requires even spatial dimensions, got {height}x{width}.")
-        folded = image.reshape(channels, height // 2, 2, width // 2, 2)
-        folded = folded.permute(0, 2, 4, 1, 3).contiguous()
-        return folded.reshape(channels * 4, height // 2, width // 2)
+        return torch.cat(
+            [
+                image[:, row::2, col::2]
+                for row in range(2)
+                for col in range(2)
+            ],
+            dim=0,
+        )
 
 
 def _get_tallyqa_count_dataset(
@@ -400,6 +424,7 @@ def _get_tallyqa_count_dataset(
     """Load TallyQA count train/test datasets."""
     data_dir, args = data
     seed = int(getattr(args, "seed", 0) or 0)
+    prompt_planes_act_mode_8bit = bool(getattr(args, "act_mode_8bit", False))
 
     transform = transforms.Compose(
         [
@@ -418,6 +443,7 @@ def _get_tallyqa_count_dataset(
             seed=seed,
             prompt_embedding_channels=prompt_embedding_channels,
             prompt_plane_channels=prompt_plane_channels,
+            prompt_planes_act_mode_8bit=prompt_planes_act_mode_8bit,
         )
         if load_train
         else None
@@ -430,6 +456,7 @@ def _get_tallyqa_count_dataset(
             seed=seed,
             prompt_embedding_channels=prompt_embedding_channels,
             prompt_plane_channels=prompt_plane_channels,
+            prompt_planes_act_mode_8bit=prompt_planes_act_mode_8bit,
         )
         if load_test
         else None

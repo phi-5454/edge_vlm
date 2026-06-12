@@ -16,6 +16,7 @@ SUDO_FLASH=0
 DRY_RUN=0
 FLASHTOOL_PYTHON=""
 MODEL_KIND="auto"
+ECHO_RAW=0
 
 APP="vlm_micro_tallyqa_benchmark_serial"
 PROMPT_LOOKUP_HEADER="artifacts/exports/coral/prompt_embedding_lookup/tallyqa_prompt_embedding_lookup.h"
@@ -29,7 +30,7 @@ Usage:
   scripts/run_coral_micro_selftest_latency.sh [options]
 
 Runs the Coral Micro on-board seeded self-test latency path:
-  stage model -> build -> flash -> capture 100 measured inferences.
+  stage model -> build benchmark target -> flash -> capture 100 measured inferences.
 
 By default it runs three models:
   - untrained raw-prompt dummy
@@ -48,6 +49,10 @@ Options:
                           Sleep after flashing before capture (default: 8)
   --flashtool-python PATH Python used for flashtool; defaults to SDK .venv/bin/python
   --model-kind KIND      auto, tallyqa, or detection (default: auto)
+  --prompt-lookup-header PATH
+                          Quantized prompt lookup header for TallyQA models
+                          (default: full lookup table)
+  --echo-raw              Print raw non-protocol serial lines during capture
   --sudo-flash            Run flashtool through sudo env PATH=...
   --skip-stage
   --skip-build
@@ -71,6 +76,8 @@ while [[ $# -gt 0 ]]; do
     --post-flash-delay-s) POST_FLASH_DELAY_S="$2"; shift 2 ;;
     --flashtool-python) FLASHTOOL_PYTHON="$2"; shift 2 ;;
     --model-kind) MODEL_KIND="$2"; shift 2 ;;
+    --prompt-lookup-header) PROMPT_LOOKUP_HEADER="$2"; shift 2 ;;
+    --echo-raw) ECHO_RAW=1; shift ;;
     --sudo-flash) SUDO_FLASH=1; shift ;;
     --skip-stage) SKIP_STAGE=1; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
@@ -179,7 +186,7 @@ for index in "${!MODELS[@]}"; do
   fi
 
   if [[ "${SKIP_BUILD}" == "0" ]]; then
-    run_shell "cd '${CORALMICRO}' && bash build.sh"
+    run_shell "cd '${CORALMICRO}' && bash build.sh -c && make -C build -j \"\$(nproc)\" '${APP}'"
   fi
 
   if [[ "${SKIP_FLASH}" == "0" ]]; then
@@ -202,6 +209,9 @@ for index in "${!MODELS[@]}"; do
     )
     if [[ "${FORCE}" == "1" ]]; then
       capture_cmd+=(--force)
+    fi
+    if [[ "${ECHO_RAW}" == "1" ]]; then
+      capture_cmd+=(--echo-raw)
     fi
     run_cmd "${capture_cmd[@]}"
   fi

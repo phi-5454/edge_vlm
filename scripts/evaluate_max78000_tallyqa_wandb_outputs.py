@@ -84,13 +84,22 @@ def build_transform(ai8x, dataset_module):
     )
 
 
-def build_dataset(ai8x, dataset_module, data_dir: Path, split: str, prompt_channels: int):
+def build_dataset(
+    ai8x,
+    dataset_module,
+    data_dir: Path,
+    split: str,
+    prompt_channels: int,
+    *,
+    prompt_plane_mode: bool,
+):
     return dataset_module.TallyQACount(
         root_dir=data_dir,
         d_type=split,
         transform=build_transform(ai8x, dataset_module),
         seed=0,
-        prompt_embedding_channels=prompt_channels,
+        prompt_embedding_channels=0 if prompt_plane_mode else prompt_channels,
+        prompt_plane_channels=prompt_channels if prompt_plane_mode else 0,
     )
 
 
@@ -451,6 +460,7 @@ def main() -> None:
     prompt_channels = args.prompt_embedding_channels
     if prompt_channels <= 0 and args.input_channels > 12:
         prompt_channels = args.input_channels - 12
+    prompt_plane_mode = "promptplane" in args.factory.lower()
     device = args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
     model = build_model(model_module, args.factory, args.input_channels, args.num_classes)
     state = load_checkpoint_state(args.checkpoint)
@@ -468,7 +478,8 @@ def main() -> None:
         "data_dir": str(args.data_dir),
         "factory": args.factory,
         "input_channels": args.input_channels,
-        "prompt_embedding_channels": prompt_channels,
+        "prompt_embedding_channels": 0 if prompt_plane_mode else prompt_channels,
+        "prompt_plane_channels": prompt_channels if prompt_plane_mode else 0,
         "num_classes": args.num_classes,
         "load_state": {
             "fused_bn_before_load": fused_bn_before_load,
@@ -478,7 +489,14 @@ def main() -> None:
         "splits": {},
     }
     for split in ("val", "test"):
-        dataset = build_dataset(ai8x, dataset_module, args.data_dir, split, prompt_channels)
+        dataset = build_dataset(
+            ai8x,
+            dataset_module,
+            args.data_dir,
+            split,
+            prompt_channels,
+            prompt_plane_mode=prompt_plane_mode,
+        )
         results["splits"][split] = evaluate_split(
             split,
             model,

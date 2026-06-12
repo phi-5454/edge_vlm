@@ -1,0 +1,865 @@
+/content/MAX78000/ai8x-training/distiller/distiller/summary_graph.py:27: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import parse_version
+Log file for this run: /content/MAX78000/ai8x-training/logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955.log
+Configuring device: MAX78000, simulate=False.
+Optimizer Type: <class 'torch.optim.adam.Adam'>
+Optimizer Args: {'lr': 0.001, 'betas': (0.9, 0.999), 'eps': 1e-08, 'weight_decay': 0.01, 'amsgrad': False, 'maximize': False, 'foreach': None, 'capturable': False, 'differentiable': False, 'fused': None}
+Reading compression schedule from: policies/schedule-tallyqa-count-30ep-warmup.yaml
+torch.compile() successful, mode=default, cache limit=8
+Dataset sizes:
+	training=27790
+	validation=8105
+	test=8105
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [0][   25/  109]    Overall Loss 2.691188    Objective Loss 2.691188    CE Loss 1.793197    KL Loss 3.591965    Distillation Loss 2.691188                                        LR 0.000100    Time 1.738927    
+Epoch: [0][   50/  109]    Overall Loss 2.689037    Objective Loss 2.689037    CE Loss 1.792887    KL Loss 3.584598    Distillation Loss 2.689037                                        LR 0.000100    Time 0.922414    
+Epoch: [0][   75/  109]    Overall Loss 2.687663    Objective Loss 2.687663    CE Loss 1.792201    KL Loss 3.581847    Distillation Loss 2.687663                                        LR 0.000100    Time 0.646794    
+Epoch: [0][  100/  109]    Overall Loss 2.682444    Objective Loss 2.682444    CE Loss 1.790908    KL Loss 3.566142    Distillation Loss 2.682444                                        LR 0.000100    Time 0.508441    
+Epoch: [0][  109/  109]    Overall Loss 2.679301    Objective Loss 2.679301    CE Loss 1.789381    KL Loss 3.559679    Distillation Loss 2.679301    Top1 19.597990    Top5 89.949749    LR 0.000100    Time 0.898161    
+--- validate (epoch=0)-----------
+8105 samples (256 per mini-batch)
+Epoch: [0][   25/   32]    Loss 2.647869    Top1 21.640625    Top5 92.781250    
+Epoch: [0][   32/   32]    Loss 2.648765    Top1 21.542258    Top5 92.609500    
+==> Top1: 21.542    Top5: 92.610    Loss: 2.649
+
+==> Confusion:
+[[ 345    0   90    0    0  287]
+ [ 194    0  122    0    0 1180]
+ [ 356    0  220    0    0 2114]
+ [ 114    0   56    0    0 1026]
+ [  55    0   52    0    0  628]
+ [  44    0   41    0    0 1181]]
+
+==> Best [Top1: 21.542   Top5: 92.610   Params: 232576 on epoch: 0]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [1][   25/  109]    Overall Loss 2.594821    Objective Loss 2.594821    CE Loss 1.736316    KL Loss 3.434023    Distillation Loss 2.594821                                        LR 0.000500    Time 0.151320    
+Epoch: [1][   50/  109]    Overall Loss 2.552978    Objective Loss 2.552978    CE Loss 1.714066    KL Loss 3.355645    Distillation Loss 2.552978                                        LR 0.000500    Time 0.130524    
+Epoch: [1][   75/  109]    Overall Loss 2.513750    Objective Loss 2.513750    CE Loss 1.691491    KL Loss 3.289036    Distillation Loss 2.513750                                        LR 0.000500    Time 0.123248    
+Epoch: [1][  100/  109]    Overall Loss 2.486332    Objective Loss 2.486332    CE Loss 1.673598    KL Loss 3.250938    Distillation Loss 2.486332                                        LR 0.000500    Time 0.120348    
+Epoch: [1][  109/  109]    Overall Loss 2.475748    Objective Loss 2.475748    CE Loss 1.667084    KL Loss 3.234656    Distillation Loss 2.475748    Top1 29.648241    Top5 97.236181    LR 0.000500    Time 0.119467    
+--- validate (epoch=1)-----------
+8105 samples (256 per mini-batch)
+Epoch: [1][   25/   32]    Loss 2.760942    Top1 23.140625    Top5 86.375000    
+Epoch: [1][   32/   32]    Loss 2.765650    Top1 22.862431    Top5 86.428131    
+==> Top1: 22.862    Top5: 86.428    Loss: 2.766
+
+==> Confusion:
+[[  88  410  211    0    0   13]
+ [  17 1310  153    0    0   16]
+ [  26 2214  418    0    0   32]
+ [   4 1014  172    0    0    6]
+ [   2  587  136    0    0   10]
+ [   3  937  289    0    0   37]]
+
+==> Best [Top1: 22.862   Top5: 86.428   Params: 232576 on epoch: 1]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [2][   25/  109]    Overall Loss 2.347319    Objective Loss 2.347319    CE Loss 1.594355    KL Loss 3.011856    Distillation Loss 2.347319                                        LR 0.001000    Time 0.120603    
+Epoch: [2][   50/  109]    Overall Loss 2.363527    Objective Loss 2.363527    CE Loss 1.602504    KL Loss 3.044092    Distillation Loss 2.363527                                        LR 0.001000    Time 0.108002    
+Epoch: [2][   75/  109]    Overall Loss 2.358019    Objective Loss 2.358019    CE Loss 1.596538    KL Loss 3.045926    Distillation Loss 2.358019                                        LR 0.001000    Time 0.103677    
+Epoch: [2][  100/  109]    Overall Loss 2.352529    Objective Loss 2.352529    CE Loss 1.594647    KL Loss 3.031528    Distillation Loss 2.352529                                        LR 0.001000    Time 0.103081    
+Epoch: [2][  109/  109]    Overall Loss 2.351491    Objective Loss 2.351491    CE Loss 1.594217    KL Loss 3.029096    Distillation Loss 2.351491    Top1 38.442211    Top5 96.231156    LR 0.001000    Time 0.102454    
+--- validate (epoch=2)-----------
+8105 samples (256 per mini-batch)
+Epoch: [2][   25/   32]    Loss 2.720711    Top1 22.734375    Top5 89.328125    
+Epoch: [2][   32/   32]    Loss 2.717184    Top1 22.776064    Top5 89.611351    
+==> Top1: 22.776    Top5: 89.611    Loss: 2.717
+
+==> Confusion:
+[[   7  589  126    0    0    0]
+ [   0 1323  173    0    0    0]
+ [   0 2174  516    0    0    0]
+ [   0  915  281    0    0    0]
+ [   0  510  225    0    0    0]
+ [   0  722  544    0    0    0]]
+
+==> Best [Top1: 22.862   Top5: 86.428   Params: 232576 on epoch: 1]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [3][   25/  109]    Overall Loss 2.313020    Objective Loss 2.313020    CE Loss 1.564120    KL Loss 2.995600    Distillation Loss 2.313020                                        LR 0.001000    Time 0.123420    
+Epoch: [3][   50/  109]    Overall Loss 2.300970    Objective Loss 2.300970    CE Loss 1.557976    KL Loss 2.971978    Distillation Loss 2.300970                                        LR 0.001000    Time 0.109301    
+Epoch: [3][   75/  109]    Overall Loss 2.308891    Objective Loss 2.308891    CE Loss 1.566188    KL Loss 2.970814    Distillation Loss 2.308891                                        LR 0.001000    Time 0.104514    
+Epoch: [3][  100/  109]    Overall Loss 2.309239    Objective Loss 2.309239    CE Loss 1.566640    KL Loss 2.970397    Distillation Loss 2.309239                                        LR 0.001000    Time 0.103486    
+Epoch: [3][  109/  109]    Overall Loss 2.309004    Objective Loss 2.309004    CE Loss 1.567264    KL Loss 2.966962    Distillation Loss 2.309004    Top1 38.190955    Top5 95.226131    LR 0.001000    Time 0.102478    
+--- validate (epoch=3)-----------
+8105 samples (256 per mini-batch)
+Epoch: [3][   25/   32]    Loss 3.060485    Top1 18.312500    Top5 84.765625    
+Epoch: [3][   32/   32]    Loss 3.060980    Top1 18.568785    Top5 84.515731    
+==> Top1: 18.569    Top5: 84.516    Loss: 3.061
+
+==> Confusion:
+[[   2  703   17    0    0    0]
+ [   0 1494    2    0    0    0]
+ [   0 2681    9    0    0    0]
+ [   0 1196    0    0    0    0]
+ [   0  733    2    0    0    0]
+ [   0 1222   44    0    0    0]]
+
+==> Best [Top1: 22.862   Top5: 86.428   Params: 232576 on epoch: 1]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [4][   25/  109]    Overall Loss 2.308397    Objective Loss 2.308397    CE Loss 1.561960    KL Loss 2.985747    Distillation Loss 2.308397                                        LR 0.001000    Time 0.122710    
+Epoch: [4][   50/  109]    Overall Loss 2.301434    Objective Loss 2.301434    CE Loss 1.561560    KL Loss 2.959496    Distillation Loss 2.301434                                        LR 0.001000    Time 0.110542    
+Epoch: [4][   75/  109]    Overall Loss 2.296115    Objective Loss 2.296115    CE Loss 1.559591    KL Loss 2.946097    Distillation Loss 2.296115                                        LR 0.001000    Time 0.105897    
+Epoch: [4][  100/  109]    Overall Loss 2.295650    Objective Loss 2.295650    CE Loss 1.559049    KL Loss 2.946404    Distillation Loss 2.295650                                        LR 0.001000    Time 0.104218    
+Epoch: [4][  109/  109]    Overall Loss 2.293415    Objective Loss 2.293415    CE Loss 1.557904    KL Loss 2.942045    Distillation Loss 2.293415    Top1 37.939698    Top5 97.236181    LR 0.001000    Time 0.102803    
+--- validate (epoch=4)-----------
+8105 samples (256 per mini-batch)
+Epoch: [4][   25/   32]    Loss 2.810564    Top1 24.281250    Top5 91.140625    
+Epoch: [4][   32/   32]    Loss 2.819469    Top1 23.664405    Top5 91.239975    
+==> Top1: 23.664    Top5: 91.240    Loss: 2.819
+
+==> Confusion:
+[[   0  507  215    0    0    0]
+ [   0 1338  158    0    0    0]
+ [   0 2124  563    1    0    2]
+ [   0  834  361    1    0    0]
+ [   0  410  324    0    0    1]
+ [   0  473  766   11    0   16]]
+
+==> Best [Top1: 23.664   Top5: 91.240   Params: 232576 on epoch: 4]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [5][   25/  109]    Overall Loss 2.273307    Objective Loss 2.273307    CE Loss 1.537589    KL Loss 2.942873    Distillation Loss 2.273307                                        LR 0.001000    Time 0.152972    
+Epoch: [5][   50/  109]    Overall Loss 2.284657    Objective Loss 2.284657    CE Loss 1.548853    KL Loss 2.943219    Distillation Loss 2.284657                                        LR 0.001000    Time 0.123698    
+Epoch: [5][   75/  109]    Overall Loss 2.280455    Objective Loss 2.280455    CE Loss 1.547786    KL Loss 2.930677    Distillation Loss 2.280455                                        LR 0.001000    Time 0.114776    
+Epoch: [5][  100/  109]    Overall Loss 2.279729    Objective Loss 2.279729    CE Loss 1.547255    KL Loss 2.929896    Distillation Loss 2.279729                                        LR 0.001000    Time 0.111669    
+Epoch: [5][  109/  109]    Overall Loss 2.275775    Objective Loss 2.275775    CE Loss 1.544721    KL Loss 2.924214    Distillation Loss 2.275775    Top1 40.703518    Top5 96.231156    LR 0.001000    Time 0.109477    
+--- validate (epoch=5)-----------
+8105 samples (256 per mini-batch)
+Epoch: [5][   25/   32]    Loss 2.692778    Top1 23.656250    Top5 89.796875    
+Epoch: [5][   32/   32]    Loss 2.688635    Top1 23.874152    Top5 90.154226    
+==> Top1: 23.874    Top5: 90.154    Loss: 2.689
+
+==> Confusion:
+[[ 163  477   82    0    0    0]
+ [  23 1332  141    0    0    0]
+ [  37 2213  440    0    0    0]
+ [   4  898  294    0    0    0]
+ [   2  471  262    0    0    0]
+ [   3  575  688    0    0    0]]
+
+==> Best [Top1: 23.874   Top5: 90.154   Params: 232576 on epoch: 5]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [6][   25/  109]    Overall Loss 2.268886    Objective Loss 2.268886    CE Loss 1.543958    KL Loss 2.899714    Distillation Loss 2.268886                                        LR 0.001000    Time 0.128544    
+Epoch: [6][   50/  109]    Overall Loss 2.258522    Objective Loss 2.258522    CE Loss 1.532501    KL Loss 2.904082    Distillation Loss 2.258522                                        LR 0.001000    Time 0.115054    
+Epoch: [6][   75/  109]    Overall Loss 2.255452    Objective Loss 2.255452    CE Loss 1.530668    KL Loss 2.899139    Distillation Loss 2.255452                                        LR 0.001000    Time 0.113748    
+Epoch: [6][  100/  109]    Overall Loss 2.255383    Objective Loss 2.255383    CE Loss 1.531368    KL Loss 2.896061    Distillation Loss 2.255383                                        LR 0.001000    Time 0.113246    
+Epoch: [6][  109/  109]    Overall Loss 2.257015    Objective Loss 2.257015    CE Loss 1.532644    KL Loss 2.897483    Distillation Loss 2.257015    Top1 33.417085    Top5 95.226131    LR 0.001000    Time 0.111276    
+--- validate (epoch=6)-----------
+8105 samples (256 per mini-batch)
+Epoch: [6][   25/   32]    Loss 2.734394    Top1 25.750000    Top5 90.671875    
+Epoch: [6][   32/   32]    Loss 2.735642    Top1 25.848242    Top5 90.721777    
+==> Top1: 25.848    Top5: 90.722    Loss: 2.736
+
+==> Confusion:
+[[  24  368  330    0    0    0]
+ [   0 1229  267    0    0    0]
+ [   0 1848  842    0    0    0]
+ [   0  741  455    0    0    0]
+ [   0  357  378    0    0    0]
+ [   0  401  865    0    0    0]]
+
+==> Best [Top1: 25.848   Top5: 90.722   Params: 232576 on epoch: 6]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [7][   25/  109]    Overall Loss 2.272794    Objective Loss 2.272794    CE Loss 1.544885    KL Loss 2.911638    Distillation Loss 2.272794                                        LR 0.001000    Time 0.133891    
+Epoch: [7][   50/  109]    Overall Loss 2.254817    Objective Loss 2.254817    CE Loss 1.530661    KL Loss 2.896625    Distillation Loss 2.254817                                        LR 0.001000    Time 0.121233    
+Epoch: [7][   75/  109]    Overall Loss 2.256356    Objective Loss 2.256356    CE Loss 1.533042    KL Loss 2.893254    Distillation Loss 2.256356                                        LR 0.001000    Time 0.117940    
+Epoch: [7][  100/  109]    Overall Loss 2.256215    Objective Loss 2.256215    CE Loss 1.532216    KL Loss 2.895996    Distillation Loss 2.256215                                        LR 0.001000    Time 0.115212    
+Epoch: [7][  109/  109]    Overall Loss 2.260012    Objective Loss 2.260012    CE Loss 1.535305    KL Loss 2.898827    Distillation Loss 2.260012    Top1 39.447236    Top5 97.236181    LR 0.001000    Time 0.113684    
+--- validate (epoch=7)-----------
+8105 samples (256 per mini-batch)
+Epoch: [7][   25/   32]    Loss 2.955776    Top1 21.125000    Top5 86.984375    
+Epoch: [7][   32/   32]    Loss 2.952031    Top1 20.974707    Top5 87.008020    
+==> Top1: 20.975    Top5: 87.008    Loss: 2.952
+
+==> Confusion:
+[[ 114  492  116    0    0    0]
+ [  10 1411   75    0    0    0]
+ [  23 2493  174    0    0    0]
+ [   1 1114   81    0    0    0]
+ [   2  652   81    0    0    0]
+ [   1  944  308   12    0    1]]
+
+==> Best [Top1: 25.848   Top5: 90.722   Params: 232576 on epoch: 6]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [8][   25/  109]    Overall Loss 2.252895    Objective Loss 2.252895    CE Loss 1.535277    KL Loss 2.870472    Distillation Loss 2.252895                                        LR 0.001000    Time 0.127477    
+Epoch: [8][   50/  109]    Overall Loss 2.241866    Objective Loss 2.241866    CE Loss 1.523254    KL Loss 2.874449    Distillation Loss 2.241866                                        LR 0.001000    Time 0.118716    
+Epoch: [8][   75/  109]    Overall Loss 2.240997    Objective Loss 2.240997    CE Loss 1.523188    KL Loss 2.871235    Distillation Loss 2.240997                                        LR 0.001000    Time 0.116281    
+Epoch: [8][  100/  109]    Overall Loss 2.241613    Objective Loss 2.241613    CE Loss 1.522558    KL Loss 2.876220    Distillation Loss 2.241613                                        LR 0.001000    Time 0.112354    
+Epoch: [8][  109/  109]    Overall Loss 2.243746    Objective Loss 2.243746    CE Loss 1.523815    KL Loss 2.879726    Distillation Loss 2.243746    Top1 36.180905    Top5 96.984925    LR 0.001000    Time 0.109982    
+--- validate (epoch=8)-----------
+8105 samples (256 per mini-batch)
+Epoch: [8][   25/   32]    Loss 2.842077    Top1 22.765625    Top5 89.171875    
+Epoch: [8][   32/   32]    Loss 2.840210    Top1 22.899445    Top5 89.080814    
+==> Top1: 22.899    Top5: 89.081    Loss: 2.840
+
+==> Confusion:
+[[ 319  393   10    0    0    0]
+ [ 103 1354   39    0    0    0]
+ [ 199 2308  183    0    0    0]
+ [  57 1014  125    0    0    0]
+ [  29  586  120    0    0    0]
+ [  17  744  505    0    0    0]]
+
+==> Best [Top1: 25.848   Top5: 90.722   Params: 232576 on epoch: 6]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [9][   25/  109]    Overall Loss 2.254559    Objective Loss 2.254559    CE Loss 1.536276    KL Loss 2.873133    Distillation Loss 2.254559                                        LR 0.001000    Time 0.131759    
+Epoch: [9][   50/  109]    Overall Loss 2.257251    Objective Loss 2.257251    CE Loss 1.533688    KL Loss 2.894253    Distillation Loss 2.257251                                        LR 0.001000    Time 0.121221    
+Epoch: [9][   75/  109]    Overall Loss 2.255729    Objective Loss 2.255729    CE Loss 1.531313    KL Loss 2.897662    Distillation Loss 2.255729                                        LR 0.001000    Time 0.115102    
+Epoch: [9][  100/  109]    Overall Loss 2.251157    Objective Loss 2.251157    CE Loss 1.528304    KL Loss 2.891410    Distillation Loss 2.251157                                        LR 0.001000    Time 0.111435    
+Epoch: [9][  109/  109]    Overall Loss 2.247718    Objective Loss 2.247718    CE Loss 1.525910    KL Loss 2.887231    Distillation Loss 2.247718    Top1 46.482412    Top5 96.231156    LR 0.001000    Time 0.109921    
+--- validate (epoch=9)-----------
+8105 samples (256 per mini-batch)
+Epoch: [9][   25/   32]    Loss 2.667684    Top1 25.140625    Top5 92.140625    
+Epoch: [9][   32/   32]    Loss 2.664730    Top1 25.219001    Top5 92.202344    
+==> Top1: 25.219    Top5: 92.202    Loss: 2.665
+
+==> Confusion:
+[[ 165  459   98    0    0    0]
+ [  13 1339  144    0    0    0]
+ [  27 2123  540    0    0    0]
+ [   6  809  381    0    0    0]
+ [   5  398  332    0    0    0]
+ [   2  430  834    0    0    0]]
+
+==> Best [Top1: 25.848   Top5: 90.722   Params: 232576 on epoch: 6]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [10][   25/  109]    Overall Loss 2.203946    Objective Loss 2.203946    CE Loss 1.490867    KL Loss 2.852319    Distillation Loss 2.203946                                        LR 0.001000    Time 0.141825    
+Epoch: [10][   50/  109]    Overall Loss 2.210960    Objective Loss 2.210960    CE Loss 1.498611    KL Loss 2.849397    Distillation Loss 2.210960                                        LR 0.001000    Time 0.126920    
+Epoch: [10][   75/  109]    Overall Loss 2.230988    Objective Loss 2.230988    CE Loss 1.514438    KL Loss 2.866199    Distillation Loss 2.230988                                        LR 0.001000    Time 0.118400    
+Epoch: [10][  100/  109]    Overall Loss 2.227080    Objective Loss 2.227080    CE Loss 1.512728    KL Loss 2.857410    Distillation Loss 2.227080                                        LR 0.001000    Time 0.114956    
+Epoch: [10][  109/  109]    Overall Loss 2.227998    Objective Loss 2.227998    CE Loss 1.514109    KL Loss 2.855556    Distillation Loss 2.227998    Top1 40.703518    Top5 97.989950    LR 0.001000    Time 0.113881    
+--- validate (epoch=10)-----------
+8105 samples (256 per mini-batch)
+Epoch: [10][   25/   32]    Loss 2.547503    Top1 37.250000    Top5 95.546875    
+Epoch: [10][   32/   32]    Loss 2.534805    Top1 37.618754    Top5 95.706354    
+==> Top1: 37.619    Top5: 95.706    Loss: 2.535
+
+==> Confusion:
+[[  37  221  461    0    0    3]
+ [   0  400 1089    0    0    7]
+ [   0  327 2327    1    0   35]
+ [   0   93 1072    2    0   29]
+ [   0   22  659    1    0   53]
+ [   0   22  955    6    0  283]]
+
+==> Best [Top1: 37.619   Top5: 95.706   Params: 232576 on epoch: 10]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [11][   25/  109]    Overall Loss 2.221917    Objective Loss 2.221917    CE Loss 1.513206    KL Loss 2.834845    Distillation Loss 2.221917                                        LR 0.001000    Time 0.136039    
+Epoch: [11][   50/  109]    Overall Loss 2.217420    Objective Loss 2.217420    CE Loss 1.506768    KL Loss 2.842607    Distillation Loss 2.217420                                        LR 0.001000    Time 0.118255    
+Epoch: [11][   75/  109]    Overall Loss 2.225240    Objective Loss 2.225240    CE Loss 1.513180    KL Loss 2.848239    Distillation Loss 2.225240                                        LR 0.001000    Time 0.113123    
+Epoch: [11][  100/  109]    Overall Loss 2.226040    Objective Loss 2.226040    CE Loss 1.513144    KL Loss 2.851586    Distillation Loss 2.226040                                        LR 0.001000    Time 0.110633    
+Epoch: [11][  109/  109]    Overall Loss 2.224151    Objective Loss 2.224151    CE Loss 1.511214    KL Loss 2.851747    Distillation Loss 2.224151    Top1 41.959799    Top5 98.492462    LR 0.001000    Time 0.109522    
+--- validate (epoch=11)-----------
+8105 samples (256 per mini-batch)
+Epoch: [11][   25/   32]    Loss 2.532843    Top1 36.203125    Top5 96.421875    
+Epoch: [11][   32/   32]    Loss 2.539459    Top1 36.051820    Top5 96.286243    
+==> Top1: 36.052    Top5: 96.286    Loss: 2.539
+
+==> Confusion:
+[[  69  414  238    0    0    1]
+ [   2  954  536    0    0    4]
+ [   2 1104 1548    0    0   36]
+ [   1  309  842    0    0   44]
+ [   0  109  562    0    0   64]
+ [   0   96  819    0    0  351]]
+
+==> Best [Top1: 37.619   Top5: 95.706   Params: 232576 on epoch: 10]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [12][   25/  109]    Overall Loss 2.209096    Objective Loss 2.209096    CE Loss 1.497596    KL Loss 2.846000    Distillation Loss 2.209096                                        LR 0.001000    Time 0.136864    
+Epoch: [12][   50/  109]    Overall Loss 2.209120    Objective Loss 2.209120    CE Loss 1.500464    KL Loss 2.834624    Distillation Loss 2.209120                                        LR 0.001000    Time 0.120120    
+Epoch: [12][   75/  109]    Overall Loss 2.203166    Objective Loss 2.203166    CE Loss 1.495573    KL Loss 2.830372    Distillation Loss 2.203166                                        LR 0.001000    Time 0.114756    
+Epoch: [12][  100/  109]    Overall Loss 2.206628    Objective Loss 2.206628    CE Loss 1.499731    KL Loss 2.827589    Distillation Loss 2.206628                                        LR 0.001000    Time 0.111801    
+Epoch: [12][  109/  109]    Overall Loss 2.208781    Objective Loss 2.208781    CE Loss 1.501084    KL Loss 2.830787    Distillation Loss 2.208781    Top1 37.437186    Top5 97.487437    LR 0.001000    Time 0.110706    
+--- validate (epoch=12)-----------
+8105 samples (256 per mini-batch)
+Epoch: [12][   25/   32]    Loss 2.662332    Top1 34.109375    Top5 95.406250    
+Epoch: [12][   32/   32]    Loss 2.653897    Top1 34.312153    Top5 95.360888    
+==> Top1: 34.312    Top5: 95.361    Loss: 2.654
+
+==> Confusion:
+[[   3   42  677    0    0    0]
+ [   0  111 1384    0    0    1]
+ [   0   98 2584    2    0    6]
+ [   0   33 1160    2    0    1]
+ [   0    6  713    3    0   13]
+ [   0    6 1163   16    0   81]]
+
+==> Best [Top1: 37.619   Top5: 95.706   Params: 232576 on epoch: 10]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [13][   25/  109]    Overall Loss 2.209597    Objective Loss 2.209597    CE Loss 1.505082    KL Loss 2.818057    Distillation Loss 2.209597                                        LR 0.001000    Time 0.153497    
+Epoch: [13][   50/  109]    Overall Loss 2.212814    Objective Loss 2.212814    CE Loss 1.504669    KL Loss 2.832580    Distillation Loss 2.212814                                        LR 0.001000    Time 0.129245    
+Epoch: [13][   75/  109]    Overall Loss 2.200122    Objective Loss 2.200122    CE Loss 1.494680    KL Loss 2.821768    Distillation Loss 2.200122                                        LR 0.001000    Time 0.120065    
+Epoch: [13][  100/  109]    Overall Loss 2.201550    Objective Loss 2.201550    CE Loss 1.496014    KL Loss 2.822142    Distillation Loss 2.201550                                        LR 0.001000    Time 0.117027    
+Epoch: [13][  109/  109]    Overall Loss 2.205109    Objective Loss 2.205109    CE Loss 1.498927    KL Loss 2.824730    Distillation Loss 2.205109    Top1 38.693467    Top5 97.989950    LR 0.001000    Time 0.114590    
+--- validate (epoch=13)-----------
+8105 samples (256 per mini-batch)
+Epoch: [13][   25/   32]    Loss 2.523014    Top1 33.421875    Top5 95.640625    
+Epoch: [13][   32/   32]    Loss 2.523313    Top1 33.522517    Top5 95.484269    
+==> Top1: 33.523    Top5: 95.484    Loss: 2.523
+
+==> Confusion:
+[[ 303  292  127    0    0    0]
+ [ 101  836  558    0    0    1]
+ [ 148 1029 1508    1    0    4]
+ [  41  338  808    2    0    7]
+ [  22  142  560    1    0   10]
+ [  14  114 1059   11    0   68]]
+
+==> Best [Top1: 37.619   Top5: 95.706   Params: 232576 on epoch: 10]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [14][   25/  109]    Overall Loss 2.180986    Objective Loss 2.180986    CE Loss 1.480365    KL Loss 2.802487    Distillation Loss 2.180986                                        LR 0.001000    Time 0.126755    
+Epoch: [14][   50/  109]    Overall Loss 2.196237    Objective Loss 2.196237    CE Loss 1.491946    KL Loss 2.817166    Distillation Loss 2.196237                                        LR 0.001000    Time 0.114614    
+Epoch: [14][   75/  109]    Overall Loss 2.189866    Objective Loss 2.189866    CE Loss 1.489139    KL Loss 2.802906    Distillation Loss 2.189866                                        LR 0.001000    Time 0.111475    
+Epoch: [14][  100/  109]    Overall Loss 2.193836    Objective Loss 2.193836    CE Loss 1.491230    KL Loss 2.810423    Distillation Loss 2.193836                                        LR 0.001000    Time 0.111336    
+Epoch: [14][  109/  109]    Overall Loss 2.193229    Objective Loss 2.193229    CE Loss 1.490923    KL Loss 2.809227    Distillation Loss 2.193229    Top1 39.698492    Top5 97.487437    LR 0.001000    Time 0.109966    
+--- validate (epoch=14)-----------
+8105 samples (256 per mini-batch)
+Epoch: [14][   25/   32]    Loss 2.595293    Top1 32.265625    Top5 95.890625    
+Epoch: [14][   32/   32]    Loss 2.598217    Top1 31.906231    Top5 95.842073    
+==> Top1: 31.906    Top5: 95.842    Loss: 2.598
+
+==> Confusion:
+[[  21  316  385    0    0    0]
+ [   0 1077  418    0    0    1]
+ [   0 1341 1327    3    0   19]
+ [   0  401  780    5    0   10]
+ [   0  146  560    8    0   21]
+ [   0  126  955   29    0  156]]
+
+==> Best [Top1: 37.619   Top5: 95.706   Params: 232576 on epoch: 10]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_checkpoint.pth.tar
+Initiating quantization aware training (QAT)...
+Collecting statistics for quantization aware training (QAT)...
+
+  0%|          | 0/109 [00:00<?, ?it/s]
+  1%|          | 1/109 [00:00<01:34,  1.15it/s]
+  3%|▎         | 3/109 [00:01<01:07,  1.57it/s]
+  5%|▍         | 5/109 [00:01<00:48,  2.13it/s]
+  6%|▌         | 6/109 [00:01<00:37,  2.73it/s]
+  7%|▋         | 8/109 [00:01<00:28,  3.55it/s]
+  9%|▉         | 10/109 [00:01<00:21,  4.50it/s]
+ 10%|█         | 11/109 [00:01<00:19,  4.95it/s]
+ 12%|█▏        | 13/109 [00:01<00:15,  6.01it/s]
+ 14%|█▍        | 15/109 [00:02<00:13,  7.06it/s]
+ 16%|█▌        | 17/109 [00:02<00:12,  7.33it/s]
+ 17%|█▋        | 19/109 [00:02<00:10,  8.30it/s]
+ 19%|█▉        | 21/109 [00:02<00:10,  8.58it/s]
+ 21%|██        | 23/109 [00:02<00:09,  8.80it/s]
+ 23%|██▎       | 25/109 [00:03<00:08,  9.40it/s]
+ 25%|██▍       | 27/109 [00:03<00:09,  9.02it/s]
+ 27%|██▋       | 29/109 [00:03<00:08,  9.77it/s]
+ 28%|██▊       | 31/109 [00:03<00:07, 10.18it/s]
+ 30%|███       | 33/109 [00:04<00:08,  9.36it/s]
+ 32%|███▏      | 35/109 [00:04<00:07, 10.01it/s]
+ 34%|███▍      | 37/109 [00:04<00:08,  8.87it/s]
+ 36%|███▌      | 39/109 [00:04<00:07,  9.62it/s]
+ 38%|███▊      | 41/109 [00:04<00:06, 10.20it/s]
+ 39%|███▉      | 43/109 [00:05<00:07,  9.35it/s]
+ 41%|████▏     | 45/109 [00:05<00:06,  9.96it/s]
+ 43%|████▎     | 47/109 [00:05<00:06,  9.33it/s]
+ 45%|████▍     | 49/109 [00:05<00:06,  9.95it/s]
+ 47%|████▋     | 51/109 [00:05<00:05, 10.39it/s]
+ 49%|████▊     | 53/109 [00:06<00:05,  9.45it/s]
+ 50%|█████     | 55/109 [00:06<00:05, 10.01it/s]
+ 52%|█████▏    | 57/109 [00:06<00:05,  9.28it/s]
+ 54%|█████▍    | 59/109 [00:06<00:05,  9.90it/s]
+ 56%|█████▌    | 61/109 [00:06<00:04, 10.19it/s]
+ 58%|█████▊    | 63/109 [00:07<00:05,  8.80it/s]
+ 59%|█████▊    | 64/109 [00:07<00:04,  9.00it/s]
+ 60%|█████▉    | 65/109 [00:07<00:04,  9.13it/s]
+ 61%|██████    | 66/109 [00:07<00:04,  9.28it/s]
+ 61%|██████▏   | 67/109 [00:07<00:04,  9.32it/s]
+ 62%|██████▏   | 68/109 [00:07<00:04,  9.41it/s]
+ 63%|██████▎   | 69/109 [00:07<00:05,  7.58it/s]
+ 64%|██████▍   | 70/109 [00:07<00:04,  8.08it/s]
+ 65%|██████▌   | 71/109 [00:08<00:04,  8.50it/s]
+ 66%|██████▌   | 72/109 [00:08<00:04,  8.76it/s]
+ 67%|██████▋   | 73/109 [00:08<00:04,  8.94it/s]
+ 68%|██████▊   | 74/109 [00:08<00:04,  8.59it/s]
+ 69%|██████▉   | 75/109 [00:08<00:03,  8.84it/s]
+ 70%|██████▉   | 76/109 [00:08<00:03,  9.07it/s]
+ 71%|███████   | 77/109 [00:08<00:03,  9.18it/s]
+ 72%|███████▏  | 78/109 [00:08<00:03,  9.28it/s]
+ 72%|███████▏  | 79/109 [00:08<00:03,  9.32it/s]
+ 73%|███████▎  | 80/109 [00:09<00:03,  7.30it/s]
+ 75%|███████▌  | 82/109 [00:09<00:03,  8.22it/s]
+ 77%|███████▋  | 84/109 [00:09<00:02,  8.93it/s]
+ 78%|███████▊  | 85/109 [00:09<00:03,  6.69it/s]
+ 79%|███████▉  | 86/109 [00:09<00:03,  7.30it/s]
+ 81%|████████  | 88/109 [00:10<00:02,  8.14it/s]
+ 83%|████████▎ | 90/109 [00:10<00:02,  7.82it/s]
+ 83%|████████▎ | 91/109 [00:10<00:02,  8.31it/s]
+ 84%|████████▍ | 92/109 [00:10<00:01,  8.68it/s]
+ 85%|████████▌ | 93/109 [00:10<00:01,  8.93it/s]
+ 86%|████████▌ | 94/109 [00:10<00:01,  9.08it/s]
+ 87%|████████▋ | 95/109 [00:10<00:01,  9.19it/s]
+ 88%|████████▊ | 96/109 [00:10<00:01,  9.24it/s]
+ 89%|████████▉ | 97/109 [00:11<00:01,  9.37it/s]
+ 90%|████████▉ | 98/109 [00:11<00:01,  9.44it/s]
+ 91%|█████████ | 99/109 [00:11<00:01,  8.80it/s]
+ 93%|█████████▎| 101/109 [00:11<00:00,  9.38it/s]
+ 94%|█████████▍| 103/109 [00:11<00:00, 10.08it/s]
+ 96%|█████████▋| 105/109 [00:11<00:00,  9.38it/s]
+ 98%|█████████▊| 107/109 [00:12<00:00, 10.09it/s]
+100%|██████████| 109/109 [00:12<00:00, 11.02it/s]
+torch.compile() successful, mode=default, cache limit=8
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [15][   25/  109]    Overall Loss 2.460827    Objective Loss 2.460827    CE Loss 1.686552    KL Loss 3.097101    Distillation Loss 2.460827                                        LR 0.000500    Time 1.801167    
+Epoch: [15][   50/  109]    Overall Loss 2.345842    Objective Loss 2.345842    CE Loss 1.604591    KL Loss 2.965003    Distillation Loss 2.345842                                        LR 0.000500    Time 0.948015    
+Epoch: [15][   75/  109]    Overall Loss 2.290810    Objective Loss 2.290810    CE Loss 1.567319    KL Loss 2.893964    Distillation Loss 2.290810                                        LR 0.000500    Time 0.665199    
+Epoch: [15][  100/  109]    Overall Loss 2.268130    Objective Loss 2.268130    CE Loss 1.550624    KL Loss 2.870022    Distillation Loss 2.268130                                        LR 0.000500    Time 0.525622    
+Epoch: [15][  109/  109]    Overall Loss 2.261306    Objective Loss 2.261306    CE Loss 1.546283    KL Loss 2.860095    Distillation Loss 2.261306    Top1 40.201005    Top5 97.236181    LR 0.000500    Time 0.954460    
+--- validate (epoch=15)-----------
+8105 samples (256 per mini-batch)
+Epoch: [15][   25/   32]    Loss 2.181488    Top1 40.296875    Top5 97.656250    
+Epoch: [15][   32/   32]    Loss 2.180501    Top1 40.419494    Top5 97.631092    
+==> Top1: 40.419    Top5: 97.631    Loss: 2.181
+
+==> Confusion:
+[[ 293  243  147    0    0   39]
+ [  55  706  577    0    0  158]
+ [  73  606 1235    0    0  776]
+ [  10  145  492    0    0  549]
+ [   7   35  223    0    0  470]
+ [   5   39  180    0    0 1042]]
+
+==> Best [Top1: 40.419   Top5: 97.631   Params: 232576 on epoch: 15]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [16][   25/  109]    Overall Loss 2.135085    Objective Loss 2.135085    CE Loss 1.458502    KL Loss 2.706331    Distillation Loss 2.135085                                        LR 0.000500    Time 0.135442    
+Epoch: [16][   50/  109]    Overall Loss 2.135316    Objective Loss 2.135316    CE Loss 1.458196    KL Loss 2.708478    Distillation Loss 2.135316                                        LR 0.000500    Time 0.118961    
+Epoch: [16][   75/  109]    Overall Loss 2.143580    Objective Loss 2.143580    CE Loss 1.465158    KL Loss 2.713686    Distillation Loss 2.143580                                        LR 0.000500    Time 0.112674    
+Epoch: [16][  100/  109]    Overall Loss 2.144790    Objective Loss 2.144790    CE Loss 1.465860    KL Loss 2.715721    Distillation Loss 2.144790                                        LR 0.000500    Time 0.110766    
+Epoch: [16][  109/  109]    Overall Loss 2.141639    Objective Loss 2.141639    CE Loss 1.463635    KL Loss 2.712017    Distillation Loss 2.141639    Top1 41.708543    Top5 98.994975    LR 0.000500    Time 0.110025    
+--- validate (epoch=16)-----------
+8105 samples (256 per mini-batch)
+Epoch: [16][   25/   32]    Loss 2.160684    Top1 40.968750    Top5 97.812500    
+Epoch: [16][   32/   32]    Loss 2.154532    Top1 40.937693    Top5 97.803825    
+==> Top1: 40.938    Top5: 97.804    Loss: 2.155
+
+==> Confusion:
+[[ 355  280   63    1    0   23]
+ [  76  928  415    5    0   72]
+ [  90 1005 1077   21    0  497]
+ [  18  279  473   14    0  412]
+ [  11   80  279    5    0  360]
+ [   9   75  223   15    0  944]]
+
+==> Best [Top1: 40.938   Top5: 97.804   Params: 232576 on epoch: 16]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [17][   25/  109]    Overall Loss 2.128341    Objective Loss 2.128341    CE Loss 1.458549    KL Loss 2.679168    Distillation Loss 2.128341                                        LR 0.000500    Time 0.127749    
+Epoch: [17][   50/  109]    Overall Loss 2.129673    Objective Loss 2.129673    CE Loss 1.455917    KL Loss 2.695025    Distillation Loss 2.129673                                        LR 0.000500    Time 0.114143    
+Epoch: [17][   75/  109]    Overall Loss 2.130232    Objective Loss 2.130232    CE Loss 1.454329    KL Loss 2.703612    Distillation Loss 2.130232                                        LR 0.000500    Time 0.109619    
+Epoch: [17][  100/  109]    Overall Loss 2.133751    Objective Loss 2.133751    CE Loss 1.458410    KL Loss 2.701364    Distillation Loss 2.133751                                        LR 0.000500    Time 0.108371    
+Epoch: [17][  109/  109]    Overall Loss 2.132224    Objective Loss 2.132224    CE Loss 1.457093    KL Loss 2.700523    Distillation Loss 2.132224    Top1 41.457286    Top5 96.984925    LR 0.000500    Time 0.108569    
+--- validate (epoch=17)-----------
+8105 samples (256 per mini-batch)
+Epoch: [17][   25/   32]    Loss 2.174963    Top1 40.593750    Top5 97.765625    
+Epoch: [17][   32/   32]    Loss 2.181364    Top1 40.370142    Top5 97.655768    
+==> Top1: 40.370    Top5: 97.656    Loss: 2.181
+
+==> Confusion:
+[[ 412  234   58    0    0   18]
+ [ 171  888  374    6    0   57]
+ [ 219  997 1065   44    0  365]
+ [  60  274  509   23    0  330]
+ [  31   82  289   21    0  312]
+ [  15   83  260   24    0  884]]
+
+==> Best [Top1: 40.938   Top5: 97.804   Params: 232576 on epoch: 16]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [18][   25/  109]    Overall Loss 2.099282    Objective Loss 2.099282    CE Loss 1.431403    KL Loss 2.671514    Distillation Loss 2.099282                                        LR 0.000500    Time 0.164390    
+Epoch: [18][   50/  109]    Overall Loss 2.112552    Objective Loss 2.112552    CE Loss 1.442475    KL Loss 2.680307    Distillation Loss 2.112552                                        LR 0.000500    Time 0.133250    
+Epoch: [18][   75/  109]    Overall Loss 2.111674    Objective Loss 2.111674    CE Loss 1.442036    KL Loss 2.678551    Distillation Loss 2.111674                                        LR 0.000500    Time 0.122867    
+Epoch: [18][  100/  109]    Overall Loss 2.113940    Objective Loss 2.113940    CE Loss 1.443910    KL Loss 2.680119    Distillation Loss 2.113940                                        LR 0.000500    Time 0.119416    
+Epoch: [18][  109/  109]    Overall Loss 2.120163    Objective Loss 2.120163    CE Loss 1.448717    KL Loss 2.685784    Distillation Loss 2.120163    Top1 39.949749    Top5 97.487437    LR 0.000500    Time 0.117143    
+--- validate (epoch=18)-----------
+8105 samples (256 per mini-batch)
+Epoch: [18][   25/   32]    Loss 2.192532    Top1 40.046875    Top5 97.640625    
+Epoch: [18][   32/   32]    Loss 2.196685    Top1 40.259099    Top5 97.618754    
+==> Top1: 40.259    Top5: 97.619    Loss: 2.197
+
+==> Confusion:
+[[ 455  195   57    2    0   13]
+ [ 246  829  368   12    0   41]
+ [ 284  944 1092   84    0  286]
+ [  64  286  524   64    0  258]
+ [  29  100  293   41    0  272]
+ [  20   92  266   65    0  823]]
+
+==> Best [Top1: 40.938   Top5: 97.804   Params: 232576 on epoch: 16]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [19][   25/  109]    Overall Loss 2.117113    Objective Loss 2.117113    CE Loss 1.447592    KL Loss 2.678087    Distillation Loss 2.117113                                        LR 0.000500    Time 0.128305    
+Epoch: [19][   50/  109]    Overall Loss 2.105211    Objective Loss 2.105211    CE Loss 1.439138    KL Loss 2.664294    Distillation Loss 2.105211                                        LR 0.000500    Time 0.114401    
+Epoch: [19][   75/  109]    Overall Loss 2.107360    Objective Loss 2.107360    CE Loss 1.439418    KL Loss 2.671769    Distillation Loss 2.107360                                        LR 0.000500    Time 0.111466    
+Epoch: [19][  100/  109]    Overall Loss 2.103010    Objective Loss 2.103010    CE Loss 1.437189    KL Loss 2.663284    Distillation Loss 2.103010                                        LR 0.000500    Time 0.113211    
+Epoch: [19][  109/  109]    Overall Loss 2.106245    Objective Loss 2.106245    CE Loss 1.439085    KL Loss 2.668640    Distillation Loss 2.106245    Top1 38.944724    Top5 96.984925    LR 0.000500    Time 0.111156    
+--- validate (epoch=19)-----------
+8105 samples (256 per mini-batch)
+Epoch: [19][   25/   32]    Loss 2.179864    Top1 41.093750    Top5 97.593750    
+Epoch: [19][   32/   32]    Loss 2.174083    Top1 41.061073    Top5 97.742134    
+==> Top1: 41.061    Top5: 97.742    Loss: 2.174
+
+==> Confusion:
+[[ 460  166   83    3    0   10]
+ [ 270  769  402   15    0   40]
+ [ 270  874 1186  109    0  251]
+ [  64  249  550   84    0  249]
+ [  29   69  318   47    0  272]
+ [  18   65  281   74    0  828]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [20][   25/  109]    Overall Loss 2.112757    Objective Loss 2.112757    CE Loss 1.440191    KL Loss 2.690265    Distillation Loss 2.112757                                        LR 0.000500    Time 0.128667    
+Epoch: [20][   50/  109]    Overall Loss 2.092321    Objective Loss 2.092321    CE Loss 1.427480    KL Loss 2.659366    Distillation Loss 2.092321                                        LR 0.000500    Time 0.116997    
+Epoch: [20][   75/  109]    Overall Loss 2.099572    Objective Loss 2.099572    CE Loss 1.433077    KL Loss 2.665979    Distillation Loss 2.099572                                        LR 0.000500    Time 0.112526    
+Epoch: [20][  100/  109]    Overall Loss 2.100580    Objective Loss 2.100580    CE Loss 1.434010    KL Loss 2.666277    Distillation Loss 2.100580                                        LR 0.000500    Time 0.110740    
+Epoch: [20][  109/  109]    Overall Loss 2.102183    Objective Loss 2.102183    CE Loss 1.435326    KL Loss 2.667426    Distillation Loss 2.102183    Top1 38.190955    Top5 96.482412    LR 0.000500    Time 0.109833    
+--- validate (epoch=20)-----------
+8105 samples (256 per mini-batch)
+Epoch: [20][   25/   32]    Loss 2.201706    Top1 37.203125    Top5 97.625000    
+Epoch: [20][   32/   32]    Loss 2.193815    Top1 37.532387    Top5 97.606416    
+==> Top1: 37.532    Top5: 97.606    Loss: 2.194
+
+==> Confusion:
+[[ 513  113   60    5    0   31]
+ [ 407  591  368   12    0  118]
+ [ 454  657  901   54    0  624]
+ [ 117  192  372   31    0  484]
+ [  48   66  186   14    0  421]
+ [  35   47  161   17    0 1006]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [21][   25/  109]    Overall Loss 2.087079    Objective Loss 2.087079    CE Loss 1.427414    KL Loss 2.638662    Distillation Loss 2.087079                                        LR 0.000500    Time 0.129422    
+Epoch: [21][   50/  109]    Overall Loss 2.103003    Objective Loss 2.103003    CE Loss 1.437371    KL Loss 2.662529    Distillation Loss 2.103003                                        LR 0.000500    Time 0.118823    
+Epoch: [21][   75/  109]    Overall Loss 2.095830    Objective Loss 2.095830    CE Loss 1.429331    KL Loss 2.665994    Distillation Loss 2.095830                                        LR 0.000500    Time 0.119600    
+Epoch: [21][  100/  109]    Overall Loss 2.097404    Objective Loss 2.097404    CE Loss 1.431379    KL Loss 2.664101    Distillation Loss 2.097404                                        LR 0.000500    Time 0.114894    
+Epoch: [21][  109/  109]    Overall Loss 2.095997    Objective Loss 2.095997    CE Loss 1.430636    KL Loss 2.661447    Distillation Loss 2.095997    Top1 39.698492    Top5 97.236181    LR 0.000500    Time 0.113492    
+--- validate (epoch=21)-----------
+8105 samples (256 per mini-batch)
+Epoch: [21][   25/   32]    Loss 2.155564    Top1 40.234375    Top5 97.906250    
+Epoch: [21][   32/   32]    Loss 2.155086    Top1 40.246761    Top5 97.828501    
+==> Top1: 40.247    Top5: 97.829    Loss: 2.155
+
+==> Confusion:
+[[ 445  197   60    2    0   18]
+ [ 258  776  385   12    0   65]
+ [ 265  895 1079   69    0  382]
+ [  59  263  473   45    0  356]
+ [  29   84  267   26    0  329]
+ [  19   66  226   38    0  917]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [22][   25/  109]    Overall Loss 2.121678    Objective Loss 2.121678    CE Loss 1.451415    KL Loss 2.681054    Distillation Loss 2.121678                                        LR 0.000500    Time 0.136171    
+Epoch: [22][   50/  109]    Overall Loss 2.101840    Objective Loss 2.101840    CE Loss 1.437352    KL Loss 2.657954    Distillation Loss 2.101840                                        LR 0.000500    Time 0.121286    
+Epoch: [22][   75/  109]    Overall Loss 2.093670    Objective Loss 2.093670    CE Loss 1.430730    KL Loss 2.651761    Distillation Loss 2.093670                                        LR 0.000500    Time 0.114361    
+Epoch: [22][  100/  109]    Overall Loss 2.097088    Objective Loss 2.097088    CE Loss 1.432568    KL Loss 2.658082    Distillation Loss 2.097088                                        LR 0.000500    Time 0.110984    
+Epoch: [22][  109/  109]    Overall Loss 2.093599    Objective Loss 2.093599    CE Loss 1.430697    KL Loss 2.651605    Distillation Loss 2.093599    Top1 44.974874    Top5 97.487437    LR 0.000500    Time 0.109957    
+--- validate (epoch=22)-----------
+8105 samples (256 per mini-batch)
+Epoch: [22][   25/   32]    Loss 2.166040    Top1 39.234375    Top5 97.593750    
+Epoch: [22][   32/   32]    Loss 2.164674    Top1 39.333745    Top5 97.557064    
+==> Top1: 39.334    Top5: 97.557    Loss: 2.165
+
+==> Confusion:
+[[ 457  155   83    1    0   26]
+ [ 312  686  404    8    0   86]
+ [ 276  776 1057   40    0  541]
+ [  70  212  445   23    0  446]
+ [  28   60  247    7    0  393]
+ [  19   72  194   15    0  966]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [23][   25/  109]    Overall Loss 2.083045    Objective Loss 2.083045    CE Loss 1.417461    KL Loss 2.662337    Distillation Loss 2.083045                                        LR 0.000500    Time 0.146595    
+Epoch: [23][   50/  109]    Overall Loss 2.105297    Objective Loss 2.105297    CE Loss 1.436132    KL Loss 2.676660    Distillation Loss 2.105297                                        LR 0.000500    Time 0.128196    
+Epoch: [23][   75/  109]    Overall Loss 2.101313    Objective Loss 2.101313    CE Loss 1.434770    KL Loss 2.666173    Distillation Loss 2.101313                                        LR 0.000500    Time 0.119320    
+Epoch: [23][  100/  109]    Overall Loss 2.093961    Objective Loss 2.093961    CE Loss 1.429709    KL Loss 2.657011    Distillation Loss 2.093961                                        LR 0.000500    Time 0.115051    
+Epoch: [23][  109/  109]    Overall Loss 2.094243    Objective Loss 2.094243    CE Loss 1.429678    KL Loss 2.658259    Distillation Loss 2.094243    Top1 39.447236    Top5 97.989950    LR 0.000500    Time 0.113704    
+--- validate (epoch=23)-----------
+8105 samples (256 per mini-batch)
+Epoch: [23][   25/   32]    Loss 2.175800    Top1 39.140625    Top5 97.750000    
+Epoch: [23][   32/   32]    Loss 2.179480    Top1 38.877236    Top5 97.643430    
+==> Top1: 38.877    Top5: 97.643    Loss: 2.179
+
+==> Confusion:
+[[ 383  181  111    8    0   39]
+ [ 114  644  499   39    0  200]
+ [ 160  524 1009  100    0  897]
+ [  25  145  344   55    0  627]
+ [  15   36  167   36    0  481]
+ [  10   31  137   28    0 1060]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [24][   25/  109]    Overall Loss 2.080470    Objective Loss 2.080470    CE Loss 1.422289    KL Loss 2.632724    Distillation Loss 2.080470                                        LR 0.000250    Time 0.133085    
+Epoch: [24][   50/  109]    Overall Loss 2.053344    Objective Loss 2.053344    CE Loss 1.401737    KL Loss 2.606428    Distillation Loss 2.053344                                        LR 0.000250    Time 0.118913    
+Epoch: [24][   75/  109]    Overall Loss 2.054332    Objective Loss 2.054332    CE Loss 1.403201    KL Loss 2.604526    Distillation Loss 2.054332                                        LR 0.000250    Time 0.113416    
+Epoch: [24][  100/  109]    Overall Loss 2.057897    Objective Loss 2.057897    CE Loss 1.406910    KL Loss 2.603950    Distillation Loss 2.057897                                        LR 0.000250    Time 0.111293    
+Epoch: [24][  109/  109]    Overall Loss 2.054444    Objective Loss 2.054444    CE Loss 1.404337    KL Loss 2.600428    Distillation Loss 2.054444    Top1 41.959799    Top5 97.738693    LR 0.000250    Time 0.110661    
+--- validate (epoch=24)-----------
+8105 samples (256 per mini-batch)
+Epoch: [24][   25/   32]    Loss 2.145058    Top1 40.828125    Top5 97.703125    
+Epoch: [24][   32/   32]    Loss 2.144165    Top1 40.271437    Top5 97.692782    
+==> Top1: 40.271    Top5: 97.693    Loss: 2.144
+
+==> Confusion:
+[[ 407  166  116    4    0   29]
+ [ 138  654  519   35    0  150]
+ [ 186  514 1111  123    0  756]
+ [  38  142  396   50    0  570]
+ [  16   38  185   31    0  465]
+ [  10   33  158   23    0 1042]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [25][   25/  109]    Overall Loss 2.015900    Objective Loss 2.015900    CE Loss 1.373245    KL Loss 2.570620    Distillation Loss 2.015900                                        LR 0.000250    Time 0.135151    
+Epoch: [25][   50/  109]    Overall Loss 2.029737    Objective Loss 2.029737    CE Loss 1.382948    KL Loss 2.587157    Distillation Loss 2.029737                                        LR 0.000250    Time 0.121071    
+Epoch: [25][   75/  109]    Overall Loss 2.044782    Objective Loss 2.044782    CE Loss 1.394265    KL Loss 2.602067    Distillation Loss 2.044782                                        LR 0.000250    Time 0.113877    
+Epoch: [25][  100/  109]    Overall Loss 2.049660    Objective Loss 2.049660    CE Loss 1.398496    KL Loss 2.604657    Distillation Loss 2.049660                                        LR 0.000250    Time 0.110778    
+Epoch: [25][  109/  109]    Overall Loss 2.045903    Objective Loss 2.045903    CE Loss 1.396746    KL Loss 2.596627    Distillation Loss 2.045903    Top1 41.457286    Top5 96.733668    LR 0.000250    Time 0.109965    
+--- validate (epoch=25)-----------
+8105 samples (256 per mini-batch)
+Epoch: [25][   25/   32]    Loss 2.150591    Top1 38.859375    Top5 97.671875    
+Epoch: [25][   32/   32]    Loss 2.142988    Top1 39.161012    Top5 97.766811    
+==> Top1: 39.161    Top5: 97.767    Loss: 2.143
+
+==> Confusion:
+[[ 419  172   94    5    0   32]
+ [ 165  667  481   27    0  156]
+ [ 195  622 1000  114    0  759]
+ [  44  159  389   49    0  555]
+ [  20   43  178   42    0  452]
+ [  12   41  146   27    0 1040]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [26][   25/  109]    Overall Loss 2.052532    Objective Loss 2.052532    CE Loss 1.401170    KL Loss 2.605447    Distillation Loss 2.052532                                        LR 0.000250    Time 0.159101    
+Epoch: [26][   50/  109]    Overall Loss 2.045401    Objective Loss 2.045401    CE Loss 1.394594    KL Loss 2.603228    Distillation Loss 2.045401                                        LR 0.000250    Time 0.129781    
+Epoch: [26][   75/  109]    Overall Loss 2.040817    Objective Loss 2.040817    CE Loss 1.393062    KL Loss 2.591022    Distillation Loss 2.040817                                        LR 0.000250    Time 0.120981    
+Epoch: [26][  100/  109]    Overall Loss 2.037942    Objective Loss 2.037942    CE Loss 1.392807    KL Loss 2.580538    Distillation Loss 2.037942                                        LR 0.000250    Time 0.118388    
+Epoch: [26][  109/  109]    Overall Loss 2.037930    Objective Loss 2.037930    CE Loss 1.392544    KL Loss 2.581545    Distillation Loss 2.037930    Top1 41.457286    Top5 98.743719    LR 0.000250    Time 0.117090    
+--- validate (epoch=26)-----------
+8105 samples (256 per mini-batch)
+Epoch: [26][   25/   32]    Loss 2.158129    Top1 38.390625    Top5 97.765625    
+Epoch: [26][   32/   32]    Loss 2.156683    Top1 38.741518    Top5 97.742134    
+==> Top1: 38.742    Top5: 97.742    Loss: 2.157
+
+==> Confusion:
+[[496 148  56   0   0  22]
+ [364 680 360   8   0  84]
+ [378 784 972  38   0 518]
+ [ 87 242 410  31   0 426]
+ [ 36  73 231  18   0 377]
+ [ 28  66 197  14   0 961]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [27][   25/  109]    Overall Loss 2.045703    Objective Loss 2.045703    CE Loss 1.396870    KL Loss 2.595332    Distillation Loss 2.045703                                        LR 0.000250    Time 0.129578    
+Epoch: [27][   50/  109]    Overall Loss 2.038845    Objective Loss 2.038845    CE Loss 1.391558    KL Loss 2.589146    Distillation Loss 2.038845                                        LR 0.000250    Time 0.114598    
+Epoch: [27][   75/  109]    Overall Loss 2.038695    Objective Loss 2.038695    CE Loss 1.393221    KL Loss 2.581897    Distillation Loss 2.038695                                        LR 0.000250    Time 0.112237    
+Epoch: [27][  100/  109]    Overall Loss 2.039660    Objective Loss 2.039660    CE Loss 1.394156    KL Loss 2.582017    Distillation Loss 2.039660                                        LR 0.000250    Time 0.112971    
+Epoch: [27][  109/  109]    Overall Loss 2.042360    Objective Loss 2.042360    CE Loss 1.396106    KL Loss 2.585018    Distillation Loss 2.042360    Top1 42.211055    Top5 98.492462    LR 0.000250    Time 0.111423    
+--- validate (epoch=27)-----------
+8105 samples (256 per mini-batch)
+Epoch: [27][   25/   32]    Loss 2.156541    Top1 38.984375    Top5 97.609375    
+Epoch: [27][   32/   32]    Loss 2.166475    Top1 39.000617    Top5 97.729796    
+==> Top1: 39.001    Top5: 97.730    Loss: 2.166
+
+==> Confusion:
+[[472 176  52   4   0  18]
+ [271 802 331  16   0  76]
+ [326 917 907  70   0 470]
+ [ 78 264 401  42   0 411]
+ [ 37  91 213  27   0 367]
+ [ 17  73 211  27   0 938]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [28][   25/  109]    Overall Loss 2.015477    Objective Loss 2.015477    CE Loss 1.377621    KL Loss 2.551421    Distillation Loss 2.015477                                        LR 0.000125    Time 0.130410    
+Epoch: [28][   50/  109]    Overall Loss 2.018515    Objective Loss 2.018515    CE Loss 1.376413    KL Loss 2.568408    Distillation Loss 2.018515                                        LR 0.000125    Time 0.117902    
+Epoch: [28][   75/  109]    Overall Loss 2.015747    Objective Loss 2.015747    CE Loss 1.376062    KL Loss 2.558742    Distillation Loss 2.015747                                        LR 0.000125    Time 0.115693    
+Epoch: [28][  100/  109]    Overall Loss 2.013036    Objective Loss 2.013036    CE Loss 1.374340    KL Loss 2.554786    Distillation Loss 2.013036                                        LR 0.000125    Time 0.112521    
+Epoch: [28][  109/  109]    Overall Loss 2.008969    Objective Loss 2.008969    CE Loss 1.372871    KL Loss 2.544392    Distillation Loss 2.008969    Top1 44.723618    Top5 98.241206    LR 0.000125    Time 0.111190    
+--- validate (epoch=28)-----------
+8105 samples (256 per mini-batch)
+Epoch: [28][   25/   32]    Loss 2.135484    Top1 40.781250    Top5 97.656250    
+Epoch: [28][   32/   32]    Loss 2.133507    Top1 40.752622    Top5 97.668106    
+==> Top1: 40.753    Top5: 97.668    Loss: 2.134
+
+==> Confusion:
+[[ 385  185  118    8    0   26]
+ [ 113  719  506   37    0  121]
+ [ 143  591 1106  181    0  669]
+ [  25  152  424   71    0  524]
+ [  15   35  193   49    0  443]
+ [   9   38  160   37    0 1022]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+
+
+Training epoch: 27790 samples (256 per mini-batch, world size: 1)
+Epoch: [29][   25/  109]    Overall Loss 1.998733    Objective Loss 1.998733    CE Loss 1.368394    KL Loss 2.521356    Distillation Loss 1.998733                                        LR 0.000125    Time 0.129488    
+Epoch: [29][   50/  109]    Overall Loss 2.010292    Objective Loss 2.010292    CE Loss 1.374814    KL Loss 2.541909    Distillation Loss 2.010292                                        LR 0.000125    Time 0.120957    
+Epoch: [29][   75/  109]    Overall Loss 2.011376    Objective Loss 2.011376    CE Loss 1.375237    KL Loss 2.544553    Distillation Loss 2.011376                                        LR 0.000125    Time 0.118191    
+Epoch: [29][  100/  109]    Overall Loss 2.010275    Objective Loss 2.010275    CE Loss 1.373933    KL Loss 2.545369    Distillation Loss 2.010275                                        LR 0.000125    Time 0.114204    
+Epoch: [29][  109/  109]    Overall Loss 2.006101    Objective Loss 2.006101    CE Loss 1.371312    KL Loss 2.539157    Distillation Loss 2.006101    Top1 46.482412    Top5 98.492462    LR 0.000125    Time 0.112106    
+--- validate (epoch=29)-----------
+8105 samples (256 per mini-batch)
+Epoch: [29][   25/   32]    Loss 2.118028    Top1 40.625000    Top5 97.781250    
+Epoch: [29][   32/   32]    Loss 2.126734    Top1 40.690932    Top5 97.853177    
+==> Top1: 40.691    Top5: 97.853    Loss: 2.127
+
+==> Confusion:
+[[ 394  208   91    6    0   23]
+ [ 137  774  452   35    0   98]
+ [ 171  746 1085  172    0  516]
+ [  33  195  426   83    0  459]
+ [  16   49  236   44    0  390]
+ [  12   45  190   57    0  962]]
+
+==> Best [Top1: 41.061   Top5: 97.742   Params: 232576 on epoch: 19]
+Saving checkpoint to: logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_checkpoint.pth.tar
+--- test (ckpt) ---------------------
+8105 samples (256 per mini-batch)
+Test: [   25/   32]    Loss 2.131907    Top1 40.640625    Top5 97.718750    
+Test: [   32/   32]    Loss 2.126951    Top1 40.690932    Top5 97.853177    
+==> Top1: 40.691    Top5: 97.853    Loss: 2.127
+
+==> Confusion:
+[[ 394  208   91    6    0   23]
+ [ 137  774  452   35    0   98]
+ [ 171  746 1085  172    0  516]
+ [  33  195  426   83    0  459]
+ [  16   49  236   44    0  390]
+ [  12   45  190   57    0  962]]
+
+--- test (best) ---------------------
+=> loading checkpoint logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_best.pth.tar
+=> Checkpoint contents:
++----------------------+-------------+----------------------------------------+
+| Key                  | Type        | Value                                  |
+|----------------------+-------------+----------------------------------------|
+| arch                 | str         | ai85tallyqambv3largepromptplane16count |
+| compression_sched    | dict        |                                        |
+| epoch                | int         | 19                                     |
+| extras               | dict        |                                        |
+| optimizer_state_dict | dict        |                                        |
+| optimizer_type       | type        | Adam                                   |
+| state_dict           | OrderedDict |                                        |
++----------------------+-------------+----------------------------------------+
+
+=> Checkpoint['extras'] contents:
++--------------+--------+---------+
+| Key          | Type   |   Value |
+|--------------+--------+---------|
+| best_epoch   | int    | 19      |
+| best_mAP     | int    |  0      |
+| best_top1    | float  | 41.0611 |
+| current_mAP  | int    |  0      |
+| current_top1 | float  | 41.0611 |
++--------------+--------+---------+
+
+Loaded compression schedule from checkpoint (epoch 19)
+=> loaded 'state_dict' from checkpoint 'logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15_qat_best.pth.tar'
+torch.compile() successful, mode=default, cache limit=8
+8105 samples (256 per mini-batch)
+Test: [   25/   32]    Loss 2.178834    Top1 40.687500    Top5 97.609375    
+Test: [   32/   32]    Loss 2.176226    Top1 40.999383    Top5 97.705120    
+==> Top1: 40.999    Top5: 97.705    Loss: 2.176
+
+==> Confusion:
+[[ 461  164   84    3    0   10]
+ [ 269  768  404   15    0   40]
+ [ 269  880 1182  107    0  252]
+ [  65  249  550   81    0  251]
+ [  29   70  317   48    0  271]
+ [  17   66  283   69    0  831]]
+
+
+Log file for this run: /content/MAX78000/ai8x-training/logs/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955/max78000-tier10-top5-promptplane16-c40-30ep-q15___2026.06.12-102955.log
