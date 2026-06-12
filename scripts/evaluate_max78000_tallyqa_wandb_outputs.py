@@ -101,7 +101,9 @@ def hard_labels(target: torch.Tensor) -> torch.Tensor:
 
 
 def load_checkpoint_state(path: Path) -> dict[str, torch.Tensor]:
-    payload = torch.load(path, map_location="cpu")
+    # ai8x-training checkpoints are local/trusted run artifacts and may include
+    # optimizer objects that PyTorch 2.6+ rejects in weights_only mode.
+    payload = torch.load(path, map_location="cpu", weights_only=False)
     state = payload.get("state_dict", payload) if isinstance(payload, dict) else payload
     if not isinstance(state, dict):
         raise TypeError(f"Unsupported checkpoint payload in {path}")

@@ -2995,11 +2995,14 @@ def representative_dataset(
         min_per_prompt=int(quant_cfg.get("representative_min_per_prompt", 4)),
         min_per_output_class=int(quant_cfg.get("representative_min_per_output_class", 32)),
     ):
-        yield {
-            key: value.astype(np.int32 if key == "token_ids" else np.float32)
-            for key, value in inputs.items()
+        converted: dict[str, np.ndarray] = {
+            "images": inputs["images"].astype(np.float32),
         }
-
+        if "token_ids" in inputs:
+            converted["token_ids"] = inputs["token_ids"].astype(np.int32)
+        else:
+            converted["prompt_embedding"] = inputs["prompt_embedding"].astype(np.float32)
+        yield converted
 
 def export_ptq_tflite(
     model: tf.keras.Model,

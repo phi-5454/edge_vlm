@@ -252,7 +252,9 @@ def log_checkpoint_histograms(checkpoint: Path, max_tensors: int = 96) -> None:
         print(f"Warning: could not import torch for checkpoint histograms: {exc}")
         return
     try:
-        payload = torch.load(checkpoint, map_location="cpu")
+        # ai8x-training checkpoints are local/trusted run artifacts and may
+        # include optimizer objects that PyTorch 2.6+ rejects in weights_only mode.
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     except Exception as exc:  # pragma: no cover - best-effort logging.
         print(f"Warning: could not load checkpoint histograms from {checkpoint}: {exc}")
         return
