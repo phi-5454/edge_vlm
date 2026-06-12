@@ -17,7 +17,13 @@
 #include "libs/tensorflow/utils.h"
 #include "libs/tpu/edgetpu_manager.h"
 #include "libs/tpu/edgetpu_op.h"
+#include "vlm_micro_selftest_config.h"
+#if VLM_MICRO_ENABLE_PROMPT_LOOKUP
 #include "tallyqa_prompt_embedding_lookup.h"
+#else
+#define TALLYQA_PROMPT_EMBEDDING_COUNT 0
+#define TALLYQA_PROMPT_EMBEDDING_DIM 0
+#endif
 #include "third_party/freertos_kernel/include/FreeRTOS.h"
 #include "third_party/freertos_kernel/include/task.h"
 #include "third_party/tflite-micro/tensorflow/lite/c/common.h"
@@ -36,7 +42,7 @@ constexpr int kMaxLineBytes = 512;
 constexpr int kMaxOutputValuesPerTensor = 256;
 constexpr uint32_t kSelfTestSeed = 0x5EED1234;
 constexpr int kSelfTestWarmupIterations = 3;
-constexpr int kSelfTestMeasuredIterations = 32;
+constexpr int kSelfTestMeasuredIterations = 100;
 constexpr int kSelfTestRepeatDelayMs = 5000;
 
 STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena, kTensorArenaSize);
@@ -213,6 +219,7 @@ bool IsImageTensor(const TfLiteTensor* tensor) {
 }
 
 bool IsPromptTensor(const TfLiteTensor* tensor) {
+#if VLM_MICRO_ENABLE_PROMPT_LOOKUP
   if (tensor == nullptr || tensor->dims == nullptr) return false;
   if (tensor->bytes != TALLYQA_PROMPT_EMBEDDING_DIM) return false;
   if (tensor->type != kTfLiteUInt8) return false;
@@ -224,6 +231,10 @@ bool IsPromptTensor(const TfLiteTensor* tensor) {
     return tensor->dims->data[0] == TALLYQA_PROMPT_EMBEDDING_DIM;
   }
   return false;
+#else
+  (void)tensor;
+  return false;
+#endif
 }
 
 int FindInputIndex(tflite::MicroInterpreter* interpreter,
@@ -419,6 +430,18 @@ void PrintSelfTestSummaryJson(uint32_t run_id, int measured_count,
       static_cast<unsigned long>(avg_copy_us));
 }
 
+void CopyPromptEmbedding(TfLiteTensor* prompt_input, uint32_t prompt_id) {
+#if VLM_MICRO_ENABLE_PROMPT_LOOKUP
+  if (prompt_input == nullptr) return;
+  std::memcpy(prompt_input->data.raw,
+              kTallyQAPromptEmbeddingTable[prompt_id],
+              TALLYQA_PROMPT_EMBEDDING_DIM);
+#else
+  (void)prompt_input;
+  (void)prompt_id;
+#endif
+}
+
 void RunSelfTestLoop(tflite::MicroInterpreter* interpreter,
                      TfLiteTensor* image_input, TfLiteTensor* prompt_input) {
   uint32_t run_id = 0;
@@ -454,9 +477,7 @@ void RunSelfTestLoop(tflite::MicroInterpreter* interpreter,
       uint64_t prompt_copy_us = 0;
       if (prompt_input != nullptr) {
         const uint64_t prompt_copy_start_us = TimerMicros();
-        std::memcpy(prompt_input->data.raw,
-                    kTallyQAPromptEmbeddingTable[prompt_id],
-                    TALLYQA_PROMPT_EMBEDDING_DIM);
+        CopyPromptEmbedding(prompt_input, prompt_id);
         prompt_copy_us = TimerMicros() - prompt_copy_start_us;
       }
 
@@ -507,6 +528,12 @@ void RunSelfTestLoop(tflite::MicroInterpreter* interpreter,
   }
 
   tflite::MicroErrorReporter error_reporter;
+#if VLM_MICRO_ENABLE_DETECTION_POSTPROCESS
+  tflite::MicroMutableOpResolver<3> resolver;
+  resolver.AddCustom(kCustomOp, RegisterCustomOp());
+  resolver.AddDequantize();
+  resolver.AddDetectionPostprocess();
+#else
   tflite::MicroMutableOpResolver<11> resolver;
   resolver.AddCustom(kCustomOp, RegisterCustomOp());
   resolver.AddAdd();
@@ -519,6 +546,7 @@ void RunSelfTestLoop(tflite::MicroInterpreter* interpreter,
   resolver.AddQuantize();
   resolver.AddDequantize();
   resolver.AddSoftmax();
+#endif
 
   tflite::RecordingMicroAllocator* allocator =
       tflite::RecordingMicroAllocator::Create(tensor_arena, kTensorArenaSize,

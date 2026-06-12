@@ -119,7 +119,13 @@ Then from the Coral SDK root:
 ```bash
 cd ../coralmicro
 bash build.sh
-python3 scripts/flashtool.py -e vlm_micro_tallyqa_benchmark_serial
+if [[ -e build/examples/vlm_micro_tallyqa_benchmark_serial/vlm_micro_tallyqa_benchmark_serial ]]; then
+  .venv/bin/python scripts/flashtool.py -e vlm_micro_tallyqa_benchmark_serial
+else
+  .venv/bin/python scripts/flashtool.py \
+    --elf_path build/examples/vlm_micro_tallyqa_benchmark_serial/vlm_micro_tallyqa_benchmark_serial.stripped \
+    --data_dir build/examples/vlm_micro_tallyqa_benchmark_serial
+fi
 ```
 
 ## Dataset Sweep
