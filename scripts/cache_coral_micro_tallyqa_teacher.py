@@ -34,6 +34,9 @@ from scripts.cache_tflite_tallyqa_teacher import (
 
 DEFAULT_DATASET = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
 DEFAULT_OUTPUT = Path("artifacts/teacher_cache/coral_micro_tallyqa_benchmark_smoke.jsonl")
+DEFAULT_PROMPT_LOOKUP_MANIFEST = Path(
+    "artifacts/exports/coral/prompt_embedding_lookup/prompt_embedding_lookup_manifest.json"
+)
 PREFIX_READY = "VLM_MICRO_READY "
 PREFIX_RESULT = "VLM_MICRO_RESULT "
 PREFIX_ERROR = "VLM_MICRO_ERROR "
@@ -75,6 +78,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--model-name", default="coral_micro_tallyqa_benchmark")
+    parser.add_argument(
+        "--prompt-lookup-manifest",
+        type=Path,
+        default=DEFAULT_PROMPT_LOOKUP_MANIFEST,
+        help=(
+            "Prompt lookup manifest matching the firmware-staged lookup header. "
+            "Required when the board model has a prompt-embedding input."
+        ),
+    )
     parser.add_argument("--answer-min", type=int, default=0)
     parser.add_argument("--answer-max", type=int, default=5)
     parser.add_argument("--collapse-at", type=int, default=5)
@@ -309,12 +321,59 @@ def quantize_for_board_input(image: Any, ready: dict[str, Any]) -> bytes:
     raise ValueError(f"Unsupported board input type: {input_type}")
 
 
-def send_header(ser: Any, dataset_index: int, image_index: int, payload_size: int) -> None:
+def normalize_prompt(value: str) -> str:
+    return " ".join(str(value).strip().lower().split())
+
+
+def load_prompt_lookup(path: Path) -> tuple[dict[str, int], dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    mapping: dict[str, int] = {}
+    for index, entry in enumerate(manifest.get("entries", [])):
+        prompt = normalize_prompt(str(entry.get("prompt", "")))
+        if prompt and prompt not in mapping:
+            mapping[prompt] = index
+    if not mapping:
+        raise ValueError(f"No prompt entries found in {path}")
+    return mapping, manifest
+
+
+def prompt_id_for_row(row: dict[str, Any], prompt_lookup: dict[str, int]) -> int:
+    candidates = [
+        row.get("student_prompt"),
+        row.get("item"),
+        row.get("teacher_prompt_clean"),
+        row.get("teacher_prompt"),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        normalized = normalize_prompt(str(candidate))
+        if normalized in prompt_lookup:
+            return int(prompt_lookup[normalized])
+    prompt = str(row.get("student_prompt", row.get("item", "")))
+    raise KeyError(
+        f"Prompt {prompt!r} is not present in the prompt lookup manifest. "
+        "Regenerate artifacts/exports/coral/prompt_embedding_lookup or pass the "
+        "matching --prompt-lookup-manifest."
+    )
+
+
+def send_header(
+    ser: Any,
+    dataset_index: int,
+    image_index: int,
+    payload_size: int,
+    prompt_id: int | None = None,
+) -> None:
     header = {
         "dataset_index": int(dataset_index),
         "image_index": int(image_index),
         "bytes": int(payload_size),
     }
+    if prompt_id is not None:
+        header["prompt_id"] = int(prompt_id)
     ser.write((PREFIX_INPUT + json.dumps(header, separators=(",", ":")) + "\n").encode("utf-8"))
     ser.flush()
 
@@ -360,6 +419,7 @@ def write_record(
     board_ready: dict[str, Any],
     board_result: dict[str, Any],
     host_roundtrip_us: float,
+    prompt_lookup_entry: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], np.ndarray, int]:
     logits = result_logits(board_result, args.output_tensor_index)
     class_count = min(logits.size, args.answer_max - args.answer_min + 1)
@@ -406,6 +466,8 @@ def write_record(
             "board_model_path": board_ready.get("model_path"),
             "student_prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
             "image_identity": image_identity,
+            "prompt_lookup_entry": prompt_lookup_entry,
+            "prompt_lookup_manifest": str(args.prompt_lookup_manifest),
         },
         "image_preprocessing": {
             "cached_image_size": [224, 224],
@@ -448,6 +510,10 @@ def main() -> None:
 
     metadata = load_metadata(args.dataset)
     examples = load_examples(args.dataset)
+    prompt_lookup: dict[str, int] | None = None
+    prompt_lookup_manifest: dict[str, Any] | None = None
+    if args.prompt_lookup_manifest.exists():
+        prompt_lookup, prompt_lookup_manifest = load_prompt_lookup(args.prompt_lookup_manifest)
     selected = selected_indices(examples, args)
     completed = completed_indices(args.output) if args.resume else set()
     indices = [index for index in selected if index not in completed]
@@ -469,6 +535,8 @@ def main() -> None:
                     "selection_sha256": selection_hash,
                     "port": args.port,
                     "baud": args.baud,
+                    "prompt_lookup_manifest": str(args.prompt_lookup_manifest),
+                    "prompt_lookup_entries": len(prompt_lookup or {}),
                 },
                 indent=2,
             )
@@ -515,6 +583,18 @@ def main() -> None:
         except TimeoutError as exc:
             raise TimeoutError(serial_timeout_message(args, serial, exc, recent_lines)) from exc
         print(json.dumps({"event": "board_ready", **board_ready}, sort_keys=True))
+        prompt_input_index = board_ready.get("prompt_input_index")
+        has_prompt_input = prompt_input_index is not None and int(prompt_input_index) >= 0
+        if has_prompt_input and prompt_lookup is None:
+            raise FileNotFoundError(
+                f"Board reports prompt_input_index={prompt_input_index}, but "
+                f"{args.prompt_lookup_manifest} does not exist."
+            )
+        manifest_entries = (
+            list(prompt_lookup_manifest.get("entries", []))
+            if isinstance(prompt_lookup_manifest, dict)
+            else []
+        )
         progress = tqdm(
             total=len(selected),
             initial=len(completed),
@@ -528,15 +608,32 @@ def main() -> None:
             row = examples[dataset_index]
             image, image_identity = image_store.get(int(row["image_index"]))
             payload = quantize_for_board_input(image, board_ready)
+            prompt_id = (
+                prompt_id_for_row(row, prompt_lookup)
+                if has_prompt_input and prompt_lookup is not None
+                else None
+            )
+            prompt_lookup_entry = (
+                manifest_entries[prompt_id]
+                if prompt_id is not None and 0 <= prompt_id < len(manifest_entries)
+                else None
+            )
             roundtrip_start = perf_counter()
             debug_protocol(
                 args,
                 "send_header",
                 dataset_index=int(dataset_index),
                 image_index=int(row["image_index"]),
+                prompt_id=prompt_id,
                 payload_bytes=len(payload),
             )
-            send_header(ser, dataset_index, int(row["image_index"]), len(payload))
+            send_header(
+                ser,
+                dataset_index,
+                int(row["image_index"]),
+                len(payload),
+                prompt_id=prompt_id,
+            )
             while True:
                 try:
                     event, result = read_prefixed(
@@ -603,6 +700,7 @@ def main() -> None:
                 board_ready,
                 result,
                 host_roundtrip_us,
+                prompt_lookup_entry,
             )
             answer = int(row["answer"])
             target = normalized_answer(answer, args.collapse_at)
@@ -683,6 +781,15 @@ def main() -> None:
         },
         "latency": latency_summary,
         "board_ready": board_ready,
+        "prompt_lookup": {
+            "manifest": str(args.prompt_lookup_manifest),
+            "entries": len(prompt_lookup or {}),
+            "quantization": (
+                prompt_lookup_manifest.get("quantization")
+                if isinstance(prompt_lookup_manifest, dict)
+                else None
+            ),
+        },
         "board_memory": {
             "tensor_arena_bytes": board_ready.get("tensor_arena_bytes"),
             "arena_used_bytes": board_ready.get("arena_used_bytes"),

@@ -1,11 +1,13 @@
 // Host-driven TallyQA benchmark app for Coral Dev Board Micro.
 //
 // The host sends one framed image at a time over the USB serial console:
-//   VLM_MICRO_INPUT {"dataset_index":123,"image_index":45,"bytes":150528}\n
+//   VLM_MICRO_INPUT {"dataset_index":123,"image_index":45,"prompt_id":7,"bytes":150528}\n
 //   <exactly bytes raw NHWC uint8 image bytes>
 //
-// The board copies the bytes into the model input tensor, invokes the model,
-// and prints one newline-delimited JSON result with timing and output tensors.
+// The board copies the bytes into the model image input tensor. If the model has
+// a prompt-embedding input, the board fills it from the quantized on-board prompt
+// lookup table selected by prompt_id. It then invokes the model and prints one
+// newline-delimited JSON result with timing and output tensors.
 
 #include <cctype>
 #include <cstdint>
@@ -20,6 +22,7 @@
 #include "libs/tensorflow/utils.h"
 #include "libs/tpu/edgetpu_manager.h"
 #include "libs/tpu/edgetpu_op.h"
+#include "tallyqa_prompt_embedding_lookup.h"
 #include "third_party/freertos_kernel/include/FreeRTOS.h"
 #include "third_party/freertos_kernel/include/task.h"
 #include "third_party/tflite-micro/tensorflow/lite/c/common.h"
@@ -42,7 +45,9 @@ STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena, kTensorArenaSize);
 struct InputHeader {
   uint32_t dataset_index = 0;
   uint32_t image_index = 0;
+  uint32_t prompt_id = 0;
   uint32_t bytes = 0;
+  bool has_prompt_id = false;
 };
 
 void PrintReadyJson(tflite::MicroInterpreter* interpreter,
@@ -54,18 +59,21 @@ void PrintError(const char* error) {
 
 void PrintEvent(const char* event, const InputHeader& header) {
   printf("VLM_MICRO_EVENT {\"event\":\"%s\",\"dataset_index\":%lu,"
-         "\"image_index\":%lu,\"bytes\":%lu}\r\n",
+         "\"image_index\":%lu,\"prompt_id\":%lu,\"bytes\":%lu}\r\n",
          event, static_cast<unsigned long>(header.dataset_index),
          static_cast<unsigned long>(header.image_index),
+         static_cast<unsigned long>(header.prompt_id),
          static_cast<unsigned long>(header.bytes));
 }
 
 void PrintTimedEvent(const char* event, const InputHeader& header,
                      uint64_t elapsed_us) {
   printf("VLM_MICRO_EVENT {\"event\":\"%s\",\"dataset_index\":%lu,"
-         "\"image_index\":%lu,\"bytes\":%lu,\"elapsed_us\":%lu}\r\n",
+         "\"image_index\":%lu,\"prompt_id\":%lu,\"bytes\":%lu,"
+         "\"elapsed_us\":%lu}\r\n",
          event, static_cast<unsigned long>(header.dataset_index),
          static_cast<unsigned long>(header.image_index),
+         static_cast<unsigned long>(header.prompt_id),
          static_cast<unsigned long>(header.bytes),
          static_cast<unsigned long>(elapsed_us));
 }
@@ -132,6 +140,7 @@ bool ParseUnsignedField(const char* line, const char* key, uint32_t* value) {
 
 bool ParseInputHeader(const char* line, InputHeader* header) {
   if (std::strncmp(line, "VLM_MICRO_INPUT ", 16) != 0) return false;
+  header->has_prompt_id = ParseUnsignedField(line, "\"prompt_id\"", &header->prompt_id);
   return ParseUnsignedField(line, "\"dataset_index\"", &header->dataset_index) &&
          ParseUnsignedField(line, "\"image_index\"", &header->image_index) &&
          ParseUnsignedField(line, "\"bytes\"", &header->bytes);
@@ -166,6 +175,35 @@ int TensorElementCount(const TfLiteTensor* tensor) {
     count *= tensor->dims->data[i];
   }
   return count;
+}
+
+bool IsImageTensor(const TfLiteTensor* tensor) {
+  return tensor != nullptr && tensor->dims != nullptr && tensor->dims->size == 4 &&
+         tensor->dims->data[0] == 1 && tensor->dims->data[3] == 3;
+}
+
+bool IsPromptTensor(const TfLiteTensor* tensor) {
+  if (tensor == nullptr || tensor->dims == nullptr) return false;
+  if (tensor->bytes != TALLYQA_PROMPT_EMBEDDING_DIM) return false;
+  if (tensor->type != kTfLiteUInt8) return false;
+  if (tensor->dims->size == 2) {
+    return tensor->dims->data[0] == 1 &&
+           tensor->dims->data[1] == TALLYQA_PROMPT_EMBEDDING_DIM;
+  }
+  if (tensor->dims->size == 1) {
+    return tensor->dims->data[0] == TALLYQA_PROMPT_EMBEDDING_DIM;
+  }
+  return false;
+}
+
+int FindInputIndex(tflite::MicroInterpreter* interpreter,
+                   bool (*predicate)(const TfLiteTensor*)) {
+  for (size_t i = 0; i < interpreter->inputs().size(); ++i) {
+    if (predicate(interpreter->input_tensor(i))) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
 }
 
 void PrintTensorValues(const TfLiteTensor* tensor, int limit) {
@@ -251,14 +289,19 @@ void PrintTensorSummaryJson(tflite::MicroInterpreter* interpreter,
 
 void PrintReadyJson(tflite::MicroInterpreter* interpreter,
                     const tflite::RecordingMicroAllocator* allocator) {
-  const TfLiteTensor* input = interpreter->input_tensor(0);
+  const int image_input_index = FindInputIndex(interpreter, IsImageTensor);
+  const int prompt_input_index = FindInputIndex(interpreter, IsPromptTensor);
+  const TfLiteTensor* input =
+      interpreter->input_tensor(image_input_index >= 0 ? image_input_index : 0);
   const TfLiteTensor* output = interpreter->output_tensor(0);
   const auto* simple_allocator = allocator->GetSimpleMemoryAllocator();
   printf(
       "VLM_MICRO_READY {\"model_path\":\"%s\",\"tensor_arena_bytes\":%d,"
       "\"arena_used_bytes\":%u,\"arena_recorded_used_bytes\":%u,"
       "\"arena_recorded_requested_bytes\":%u,\"arena_recorded_alloc_count\":%u,"
-      "\"input_count\":%u,\"output_count\":%u,\"input\":{\"bytes\":%u,"
+      "\"input_count\":%u,\"output_count\":%u,\"image_input_index\":%d,"
+      "\"prompt_input_index\":%d,\"prompt_lookup_count\":%d,"
+      "\"prompt_lookup_dim\":%d,\"input\":{\"bytes\":%u,"
       "\"type\":\"%s\",\"scale\":%.9g,\"zero_point\":%ld,\"shape\":",
       kModelPath, kTensorArenaSize,
       static_cast<unsigned int>(interpreter->arena_used_bytes()),
@@ -267,6 +310,8 @@ void PrintReadyJson(tflite::MicroInterpreter* interpreter,
       static_cast<unsigned int>(simple_allocator->GetAllocatedCount()),
       static_cast<unsigned int>(interpreter->inputs().size()),
       static_cast<unsigned int>(interpreter->outputs().size()),
+      image_input_index, prompt_input_index, TALLYQA_PROMPT_EMBEDDING_COUNT,
+      TALLYQA_PROMPT_EMBEDDING_DIM,
       static_cast<unsigned int>(input->bytes), TensorTypeName(input->type),
       input->params.scale, static_cast<long>(input->params.zero_point));
   PrintDims(input);
@@ -275,21 +320,30 @@ void PrintReadyJson(tflite::MicroInterpreter* interpreter,
          static_cast<unsigned int>(output->bytes), TensorTypeName(output->type),
          output->params.scale, static_cast<long>(output->params.zero_point));
   PrintDims(output);
-  printf("}}\r\n");
+  printf("},\"inputs\":");
+  PrintTensorSummaryJson(interpreter, true);
+  printf(",\"outputs\":");
+  PrintTensorSummaryJson(interpreter, false);
+  printf("}\r\n");
 }
 
 void PrintResultJson(const InputHeader& header, uint64_t receive_us,
-                     uint64_t copy_us, uint64_t invoke_us,
+                     uint64_t image_copy_us, uint64_t prompt_copy_us,
+                     uint64_t invoke_us,
                      tflite::MicroInterpreter* interpreter) {
   printf(
       "VLM_MICRO_RESULT {\"dataset_index\":%lu,\"image_index\":%lu,"
-      "\"input_bytes\":%lu,\"receive_us\":%lu,\"copy_us\":%lu,"
+      "\"prompt_id\":%lu,\"input_bytes\":%lu,\"receive_us\":%lu,"
+      "\"copy_us\":%lu,\"image_copy_us\":%lu,\"prompt_copy_us\":%lu,"
       "\"invoke_us\":%lu,",
       static_cast<unsigned long>(header.dataset_index),
       static_cast<unsigned long>(header.image_index),
+      static_cast<unsigned long>(header.prompt_id),
       static_cast<unsigned long>(header.bytes),
       static_cast<unsigned long>(receive_us),
-      static_cast<unsigned long>(copy_us),
+      static_cast<unsigned long>(image_copy_us + prompt_copy_us),
+      static_cast<unsigned long>(image_copy_us),
+      static_cast<unsigned long>(prompt_copy_us),
       static_cast<unsigned long>(invoke_us));
   PrintOutputsJson(interpreter);
   printf("}\r\n");
@@ -340,14 +394,27 @@ void PrintResultJson(const InputHeader& header, uint64_t receive_us,
     PrintError("allocate_tensors");
     vTaskSuspend(nullptr);
   }
-  if (interpreter.inputs().size() != 1) {
+  if (interpreter.inputs().size() != 1 && interpreter.inputs().size() != 2) {
     printf("VLM_MICRO_ERROR {\"error\":\"input_count\",\"count\":%u}\r\n",
            static_cast<unsigned int>(interpreter.inputs().size()));
     vTaskSuspend(nullptr);
   }
 
-  TfLiteTensor* input = interpreter.input_tensor(0);
-  std::vector<uint8_t> image(input->bytes);
+  const int image_input_index = FindInputIndex(&interpreter, IsImageTensor);
+  const int prompt_input_index = FindInputIndex(&interpreter, IsPromptTensor);
+  if (image_input_index < 0) {
+    PrintError("image_input_not_found");
+    vTaskSuspend(nullptr);
+  }
+  if (interpreter.inputs().size() == 2 && prompt_input_index < 0) {
+    PrintError("prompt_input_not_found");
+    vTaskSuspend(nullptr);
+  }
+
+  TfLiteTensor* image_input = interpreter.input_tensor(image_input_index);
+  TfLiteTensor* prompt_input =
+      prompt_input_index >= 0 ? interpreter.input_tensor(prompt_input_index) : nullptr;
+  std::vector<uint8_t> image(image_input->bytes);
   PrintReadyJson(&interpreter, allocator);
 
   char line[kMaxLineBytes];
@@ -362,12 +429,28 @@ void PrintResultJson(const InputHeader& header, uint64_t receive_us,
              line);
       continue;
     }
-    if (header.bytes != input->bytes) {
+    if (prompt_input != nullptr && !header.has_prompt_id) {
+      printf(
+          "VLM_MICRO_ERROR {\"dataset_index\":%lu,\"error\":\"missing_prompt_id\"}\r\n",
+          static_cast<unsigned long>(header.dataset_index));
+      continue;
+    }
+    if (prompt_input != nullptr &&
+        header.prompt_id >= TALLYQA_PROMPT_EMBEDDING_COUNT) {
+      printf(
+          "VLM_MICRO_ERROR {\"dataset_index\":%lu,\"error\":\"prompt_id\","
+          "\"max\":%d,\"actual\":%lu}\r\n",
+          static_cast<unsigned long>(header.dataset_index),
+          TALLYQA_PROMPT_EMBEDDING_COUNT - 1,
+          static_cast<unsigned long>(header.prompt_id));
+      continue;
+    }
+    if (header.bytes != image_input->bytes) {
       printf(
           "VLM_MICRO_ERROR {\"dataset_index\":%lu,\"error\":\"input_bytes\","
           "\"expected\":%u,\"actual\":%lu}\r\n",
           static_cast<unsigned long>(header.dataset_index),
-          static_cast<unsigned int>(input->bytes),
+          static_cast<unsigned int>(image_input->bytes),
           static_cast<unsigned long>(header.bytes));
       continue;
     }
@@ -381,10 +464,19 @@ void PrintResultJson(const InputHeader& header, uint64_t receive_us,
     PrintEvent("payload_received", header);
 
     PrintEvent("copy_start", header);
-    const uint64_t copy_start_us = TimerMicros();
-    std::memcpy(input->data.raw, image.data(), image.size());
-    const uint64_t copy_us = TimerMicros() - copy_start_us;
-    PrintTimedEvent("copy_done", header, copy_us);
+    const uint64_t image_copy_start_us = TimerMicros();
+    std::memcpy(image_input->data.raw, image.data(), image.size());
+    const uint64_t image_copy_us = TimerMicros() - image_copy_start_us;
+    uint64_t prompt_copy_us = 0;
+    if (prompt_input != nullptr) {
+      const uint64_t prompt_copy_start_us = TimerMicros();
+      std::memcpy(
+          prompt_input->data.raw,
+          kTallyQAPromptEmbeddingTable[header.prompt_id],
+          TALLYQA_PROMPT_EMBEDDING_DIM);
+      prompt_copy_us = TimerMicros() - prompt_copy_start_us;
+    }
+    PrintTimedEvent("copy_done", header, image_copy_us + prompt_copy_us);
 
     PrintEvent("invoke_start", header);
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -395,7 +487,7 @@ void PrintResultJson(const InputHeader& header, uint64_t receive_us,
       continue;
     }
     const uint64_t invoke_us = TimerMicros() - invoke_start_us;
-    PrintResultJson(header, receive_us, copy_us, invoke_us, &interpreter);
+    PrintResultJson(header, receive_us, image_copy_us, prompt_copy_us, invoke_us, &interpreter);
   }
 }
 

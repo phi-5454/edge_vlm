@@ -37,7 +37,9 @@ RESIZE_SIZE = 112
 FOLDED_SIZE = 56
 FOLDED_CHANNELS = 12
 PROMPT_EMBEDDING_CHANNELS = 576
+PROMPT_PLANE_CHANNELS = 16
 DEFAULT_PROMPT_EMBEDDINGS = "artifacts/models/tallyqa_smolvlm_prompt_embeddings_letterbox.pt"
+DEFAULT_PROMPT_PLANE_LOOKUP = "max78000/prompt_embeddings/tallyqa_prompt_planes16_random.json"
 
 
 def _split_for_image(image_id: str, seed: int) -> str:
@@ -159,6 +161,30 @@ def _resolve_prompt_embeddings_file(root: Path, metadata: dict[str, Any]) -> Pat
     )
 
 
+def _resolve_prompt_plane_lookup_file(root: Path, metadata: dict[str, Any]) -> Path:
+    configured = metadata.get("prompt_plane_lookup")
+    candidates: list[Path] = []
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_absolute():
+            candidates.append(configured_path)
+        else:
+            candidates.append(root / configured_path)
+    env_path = Path(value) if (value := os.environ.get("EDGE_VLM_PROMPT_PLANE_LOOKUP")) else None
+    if env_path is not None:
+        candidates.append(env_path)
+    for parent in (root, *root.parents):
+        candidates.append(parent / DEFAULT_PROMPT_PLANE_LOOKUP)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "Could not find prompt-plane lookup. Set EDGE_VLM_PROMPT_PLANE_LOOKUP "
+        f"or place {DEFAULT_PROMPT_PLANE_LOOKUP} under the edge_vlm repo. Checked: "
+        + ", ".join(str(path) for path in candidates)
+    )
+
+
 def _load_prompt_embeddings_by_class(
     root: Path,
     metadata: dict[str, Any],
@@ -194,6 +220,39 @@ def _load_prompt_embeddings_by_class(
     }
 
 
+def _load_prompt_planes_by_class(
+    root: Path,
+    metadata: dict[str, Any],
+) -> dict[str, torch.Tensor]:
+    path = _resolve_prompt_plane_lookup_file(root, metadata)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if int(payload.get("plane_channels", 0)) != PROMPT_PLANE_CHANNELS:
+        raise ValueError(
+            f"Expected {PROMPT_PLANE_CHANNELS} prompt-plane channels in {path}, "
+            f"got {payload.get('plane_channels')}."
+        )
+    vectors = payload.get("prompt_vectors")
+    if not isinstance(vectors, dict):
+        raise ValueError(f"{path} does not contain a prompt_vectors object.")
+    return {
+        str(prompt).strip().lower(): torch.tensor(values, dtype=torch.float32)
+        for prompt, values in vectors.items()
+    }
+
+
+def _prompt_planes(prompt_vector: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """Project a 576-d prompt vector to 16 broadcast planes.
+
+    This is a synthesis-friendly replacement for the dynamic FiLM path: the
+    prompt remains explicit in the input tensor, but the accelerator sees a
+    single CHW input.
+    """
+    prompt_vector = prompt_vector.to(dtype=torch.float32)
+    prompt_vector = prompt_vector / prompt_vector.norm(p=2).clamp_min(1e-6)
+    prompt_vector = prompt_vector[:PROMPT_PLANE_CHANNELS].clamp(-1.0, 1.0)
+    return prompt_vector.view(PROMPT_PLANE_CHANNELS, 1, 1).expand(-1, height, width)
+
+
 class TallyQACount(Dataset):
     """TallyQA count classification dataset from a materialized manifest."""
 
@@ -204,6 +263,7 @@ class TallyQACount(Dataset):
         transform=None,
         seed: int = 0,
         prompt_embedding_channels: int = 0,
+        prompt_plane_channels: int = 0,
     ):
         if d_type not in {"train", "val", "test"}:
             raise ValueError(f"Unsupported split {d_type!r}; expected train, val, or test.")
@@ -211,6 +271,9 @@ class TallyQACount(Dataset):
         self.d_type = d_type
         self.transform = transform
         self.prompt_embedding_channels = int(prompt_embedding_channels)
+        self.prompt_plane_channels = int(prompt_plane_channels)
+        if self.prompt_embedding_channels and self.prompt_plane_channels:
+            raise ValueError("Use either prompt_embedding_channels or prompt_plane_channels, not both.")
         self.records = _load_records(self.root_dir, d_type, seed)
         if not self.records:
             raise RuntimeError(f"No TallyQA count records found for split {d_type!r}.")
@@ -219,16 +282,27 @@ class TallyQACount(Dataset):
         self.prompt_classes = [
             str(item).strip().lower() for item in self.metadata.get("prompt_classes") or ["people"]
         ]
-        if self.prompt_embedding_channels:
-            if self.prompt_embedding_channels != PROMPT_EMBEDDING_CHANNELS:
+        if self.prompt_embedding_channels or self.prompt_plane_channels:
+            if self.prompt_embedding_channels and self.prompt_embedding_channels != PROMPT_EMBEDDING_CHANNELS:
                 raise ValueError(
                     f"Prompt embedding channels must be {PROMPT_EMBEDDING_CHANNELS}, "
                     f"got {self.prompt_embedding_channels}."
                 )
-            self.prompt_embeddings_by_class = _load_prompt_embeddings_by_class(
-                self.root_dir,
-                self.metadata,
-            )
+            if self.prompt_plane_channels and self.prompt_plane_channels != PROMPT_PLANE_CHANNELS:
+                raise ValueError(
+                    f"Prompt plane channels must be {PROMPT_PLANE_CHANNELS}, "
+                    f"got {self.prompt_plane_channels}."
+                )
+            if self.prompt_plane_channels:
+                self.prompt_embeddings_by_class = _load_prompt_planes_by_class(
+                    self.root_dir,
+                    self.metadata,
+                )
+            else:
+                self.prompt_embeddings_by_class = _load_prompt_embeddings_by_class(
+                    self.root_dir,
+                    self.metadata,
+                )
             missing_prompts = [
                 prompt for prompt in self.prompt_classes if prompt not in self.prompt_embeddings_by_class
             ]
@@ -264,14 +338,25 @@ class TallyQACount(Dataset):
         else:
             image = torch.from_numpy(image_chw.copy()).float().div(255.0)
         prompt_vector = None
-        if self.prompt_embedding_channels:
+        if self.prompt_embedding_channels or self.prompt_plane_channels:
             prompt = str(record.get("student_prompt") or "people").strip().lower()
             if prompt not in self.prompt_embeddings_by_class:
                 raise KeyError(
                     f"Prompt {prompt!r} is not in prompt embeddings for {self.root_dir}."
                 )
             prompt_vector = self.prompt_embeddings_by_class[prompt].to(dtype=image.dtype)
-            image = (image, prompt_vector)
+            if self.prompt_embedding_channels:
+                image = (image, prompt_vector)
+            else:
+                if prompt_vector.numel() == PROMPT_PLANE_CHANNELS:
+                    prompt_planes = prompt_vector.view(PROMPT_PLANE_CHANNELS, 1, 1).expand(
+                        -1,
+                        image.shape[-2],
+                        image.shape[-1],
+                    )
+                else:
+                    prompt_planes = _prompt_planes(prompt_vector, image.shape[-2], image.shape[-1])
+                image = torch.cat((image, prompt_planes.to(dtype=image.dtype)), dim=0)
         if "teacher_probs" in record:
             teacher_probs = torch.tensor(record["teacher_probs"], dtype=torch.float32)
             if teacher_probs.numel() != len(COUNT_LABELS):
@@ -305,7 +390,13 @@ class Fold2x2:
         return folded.reshape(channels * 4, height // 2, width // 2)
 
 
-def _get_tallyqa_count_dataset(data, load_train, load_test, prompt_embedding_channels: int):
+def _get_tallyqa_count_dataset(
+    data,
+    load_train,
+    load_test,
+    prompt_embedding_channels: int,
+    prompt_plane_channels: int = 0,
+):
     """Load TallyQA count train/test datasets."""
     data_dir, args = data
     seed = int(getattr(args, "seed", 0) or 0)
@@ -326,6 +417,7 @@ def _get_tallyqa_count_dataset(data, load_train, load_test, prompt_embedding_cha
             transform=transform,
             seed=seed,
             prompt_embedding_channels=prompt_embedding_channels,
+            prompt_plane_channels=prompt_plane_channels,
         )
         if load_train
         else None
@@ -337,6 +429,7 @@ def _get_tallyqa_count_dataset(data, load_train, load_test, prompt_embedding_cha
             transform=transform,
             seed=seed,
             prompt_embedding_channels=prompt_embedding_channels,
+            prompt_plane_channels=prompt_plane_channels,
         )
         if load_test
         else None
@@ -363,6 +456,17 @@ def get_tallyqa_count_prompt_embed576_dataset(data, load_train, load_test):
     )
 
 
+def get_tallyqa_count_prompt_planes16_dataset(data, load_train, load_test):
+    """Load TallyQA count datasets with 16 broadcast prompt planes."""
+    return _get_tallyqa_count_dataset(
+        data,
+        load_train,
+        load_test,
+        prompt_embedding_channels=0,
+        prompt_plane_channels=PROMPT_PLANE_CHANNELS,
+    )
+
+
 datasets = [
     {
         "name": "tallyqa_count_fold2_56",
@@ -376,6 +480,13 @@ datasets = [
         "input": (FOLDED_CHANNELS, FOLDED_SIZE, FOLDED_SIZE),
         "output": COUNT_LABELS,
         "loader": get_tallyqa_count_prompt_embed576_dataset,
+        **_class_weights_from_env(len(COUNT_LABELS)),
+    },
+    {
+        "name": "tallyqa_count_fold2_56_prompt_planes16",
+        "input": (FOLDED_CHANNELS + PROMPT_PLANE_CHANNELS, FOLDED_SIZE, FOLDED_SIZE),
+        "output": COUNT_LABELS,
+        "loader": get_tallyqa_count_prompt_planes16_dataset,
         **_class_weights_from_env(len(COUNT_LABELS)),
     },
 ]

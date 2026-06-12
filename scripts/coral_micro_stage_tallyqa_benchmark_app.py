@@ -16,6 +16,9 @@ DEFAULT_MODEL = Path(
     "prompt_patch_mlp_static_prompt_minimalistic_large_compile_probe_docker/"
     "ptq/model_int8_edgetpu.tflite"
 )
+DEFAULT_PROMPT_LOOKUP_HEADER = Path(
+    "artifacts/exports/coral/prompt_embedding_lookup/tallyqa_prompt_embedding_lookup.h"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +30,15 @@ def parse_args() -> argparse.Namespace:
         default=Path("coral_micro/tallyqa_benchmark_serial"),
     )
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--prompt-lookup-header",
+        type=Path,
+        default=DEFAULT_PROMPT_LOOKUP_HEADER,
+        help=(
+            "Quantized prompt embedding lookup header to stage into the app. "
+            "Required by the two-input prompt-embedding benchmark app."
+        ),
+    )
     parser.add_argument("--force", action="store_true", help="Overwrite staged app files.")
     return parser.parse_args()
 
@@ -59,6 +71,8 @@ def main() -> None:
         raise FileNotFoundError(args.source_app)
     if not args.model.exists():
         raise FileNotFoundError(args.model)
+    if not args.prompt_lookup_header.exists():
+        raise FileNotFoundError(args.prompt_lookup_header)
 
     staged_app = sdk / "examples" / APP_NAME
     changed: list[str] = []
@@ -71,6 +85,10 @@ def main() -> None:
     model_dst = sdk / "models" / MODEL_NAME
     if copy_file(args.model, model_dst, args.force):
         changed.append(str(model_dst))
+
+    lookup_dst = staged_app / args.prompt_lookup_header.name
+    if copy_file(args.prompt_lookup_header, lookup_dst, args.force):
+        changed.append(str(lookup_dst))
 
     examples_cmake = sdk / "examples" / "CMakeLists.txt"
     if ensure_examples_cmake(examples_cmake):

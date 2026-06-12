@@ -1904,25 +1904,97 @@ def qat_coverage_report(model: tf.keras.Model) -> dict[str, Any]:
     }
 
 
+def qat_full_integer_runtime_gap_report(
+    model: tf.keras.Model,
+    cfg: DictConfig,
+) -> dict[str, Any]:
+    """Find graph pieces full-int8 TFLite quantizes beyond tfmot QAT wrappers."""
+
+    enabled = (
+        str(cfg.export.quantization.mode) == "qat"
+        and bool(cfg.export.export_tflite)
+        and bool(cfg.export.quantization.get("full_integer", False))
+    )
+    if not enabled:
+        return {
+            "enabled": False,
+            "uncovered_runtime_layers": [],
+            "uncovered_runtime_layer_count": 0,
+        }
+
+    risky_layers: list[dict[str, str]] = []
+    for path, layer in iter_leaf_layers(model):
+        inner = getattr(layer, "layer", None) if is_quantize_wrapper(layer) else layer
+        layer_class = inner.__class__.__name__ if inner is not None else layer.__class__.__name__
+        lower_path = path.lower()
+        reason: str | None = None
+        if layer_class == "Embedding":
+            reason = "runtime embedding/gather is quantized by full-integer TFLite but is not a QAT-wrapped weight layer"
+        elif layer_class == "LayerNormalization":
+            reason = "LayerNorm lowers to int8 arithmetic in full-integer TFLite without an equivalent tfmot QAT wrapper"
+        elif layer_class == "GlobalAveragePooling1D" and "prompt" in lower_path:
+            reason = "mask-aware prompt pooling is quantized by TFLite but not trained through deployed integer arithmetic"
+        elif layer_class in {"TilePromptQueryToFeatureMap", "FirstPromptToken"}:
+            reason = "custom prompt tensor manipulation is quantized by full-integer TFLite outside tfmot QAT coverage"
+        elif layer_class in {"Concatenate", "Multiply", "Add"} and "prompt" in lower_path:
+            reason = "prompt fusion arithmetic is quantized by full-integer TFLite outside tfmot QAT coverage"
+        if reason is not None:
+            risky_layers.append(
+                {
+                    "name": path,
+                    "class": layer_class,
+                    "reason": reason,
+                }
+            )
+
+    return {
+        "enabled": True,
+        "uncovered_runtime_layers": risky_layers,
+        "uncovered_runtime_layer_count": len(risky_layers),
+    }
+
+
 def assert_qat_coverage(model: tf.keras.Model, cfg: DictConfig) -> dict[str, Any]:
     coverage = qat_coverage_report(model)
+    coverage["full_integer_runtime_gap"] = qat_full_integer_runtime_gap_report(model, cfg)
     if str(cfg.export.quantization.mode) != "qat":
         return coverage
     if not bool(cfg.export.quantization.get("require_full_qat_coverage", True)):
         return coverage
     unwrapped = coverage["unwrapped_layers"]
-    if not unwrapped:
+    runtime_gaps = coverage["full_integer_runtime_gap"]["uncovered_runtime_layers"]
+    if not unwrapped and not runtime_gaps:
         return coverage
-    preview = "\n".join(
-        f"  - {layer['name']} ({layer['class']})" for layer in unwrapped[:30]
-    )
-    remainder = len(unwrapped) - min(len(unwrapped), 30)
-    if remainder > 0:
-        preview += f"\n  ... {remainder} more"
+    details: list[str] = []
+    if unwrapped:
+        preview = "\n".join(
+            f"  - {layer['name']} ({layer['class']})" for layer in unwrapped[:30]
+        )
+        remainder = len(unwrapped) - min(len(unwrapped), 30)
+        if remainder > 0:
+            preview += f"\n  ... {remainder} more"
+        details.append(
+            f"{len(unwrapped)} quantizable leaf layers are not wrapped with fake quantization:\n"
+            f"{preview}"
+        )
+    if runtime_gaps:
+        preview = "\n".join(
+            f"  - {layer['name']} ({layer['class']}): {layer['reason']}"
+            for layer in runtime_gaps[:30]
+        )
+        remainder = len(runtime_gaps) - min(len(runtime_gaps), 30)
+        if remainder > 0:
+            preview += f"\n  ... {remainder} more"
+        details.append(
+            "full-integer TFLite deployment will quantize runtime layers that are "
+            "outside tfmot QAT wrapper coverage:\n"
+            f"{preview}"
+        )
     raise RuntimeError(
         "QAT coverage is incomplete. Refusing to train a run labeled QAT because "
-        f"{len(unwrapped)} quantizable leaf layers are not wrapped with fake quantization.\n"
-        f"{preview}\n"
+        "the Keras training graph does not fully simulate the deployed full-integer "
+        "TFLite graph.\n"
+        f"{chr(10).join(details)}\n"
         "Set export.quantization.require_full_qat_coverage=false only for diagnostic runs."
     )
 

@@ -1,0 +1,194 @@
+---
+# MAX78000 TallyQA count classifier, prompt-plane P=16, early width 40.
+#
+# Matches ai85tallyqambv3largepromptplane16count:
+# - input: HWC 28x56x56 tensor
+#   - 12 folded RGB image channels
+#   - 16 broadcast prompt planes
+# - no dynamic FiLM path
+# - residual routing disabled for first synthesis target
+# - average-pool head, 48 -> 6 linear classifier
+
+arch: ai85tallyqambv3largepromptplane16count
+dataset: tallyqa_count_fold2_56_prompt_planes16
+
+layers:
+  # stem: 28x56x56 -> 40x56x56
+  - out_offset: 0x4000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+    data_format: HWC
+
+  # features.0: pool + 3x3, then 1x1 linear projection
+  - out_offset: 0x0000
+    processors: 0x000000ffffffffff
+    max_pool: 2
+    pool_stride: 2
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # features.1
+  - out_offset: 0x0000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # features.2
+  - out_offset: 0x0000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # features.3: pool + 3x3, then 1x1 linear projection
+  - out_offset: 0x0000
+    processors: 0x000000ffffffffff
+    max_pool: 2
+    pool_stride: 2
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # features.4
+  - out_offset: 0x0000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # features.5
+  - out_offset: 0x0000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # features.6
+  - out_offset: 0x0000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x000000ffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # features.7: 40 -> 48 expansion block
+  - out_offset: 0x0000
+    processors: 0x0000ffffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x0000ffffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x0000
+    processors: 0x0000ffffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # features.8
+  - out_offset: 0x4000
+    processors: 0x0000ffffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x0000
+    processors: 0x0000ffffffffffff
+    operation: conv2d
+    kernel_size: 1x1
+    pad: 0
+    activate: None
+
+  # head: three 48-channel 3x3 convs
+  - out_offset: 0x4000
+    processors: 0x0000ffffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x0000
+    processors: 0x0000ffffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+  - out_offset: 0x4000
+    processors: 0x0000ffffffffffff
+    operation: conv2d
+    kernel_size: 3x3
+    pad: 1
+    activate: ReLU
+
+  # avgpool 14x14 -> 1x1
+  - out_offset: 0x0000
+    processors: 0x0000ffffffffffff
+    operation: none
+    avg_pool: 14
+    pool_stride: 14
+
+  # classifier: 48 -> 6
+  - out_offset: 0x4000
+    processors: 0x000000000000003f
+    operation: linear
+    flatten: true
+    output_width: 32
+    activate: None

@@ -13,6 +13,6 @@
   "motorcycles": ["motorcycle", "motorbikes", "motorbike"],
   "cups": ["cup", "mugs", "mug"],
   "bowls": ["bowl"],
-  "horses": ["horse"],
+  "horses": ["horse", "stallion"],
   "umbrellas": ["umbrella"]
 }

@@ -412,6 +412,10 @@ if [[ "${torch_reverse_enabled}" == "1" ]]; then
   fi
 fi
 
+if [[ "${DATASET_NAME}" == *"prompt_planes16"* && "${MODEL_INPUT_CHANNELS_SET}" == "0" ]]; then
+  MODEL_INPUT_CHANNELS=28
+fi
+
 if [[ "${keras_comparison_enabled}" == "1" ]]; then
   if [[ "${RUN_NAME_SET}" == "0" ]]; then
     RUN_NAME="max78000-tier0-keras-comparison-qat"

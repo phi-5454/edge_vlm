@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-files-only", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--trust-remote-code", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--torch-dtype", default="auto")
+    parser.add_argument(
+        "--max-alias-tokens",
+        type=int,
+        default=None,
+        help="Truncate synonym aliases to at most this many tokenizer tokens.",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -174,10 +180,20 @@ def main() -> None:
     next_compact_id = len(teacher_to_compact) + 1
     new_teacher_token_ids: list[int] = []
     alias_rows: list[dict[str, Any]] = []
+    truncated_aliases: list[dict[str, Any]] = []
     for prompt, aliases in selected_synonyms.items():
         source_row = prompt_by_name[prompt]
         for alias in aliases:
             token_ids, tokens = tokenize_prompt(processor, alias)
+            original_token_ids = list(token_ids)
+            original_tokens = list(tokens)
+            truncated = False
+            if args.max_alias_tokens is not None and len(token_ids) > args.max_alias_tokens:
+                if args.max_alias_tokens < 1:
+                    raise ValueError("--max-alias-tokens must be at least 1 when set.")
+                token_ids = token_ids[: args.max_alias_tokens]
+                tokens = tokens[: args.max_alias_tokens]
+                truncated = True
             compact_ids = []
             for teacher_id in token_ids:
                 if teacher_id not in teacher_to_compact:
@@ -194,8 +210,21 @@ def main() -> None:
                     "teacher_tokens": tokens,
                     "compact_token_ids": compact_ids,
                     "token_count": len(token_ids),
+                    "original_token_count": len(original_token_ids),
+                    "truncated": truncated,
                 }
             )
+            if truncated:
+                truncated_aliases.append(
+                    {
+                        "source_item": str(source_row["item"]),
+                        "alias": alias,
+                        "original_token_ids": original_token_ids,
+                        "original_teacher_tokens": original_tokens,
+                        "kept_token_ids": token_ids,
+                        "kept_teacher_tokens": tokens,
+                    }
+                )
 
     summary = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -213,6 +242,8 @@ def main() -> None:
         "expanded_teacher_tokens": len(old_teacher_token_ids) + len(new_teacher_token_ids),
         "alias_rows": len(alias_rows),
         "new_teacher_token_ids": new_teacher_token_ids,
+        "max_alias_tokens": args.max_alias_tokens,
+        "truncated_aliases": truncated_aliases,
     }
     if args.dry_run:
         print(json.dumps(summary, indent=2))

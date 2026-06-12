@@ -58,10 +58,13 @@ bash scripts/run_coral_tallyqa_on_device_dummy_pipeline.sh \
 
 ## Serial Protocol
 
-The host sends one image at a time:
+The host sends one image at a time. For two-input models with an image tensor
+and a prompt-embedding tensor, the host also sends a `prompt_id`. The image
+bytes are still the only binary payload; the board fills the prompt tensor from
+the staged quantized lookup table.
 
 ```text
-VLM_MICRO_INPUT {"dataset_index":123,"image_index":45,"bytes":150528}\n
+VLM_MICRO_INPUT {"dataset_index":123,"image_index":45,"prompt_id":7,"bytes":150528}\n
 <150528 raw NHWC uint8 bytes>
 ```
 
@@ -88,6 +91,10 @@ the raw serial capture.
 - `arena_recorded_used_bytes`
 - `arena_recorded_requested_bytes`
 - `arena_recorded_alloc_count`
+- `image_input_index`
+- `prompt_input_index`; `-1` means image-only/static-prompt model
+- `prompt_lookup_count`
+- `prompt_lookup_dim`
 - `inputs`
 - `outputs`
 - `recorded_allocations`
@@ -103,6 +110,7 @@ From this repository:
 uv run python scripts/coral_micro_stage_tallyqa_benchmark_app.py \
   --coralmicro ../coralmicro \
   --model artifacts/reports/coral/edgetpu_compiler/prompt_patch_mlp_static_prompt_minimalistic_large_compile_probe_docker/ptq/model_int8_edgetpu.tflite \
+  --prompt-lookup-header artifacts/exports/coral/prompt_embedding_lookup/tallyqa_prompt_embedding_lookup.h \
   --force
 ```
 
@@ -122,6 +130,7 @@ Back in this repository, run a smoke sweep:
 uv run python scripts/cache_coral_micro_tallyqa_teacher.py \
   --port /dev/ttyACM0 \
   --dataset data/tallyqa_cauldron_target_mobilenet224_letterbox \
+  --prompt-lookup-manifest artifacts/exports/coral/prompt_embedding_lookup/prompt_embedding_lookup_manifest.json \
   --output artifacts/teacher_cache/coral_micro_tallyqa_prompt_patch_mlp_smoke128.jsonl \
   --model-name coral_micro_prompt_patch_mlp_large_edgetpu \
   --max-examples 128 \

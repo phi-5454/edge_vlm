@@ -60,6 +60,9 @@ export:
     full_integer: true
     inference_input_type: uint8
     inference_output_type: int8
+    # In QAT mode, fail before training if the Keras fake-quant graph does not
+    # cover either quantizable trainable layers or runtime layers that full-int8
+    # TFLite will quantize, such as dynamic prompt embedding/pooling/LayerNorm.
     require_full_qat_coverage: true
 
 data:
