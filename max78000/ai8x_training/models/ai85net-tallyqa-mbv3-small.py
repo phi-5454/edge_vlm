@@ -29,6 +29,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import nn
+from torch.fx.proxy import Proxy
 
 import ai8x
 
@@ -606,7 +607,9 @@ class TallyQAFoldedMobileNetV3LargePromptFilmCount(nn.Module):
         else:
             image = x
             prompt_vector = image.new_zeros((image.size(0), self.prompt_channels))
-        if prompt_vector.ndim != 2 or prompt_vector.size(1) != self.prompt_channels:
+        if not isinstance(prompt_vector, Proxy) and (
+            prompt_vector.ndim != 2 or prompt_vector.size(1) != self.prompt_channels
+        ):
             raise ValueError(
                 f"Expected prompt vector shape (B, {self.prompt_channels}), "
                 f"got {tuple(prompt_vector.shape)}."
