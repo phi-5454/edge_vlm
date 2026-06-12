@@ -511,7 +511,9 @@ if [[ -n "${DATASET_TIER}" ]]; then
 fi
 
 needs_materialize=0
-if [[ -z "${DATASET_TIER}" ]] && [[ "${MATERIALIZE}" == "1" || "${MATERIALIZE}" == "true" ]]; then
+if [[ -z "${DATASET_TIER}" ]] \
+  && [[ "${MATERIALIZE}" == "1" || "${MATERIALIZE}" == "true" ]] \
+  && [[ ! -f "${selected_dataset_output}/manifest.jsonl" ]]; then
   needs_materialize=1
 fi
 if [[ -n "${DATASET_TIER}" && ! -f "${selected_dataset_output}/manifest.jsonl" ]]; then
@@ -520,11 +522,6 @@ if [[ -n "${DATASET_TIER}" && ! -f "${selected_dataset_output}/manifest.jsonl" ]
     echo "Pass --tiered-curriculum-dir so the missing tier datasets can be materialized." >&2
     exit 2
   fi
-  needs_materialize=1
-fi
-if [[ -n "${DATASET_TIER}" && -n "${TIERED_CURRICULUM_DIR}" ]] \
-  && [[ "${MATERIALIZE}" == "1" || "${MATERIALIZE}" == "true" ]] \
-  && [[ "${FORCE}" == "1" || "${FORCE}" == "true" ]]; then
   needs_materialize=1
 fi
 
