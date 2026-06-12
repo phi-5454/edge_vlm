@@ -596,6 +596,22 @@ def make_data(cfg: DictConfig) -> KerasTallyQAData:
     return KerasTallyQAData(cfg)
 
 
+def prompt_input_mode(cfg: DictConfig) -> str:
+    mode = str(cfg.keras_model.get("prompt_input_mode", "token_ids")).replace("-", "_").lower()
+    aliases = {
+        "tokens": "token_ids",
+        "token": "token_ids",
+        "ids": "token_ids",
+        "raw": "raw_embedding",
+        "embedding": "raw_embedding",
+        "raw_prompt_embedding": "raw_embedding",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in {"token_ids", "raw_embedding"}:
+        raise ValueError("keras_model.prompt_input_mode must be one of {'token_ids', 'raw_embedding'}.")
+    return mode
+
+
 def make_tf_dataset(
     data: KerasTallyQAData,
     split: str,
@@ -604,11 +620,25 @@ def make_tf_dataset(
 ) -> tf.data.Dataset:
     image_size = int(cfg.keras_model.image_size)
     num_classes = int(cfg.model.num_outputs)
-    signature = (
-        {
+    if data.prompt_input_mode == "token_ids":
+        input_signature = {
             "token_ids": tf.TensorSpec(shape=(None, prompt_length), dtype=tf.int32),
             "images": tf.TensorSpec(shape=(None, image_size, image_size, 3), dtype=tf.float32),
-        },
+        }
+    elif data.prompt_input_mode == "raw_embedding":
+        input_signature = {
+            "prompt_embedding": tf.TensorSpec(
+                shape=(None, int(data.prompt_embeddings.shape[1])),
+                dtype=tf.float32,
+            ),
+            "images": tf.TensorSpec(shape=(None, image_size, image_size, 3), dtype=tf.float32),
+        }
+    else:
+        raise ValueError(
+            "keras_model.prompt_input_mode must be one of {'token_ids', 'raw_embedding'}."
+        )
+    signature = (
+        input_signature,
         {
             "labels": tf.TensorSpec(shape=(None,), dtype=tf.int32),
             "teacher_probs": tf.TensorSpec(shape=(None, num_classes), dtype=tf.float32),
@@ -1775,7 +1805,34 @@ def prompt_query_tensors(
         activation=activation,
         name="prompt_projection_dense",
     )(query)
-    query = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="prompt_projection_norm")(query)
+    if use_prompt_projection_norm(cfg):
+        query = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="prompt_projection_norm")(query)
+    query_token = tf.keras.layers.Reshape((1, fusion_dim), name="prompt_token")(query)
+    if bool(cfg.keras_model.get("use_prompt_identity", cfg.model.use_prompt_identity)):
+        query_token = add_prompt_identity(query_token, fusion_dim)
+    return query, query_token
+
+
+def use_prompt_projection_norm(cfg: DictConfig) -> bool:
+    configured = cfg.keras_model.get("prompt_projection_norm", None)
+    if configured is not None:
+        return bool(configured)
+    return prompt_input_mode(cfg) != "raw_embedding"
+
+
+def prompt_query_tensors_from_embedding(
+    prompt_embedding: tf.Tensor,
+    cfg: DictConfig,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    fusion_dim = int(cfg.keras_model.get("fusion_dim", cfg.model.fusion_dim))
+    activation = str(cfg.keras_model.get("activation", "gelu"))
+    query = tf.keras.layers.Dense(
+        fusion_dim,
+        activation=activation,
+        name="prompt_projection_dense",
+    )(prompt_embedding)
+    if use_prompt_projection_norm(cfg):
+        query = tf.keras.layers.LayerNormalization(epsilon=1e-5, name="prompt_projection_norm")(query)
     query_token = tf.keras.layers.Reshape((1, fusion_dim), name="prompt_token")(query)
     if bool(cfg.keras_model.get("use_prompt_identity", cfg.model.use_prompt_identity)):
         query_token = add_prompt_identity(query_token, fusion_dim)
@@ -1844,15 +1901,28 @@ def build_tallyqa_current_student_model(
     if fusion_dim % heads != 0:
         raise ValueError("fusion_dim must be divisible by fusion_heads.")
     fusion_mode = str(cfg.keras_model.get("fusion_mode", "normformer"))
+    mode = prompt_input_mode(cfg)
 
     batch_size = cfg.keras_model.get("batch_size", None)
     batch_size = None if batch_size is None else int(batch_size)
-    token_ids = tf.keras.Input(
-        shape=(prompt_length,),
-        batch_size=batch_size,
-        dtype=tf.int32,
-        name="token_ids",
-    )
+    token_ids = None
+    prompt_embedding = None
+    if mode == "token_ids":
+        token_ids = tf.keras.Input(
+            shape=(prompt_length,),
+            batch_size=batch_size,
+            dtype=tf.int32,
+            name="token_ids",
+        )
+    elif mode == "raw_embedding":
+        prompt_embedding = tf.keras.Input(
+            shape=(int(embedding_rows.shape[1]),),
+            batch_size=batch_size,
+            dtype=tf.float32,
+            name="prompt_embedding",
+        )
+    else:
+        raise ValueError("keras_model.prompt_input_mode must be one of {'token_ids', 'raw_embedding'}.")
     images = tf.keras.Input(
         shape=(int(cfg.keras_model.image_size), int(cfg.keras_model.image_size), 3),
         batch_size=batch_size,
@@ -1860,7 +1930,16 @@ def build_tallyqa_current_student_model(
         name="images",
     )
 
-    query, query_token = prompt_query_tensors(token_ids, cfg, embedding_rows)
+    if mode == "token_ids":
+        if token_ids is None:
+            raise AssertionError("token_ids input was not created.")
+        query, query_token = prompt_query_tensors(token_ids, cfg, embedding_rows)
+        model_inputs = {"token_ids": token_ids, "images": images}
+    else:
+        if prompt_embedding is None:
+            raise AssertionError("prompt_embedding input was not created.")
+        query, query_token = prompt_query_tensors_from_embedding(prompt_embedding, cfg)
+        model_inputs = {"prompt_embedding": prompt_embedding, "images": images}
 
     backbone = build_keras_mobilenet(cfg, images)
     backbone.trainable = not bool(cfg.model.freeze_image_features)
@@ -1880,7 +1959,7 @@ def build_tallyqa_current_student_model(
         num_classes,
     )
     return tf.keras.Model(
-        inputs={"token_ids": token_ids, "images": images},
+        inputs=model_inputs,
         outputs=logits,
         name=f"tallyqa_keras_{fusion_mode}_student",
     )
@@ -1958,6 +2037,7 @@ def qat_full_integer_runtime_gap_report(
             "uncovered_runtime_layer_count": 0,
         }
 
+    raw_prompt_input = prompt_input_mode(cfg) == "raw_embedding"
     risky_layers: list[dict[str, str]] = []
     for path, layer in iter_leaf_layers(model):
         inner = getattr(layer, "layer", None) if is_quantize_wrapper(layer) else layer
@@ -1970,9 +2050,15 @@ def qat_full_integer_runtime_gap_report(
             reason = "LayerNorm lowers to int8 arithmetic in full-integer TFLite without an equivalent tfmot QAT wrapper"
         elif layer_class == "GlobalAveragePooling1D" and "prompt" in lower_path:
             reason = "mask-aware prompt pooling is quantized by TFLite but not trained through deployed integer arithmetic"
-        elif layer_class in {"TilePromptQueryToFeatureMap", "FirstPromptToken"}:
+        elif layer_class in {"TilePromptQueryToFeatureMap", "FirstPromptToken"} and not raw_prompt_input:
             reason = "custom prompt tensor manipulation is quantized by full-integer TFLite outside tfmot QAT coverage"
-        elif layer_class in {"Concatenate", "Multiply", "Add"} and "prompt" in lower_path:
+        elif (
+            layer_class == "Concatenate"
+            and "prompt" in lower_path
+            and not raw_prompt_input
+        ):
+            reason = "prompt fusion concat is quantized by full-integer TFLite outside tfmot QAT coverage"
+        elif layer_class in {"Multiply", "Add"} and "prompt" in lower_path:
             reason = "prompt fusion arithmetic is quantized by full-integer TFLite outside tfmot QAT coverage"
         if reason is not None:
             risky_layers.append(
@@ -2296,6 +2382,7 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
     include_mobilenet_preprocessing = bool(
         cfg.keras_model.get("include_mobilenet_preprocessing", True)
     )
+    mode = prompt_input_mode(cfg)
     pytorch_unsupported = [
         {
             "component": "MobileViTFusionBlock / nn.TransformerEncoderLayer",
@@ -2342,6 +2429,8 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "git_revision": git_revision(),
         "model_name": model.name,
+        "prompt_input_mode": mode,
+        "prompt_projection_norm": use_prompt_projection_norm(cfg),
         "keras_layers": layers,
         "tflite_prior_supported_patterns": [
             "Conv2D",
@@ -2354,8 +2443,23 @@ def compatibility_report(model: tf.keras.Model, cfg: DictConfig) -> dict[str, An
             "Concatenate",
         ],
         "known_non_edge_tpu_or_risky_patterns": [
-            "Embedding/Gather for prompt tokens",
-            "prompt embedding/gather and mask-aware pooling are intentionally not QAT-annotated",
+            *(
+                [
+                    "Embedding/Gather for prompt tokens",
+                    (
+                        "prompt embedding/gather and mask-aware pooling are intentionally "
+                        "not QAT-annotated"
+                    ),
+                ]
+                if mode == "token_ids"
+                else [
+                    (
+                        "prompt embedding is supplied as a real model input; host/board "
+                        "lookup must use the same pre-pooled vector table used for "
+                        "representative calibration"
+                    )
+                ]
+            ),
             (
                 "Keras MobileNetV3 preprocessing is inside the model; inspect the EdgeTPU "
                 "compiler report for preprocessing CPU fallback."
@@ -2884,7 +2988,7 @@ def representative_dataset(
     cfg: DictConfig,
 ) -> Iterable[dict[str, np.ndarray]]:
     quant_cfg = cfg.export.quantization
-    for token_ids, image in data.representative_examples(
+    for inputs in data.representative_examples(
         max_samples=max_samples,
         strategy=str(quant_cfg.get("representative_strategy", "prompt_tempered")),
         prompt_temperature=float(quant_cfg.get("representative_prompt_temperature", 0.5)),
@@ -2892,8 +2996,8 @@ def representative_dataset(
         min_per_output_class=int(quant_cfg.get("representative_min_per_output_class", 32)),
     ):
         yield {
-            "token_ids": token_ids.astype(np.int32),
-            "images": image.astype(np.float32),
+            key: value.astype(np.int32 if key == "token_ids" else np.float32)
+            for key, value in inputs.items()
         }
 
 
@@ -3020,14 +3124,21 @@ def map_tflite_inputs(
     inputs: dict[str, tf.Tensor],
 ) -> dict[int, np.ndarray]:
     mapped: dict[int, np.ndarray] = {}
-    token_ids = inputs["token_ids"].numpy()
+    token_ids = inputs["token_ids"].numpy() if "token_ids" in inputs else None
+    prompt_embedding = (
+        inputs["prompt_embedding"].numpy() if "prompt_embedding" in inputs else None
+    )
     images = inputs["images"].numpy()
     for detail in details:
         name = str(detail.get("name", "")).lower()
         shape = list(detail.get("shape_signature", detail.get("shape", [])))
         rank = len(shape)
-        if "token" in name or (rank == 2 and detail["dtype"] == np.int32):
+        if token_ids is not None and ("token" in name or (rank == 2 and detail["dtype"] == np.int32)):
             mapped[int(detail["index"])] = token_ids
+        elif prompt_embedding is not None and (
+            "prompt" in name or "embedding" in name or rank == 2
+        ):
+            mapped[int(detail["index"])] = prompt_embedding
         elif "image" in name or rank == 4:
             mapped[int(detail["index"])] = images
         else:
@@ -3419,7 +3530,9 @@ def main(cfg: DictConfig) -> None:
             "teacher_cache_coverage": data.cache_coverage(),
             "classes": int(cfg.model.num_outputs),
             "collapse_at": int(cfg.data.collapse_at),
+            "prompt_input_mode": data.prompt_input_mode,
             "prompt_embedding_rows": list(data.embedding_rows.shape),
+            "pooled_prompt_embedding_shape": list(data.prompt_embeddings.shape),
             "prompt_token_shape": list(data.prompt_token_ids.shape),
         },
         "model": compatibility_report(student, cfg),

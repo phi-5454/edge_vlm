@@ -33,6 +33,8 @@ PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 INITIAL_WEIGHTS="${INITIAL_WEIGHTS:-}"
 INITIAL_WEIGHTS_LOAD_STAGE="${INITIAL_WEIGHTS_LOAD_STAGE:-after_quantization}"
 INITIAL_WEIGHTS_SKIP_MISMATCH="${INITIAL_WEIGHTS_SKIP_MISMATCH:-false}"
+PROMPT_INPUT_MODE="${PROMPT_INPUT_MODE:-token_ids}"
+PROMPT_PROJECTION_NORM="${PROMPT_PROJECTION_NORM:-null}"
 EXTRA_OVERRIDES=()
 
 while [[ $# -gt 0 ]]; do
@@ -179,6 +181,19 @@ while [[ $# -gt 0 ]]; do
       QUANTIZATION_MODE=qat
       shift 2
       ;;
+    --raw-prompt-embedding)
+      PROMPT_INPUT_MODE=raw_embedding
+      PROMPT_PROJECTION_NORM=false
+      shift
+      ;;
+    --prompt-input-mode)
+      PROMPT_INPUT_MODE="$2"
+      shift 2
+      ;;
+    --prompt-projection-norm)
+      PROMPT_PROJECTION_NORM="$2"
+      shift 2
+      ;;
     --skip-completed)
       SKIP_COMPLETED=1
       shift
@@ -282,6 +297,8 @@ run_one() {
     "distillation.local_soft_sigma=0.5" \
     "distillation.local_soft_radius=1" \
     "keras_model.architecture=current_student" \
+    "keras_model.prompt_input_mode=${PROMPT_INPUT_MODE}" \
+    "keras_model.prompt_projection_norm=${PROMPT_PROJECTION_NORM}" \
     "keras_model.image_backbone=${BACKBONE}" \
     "keras_model.image_feature_cutoff=auto" \
     "keras_model.include_mobilenet_preprocessing=false" \

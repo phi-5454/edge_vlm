@@ -18,6 +18,13 @@ keras_model:
   # current_student mirrors the PyTorch student more closely:
   # prompt lookup -> MobileNetV3 cutoff -> image tokens -> fusion -> count logits.
   architecture: current_student
+  # token_ids: model owns prompt lookup/pooling. raw_embedding: host/board provides
+  # the pre-pooled prompt vector as a real model input, matching the deployed
+  # two-input contract and avoiding hidden prompt-side quantization mismatch.
+  prompt_input_mode: token_ids
+  # null keeps legacy behavior for token_ids and disables prompt LayerNorm for
+  # raw_embedding. Set explicitly to true/false to override.
+  prompt_projection_norm: null
   image_size: 224
   image_channels: 3
   image_backbone: mobilenet_v3_small
