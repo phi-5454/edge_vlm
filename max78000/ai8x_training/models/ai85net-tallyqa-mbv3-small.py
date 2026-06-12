@@ -14,8 +14,8 @@ contains MobileNetV3-minimal-inspired folded encoders for architecture probes:
   112x112 and then 2x2 folding
 - output classes: 1, 2, 3, 4, 5+ for people-only bring-up, or 0, 1, 2, 3, 4, 5+
   for prompt-subset runs
-- optional prompt-conditioned variants append precomputed prompt embedding
-  planes after the folded RGB channels
+- optional prompt-conditioned variants consume a separate precomputed prompt
+  embedding vector
 - only ordinary 3x3 and 1x1 convolutions
 - no depthwise or depth-separable convolutions
 - no strided convolutions; downsampling is max pooling fused before conv
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
 from torch import nn
 
 import ai8x
@@ -220,35 +221,38 @@ class MobileNetV3MinimalBlock(nn.Module):
         return x
 
 
-class PromptAdditiveConditioning(nn.Module):
-    """Project prompt embedding planes to feature-space additive FiLM bias."""
+class PromptVectorFiLM(nn.Module):
+    """Feature-wise affine conditioning from a global prompt embedding vector."""
 
     def __init__(
         self,
         prompt_channels: int,
         out_channels: int,
-        pool_factor: int,
         bias: bool,
         **kwargs,
     ):
         super().__init__()
-        self.pool = (
-            nn.Identity()
-            if pool_factor == 1
-            else nn.MaxPool2d(kernel_size=pool_factor, stride=pool_factor)
-        )
-        self.project = ai8x.Conv2d(
+        self.out_channels = out_channels
+        self.project = ai8x.Linear(
             prompt_channels,
-            out_channels,
-            1,
-            bias=bias,
+            2 * out_channels,
+            bias=True,
+            wide=True,
             **kwargs,
         )
-        self.add = ai8x.Add()
+        nn.init.zeros_(self.project.op.weight)
+        nn.init.zeros_(self.project.op.bias)
 
-    def forward(self, x, prompt_planes):  # pylint: disable=arguments-differ
-        prompt_bias = self.project(self.pool(prompt_planes))
-        return self.add(x, prompt_bias)
+    def zero_init(self) -> None:
+        nn.init.zeros_(self.project.op.weight)
+        nn.init.zeros_(self.project.op.bias)
+
+    def forward(self, x, prompt_vector):  # pylint: disable=arguments-differ
+        gamma_beta = self.project(prompt_vector.to(dtype=x.dtype))
+        gamma, beta = gamma_beta.chunk(2, dim=1)
+        gamma = gamma.view(gamma.size(0), self.out_channels, 1, 1)
+        beta = beta.view(beta.size(0), self.out_channels, 1, 1)
+        return x * (1.0 + gamma) + beta
 
 
 class TallyQAFoldedSimpleCount(nn.Module):
@@ -453,33 +457,39 @@ class TallyQAFoldedMobileNetV3MinimalCount(nn.Module):
 class TallyQAFoldedMobileNetV3LargePromptFilmCount(nn.Module):
     """Large-minimal image encoder with prompt-embedding additive FiLM conditioning.
 
-    The input tensor is ``12 + E`` channels. The first 12 channels are the folded
-    image. The remaining channels are spatially constant mean-pooled prompt
-    embedding planes from the original TallyQA prompt embedding artifact.
-    Conditioning is applied after the two MobileNetV3-large spatial reductions:
-    ``56x56 -> 28x28`` at 40 channels and ``28x28 -> 14x14`` at 80 channels.
-    The network cuts at the 14x14x80 stage and uses a compact average-pool
-    classifier head.
+    The input is a tuple ``(image, prompt)`` where image is a folded
+    ``12x56x56`` tensor and prompt is a global ``576``-d vector from the original
+    TallyQA prompt embedding artifact.
+    Conditioning is applied after the spatial reduction points, before the
+    14x14x48 stack, and before the evidence-map head:
+    ``56x56 -> 28x28`` at 24 channels, ``28x28 -> 14x14`` at 40 channels, and
+    ``14x14`` at 48 channels. The head refines the 14x14x48 map, concatenates
+    global sum and max pooled features, and classifies the resulting 96-d vector.
     """
 
     stem_channels = TallyQAFoldedMobileNetV3MinimalCount.large_stem_channels
-    head_channels = 1
-    pool_kernel = 14
+    prompt_channels = PROMPT_EMBEDDING_CHANNELS
     # Compact test-model schedule:
     # - keep the 56x56 stem convolution
-    # - keep one same-resolution 28x28x40 block
-    # - keep one same-resolution 14x14x80 block
+    # - three 28x28x24 blocks
+    # - four 14x14x40 blocks
+    # - two 14x14x48 blocks before the evidence-map head
     feature_specs = (
         MobileNetV3MinimalBlockSpec(24, 24, pool=True),
         MobileNetV3MinimalBlockSpec(24, 24),
+        MobileNetV3MinimalBlockSpec(24, 24),
         MobileNetV3MinimalBlockSpec(40, 40, pool=True),
         MobileNetV3MinimalBlockSpec(40, 40),
+        MobileNetV3MinimalBlockSpec(40, 40),
+        MobileNetV3MinimalBlockSpec(40, 40),
+        MobileNetV3MinimalBlockSpec(48, 48),
+        MobileNetV3MinimalBlockSpec(48, 48),
     )
 
     def __init__(
         self,
         num_classes: int = 6,
-        num_channels: int = FOLDED_IMAGE_CHANNELS + PROMPT_EMBEDDING_CHANNELS,
+        num_channels: int = FOLDED_IMAGE_CHANNELS,
         dimensions: tuple[int, int] = (56, 56),
         bias: bool = True,
         residual: bool = True,
@@ -488,17 +498,14 @@ class TallyQAFoldedMobileNetV3LargePromptFilmCount(nn.Module):
         super().__init__()
         if dimensions != (56, 56):
             raise ValueError("This MAX78000 prompt-conditioned model expects 56x56 inputs.")
-        if num_channels <= FOLDED_IMAGE_CHANNELS:
-            raise ValueError(
-                "Prompt-conditioned model expects folded image channels plus prompt embeddings."
-            )
+        if num_channels != FOLDED_IMAGE_CHANNELS:
+            raise ValueError("Prompt-conditioned model expects 12 folded image channels.")
         if num_classes not in {5, 6}:
             raise ValueError("Count head supports either 5 classes (1..5+) or 6 classes (0..5+).")
 
         self.num_classes = num_classes
         self.num_channels = num_channels
         self.image_channels = FOLDED_IMAGE_CHANNELS
-        self.prompt_channels = num_channels - FOLDED_IMAGE_CHANNELS
         self.dimensions = dimensions
 
         self.stem = ai8x.FusedConv2dBNReLU(
@@ -523,30 +530,59 @@ class TallyQAFoldedMobileNetV3LargePromptFilmCount(nn.Module):
             in_channels = spec.out_channels
         self.features = nn.ModuleList(blocks)
 
-        self.condition_28 = PromptAdditiveConditioning(
+        self.condition_28 = PromptVectorFiLM(
             self.prompt_channels,
             24,
-            pool_factor=2,
             bias=bias,
             **kwargs,
         )
-        self.condition_14 = PromptAdditiveConditioning(
+        self.condition_14 = PromptVectorFiLM(
             self.prompt_channels,
             40,
-            pool_factor=4,
+            bias=bias,
+            **kwargs,
+        )
+        self.condition_14_pre48 = PromptVectorFiLM(
+            self.prompt_channels,
+            40,
+            bias=bias,
+            **kwargs,
+        )
+        self.condition_14_pre_head = PromptVectorFiLM(
+            self.prompt_channels,
+            48,
             bias=bias,
             **kwargs,
         )
 
-        self.head_conv = ai8x.FusedConv2dBNReLU(
-            in_channels,
-            self.head_channels,
-            1,
-            bias=bias,
-            **kwargs,
+        self.head = nn.Sequential(
+            ai8x.FusedConv2dBNReLU(
+                in_channels,
+                in_channels,
+                3,
+                padding=1,
+                bias=bias,
+                **kwargs,
+            ),
+            ai8x.FusedConv2dBNReLU(
+                in_channels,
+                in_channels,
+                3,
+                padding=1,
+                bias=bias,
+                **kwargs,
+            ),
+            ai8x.FusedConv2dBNReLU(
+                in_channels,
+                in_channels,
+                3,
+                padding=1,
+                bias=bias,
+                **kwargs,
+            ),
         )
         self.classifier = ai8x.Linear(
-            self.head_channels * self.pool_kernel * self.pool_kernel,
+            2 * in_channels,
             num_classes,
             bias=True,
             wide=True,
@@ -554,24 +590,49 @@ class TallyQAFoldedMobileNetV3LargePromptFilmCount(nn.Module):
         )
 
         initialize_conv_linear(self)
+        for module in (
+            self.condition_28,
+            self.condition_14,
+            self.condition_14_pre48,
+            self.condition_14_pre_head,
+        ):
+            module.zero_init()
+
+    def _split_inputs(self, x):
+        if isinstance(x, (tuple, list)):
+            if len(x) != 2:
+                raise ValueError("Prompt-conditioned model expects (image, prompt_vector).")
+            image, prompt_vector = x
+        else:
+            image = x
+            prompt_vector = image.new_zeros((image.size(0), self.prompt_channels))
+        if prompt_vector.ndim != 2 or prompt_vector.size(1) != self.prompt_channels:
+            raise ValueError(
+                f"Expected prompt vector shape (B, {self.prompt_channels}), "
+                f"got {tuple(prompt_vector.shape)}."
+            )
+        return image, prompt_vector
 
     def forward_features(self, x):
-        image = x[:, : self.image_channels, :, :]
-        prompt_planes = x[:, self.image_channels :, :, :]
+        image, prompt_vector = self._split_inputs(x)
 
         x = self.stem(image)
         for block_index, block in enumerate(self.features):
             x = block(x)
             if block_index == 0:
-                x = self.condition_28(x, prompt_planes)
-            elif block_index == 2:
-                x = self.condition_14(x, prompt_planes)
-        return self.head_conv(x)
+                x = self.condition_28(x, prompt_vector)
+            elif block_index == 3:
+                x = self.condition_14(x, prompt_vector)
+            elif block_index == 6:
+                x = self.condition_14_pre48(x, prompt_vector)
+        x = self.condition_14_pre_head(x, prompt_vector)
+        return self.head(x)
 
     def forward(self, x):  # pylint: disable=arguments-differ
         x = self.forward_features(x)
-        x = x.view(x.size(0), -1)
-        return self.classifier(x)
+        sum_features = x.sum(dim=(2, 3))
+        max_features = x.amax(dim=(2, 3))
+        return self.classifier(torch.cat((sum_features, max_features), dim=1))
 
 
 def ai85tallyqambv3smallcount(pretrained: bool = False, **kwargs):

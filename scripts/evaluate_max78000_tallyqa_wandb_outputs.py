@@ -37,7 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model-file", type=Path, default=None)
     parser.add_argument("--factory", required=True)
-    parser.add_argument("--input-channels", type=int, default=588)
+    parser.add_argument("--input-channels", type=int, default=12)
+    parser.add_argument("--prompt-embedding-channels", type=int, default=0)
     parser.add_argument("--num-classes", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--samples", type=int, default=4)
@@ -122,6 +123,26 @@ def build_model(model_module, factory: str, input_channels: int, num_classes: in
     )
 
 
+def move_to_device(inputs, device: str):
+    if torch.is_tensor(inputs):
+        return inputs.to(device)
+    if isinstance(inputs, tuple):
+        return tuple(move_to_device(item, device) for item in inputs)
+    if isinstance(inputs, list):
+        return [move_to_device(item, device) for item in inputs]
+    if isinstance(inputs, dict):
+        return {key: move_to_device(value, device) for key, value in inputs.items()}
+    return inputs
+
+
+def split_model_input(sample):
+    if isinstance(sample, (tuple, list)):
+        if len(sample) != 2:
+            raise ValueError(f"Expected (image, prompt_vector), got {len(sample)} items.")
+        return sample[0], sample[1]
+    return sample, None
+
+
 def display_image(dataset, index: int) -> np.ndarray:
     record = dataset.records[index]
     image_chw = np.asarray(dataset.images[int(record["image_index"])])
@@ -190,14 +211,19 @@ class Accumulator:
             for values in self.prompt_errors.values()
             if values
         ]
+        prompt_class_weighted_error = float(np.mean(prompt_mae)) if prompt_mae else 0.0
+        class_weighted_error = float(np.mean(class_mae)) if class_mae else 0.0
         return {
             "accuracy": correct / total if total else 0.0,
             "within_1_accuracy": within_1 / total if total else 0.0,
             "class_weighted_accuracy": float(np.mean(class_acc)) if len(class_acc) else 0.0,
             "mae": float(np.mean(self.absolute_errors)) if self.absolute_errors else 0.0,
-            "class_weighted_mae": float(np.mean(class_mae)) if class_mae else 0.0,
+            "class_weighted_mae": class_weighted_error,
+            "class_weighted_error": class_weighted_error,
             "prompt_class_output_weighted_accuracy": float(np.mean(prompt_acc)) if prompt_acc else 0.0,
-            "prompt_class_output_weighted_mae": float(np.mean(prompt_mae)) if prompt_mae else 0.0,
+            "prompt_class_output_weighted_mae": prompt_class_weighted_error,
+            "prompt_class_weighted_mae": prompt_class_weighted_error,
+            "prompt_class_weighted_error": prompt_class_weighted_error,
         }
 
 
@@ -256,17 +282,26 @@ def save_examples(stage: str, model: torch.nn.Module, dataset, output: Path, max
     rows = []
     images = []
     inputs = []
+    prompt_vectors = []
     labels = []
     prompts = []
     for index in indices:
-        image, target = dataset[index]
+        model_input, target = dataset[index]
+        image, prompt_vector = split_model_input(model_input)
         record = dataset.records[index]
         inputs.append(image)
+        if prompt_vector is not None:
+            prompt_vectors.append(prompt_vector)
         labels.append(int(hard_labels(torch.as_tensor(target).unsqueeze(0))[0]))
         prompts.append(str(record.get("student_prompt", "")))
         images.append(display_image(dataset, index))
         rows.append(record)
-    batch = torch.stack(inputs).to(device)
+    image_batch = torch.stack(inputs)
+    if prompt_vectors:
+        batch = (image_batch, torch.stack(prompt_vectors))
+    else:
+        batch = image_batch
+    batch = move_to_device(batch, device)
     with torch.no_grad():
         features = model.forward_features(batch).detach().cpu().numpy()
         logits = model(batch).detach().cpu()
@@ -290,10 +325,10 @@ def save_examples(stage: str, model: torch.nn.Module, dataset, output: Path, max
         if feature_map.ndim == 3:
             feature_map = feature_map.mean(axis=0)
         map_ax.imshow(normalize_map(feature_map), cmap="magma")
-        map_ax.set_title("14x14 head map normalized", fontsize=9)
+        map_ax.set_title(f"{feature_map.shape[0]}x{feature_map.shape[1]} head map normalized", fontsize=9)
         map_ax.axis("off")
         raw_map_ax.imshow(feature_map, cmap="magma")
-        raw_map_ax.set_title("14x14 head map raw", fontsize=9)
+        raw_map_ax.set_title(f"{feature_map.shape[0]}x{feature_map.shape[1]} head map raw", fontsize=9)
         raw_map_ax.axis("off")
 
         colors = ["#8a8f98"] * len(CLASS_NAMES)
@@ -369,7 +404,7 @@ def evaluate_split(
         offset = 0
         for inputs, target in loader:
             labels = hard_labels(target)
-            logits = model(inputs.to(device)).cpu()
+            logits = model(move_to_device(inputs, device)).cpu()
             predictions = torch.argmax(logits, dim=1)
             prompts = [
                 str(record.get("student_prompt", ""))
@@ -401,7 +436,9 @@ def evaluate_split(
 def main() -> None:
     args = parse_args()
     ai8x, model_module, dataset_module = import_max_modules(args.ai8x_training, args.model_file)
-    prompt_channels = max(0, args.input_channels - 12)
+    prompt_channels = args.prompt_embedding_channels
+    if prompt_channels <= 0 and args.input_channels > 12:
+        prompt_channels = args.input_channels - 12
     device = args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
     model = build_model(model_module, args.factory, args.input_channels, args.num_classes)
     state = load_checkpoint_state(args.checkpoint)
@@ -419,6 +456,7 @@ def main() -> None:
         "data_dir": str(args.data_dir),
         "factory": args.factory,
         "input_channels": args.input_channels,
+        "prompt_embedding_channels": prompt_channels,
         "num_classes": args.num_classes,
         "load_state": {
             "fused_bn_before_load": fused_bn_before_load,

@@ -279,6 +279,10 @@ def run_post_eval(
     data_dir = manifest.get("data_dir")
     model_name = manifest.get("model_name")
     input_channels = manifest.get("model_input_channels")
+    dataset_name = str(manifest.get("dataset_name") or "")
+    prompt_channels = manifest.get("model_prompt_channels")
+    if prompt_channels is None:
+        prompt_channels = 576 if "prompt_embed576" in dataset_name else max(0, int(input_channels or 0) - 12)
     if not data_dir or not model_name or not input_channels:
         print("Warning: manifest is missing data_dir/model_name/model_input_channels; skipping post-eval plots.")
         return None
@@ -300,6 +304,8 @@ def run_post_eval(
         str(model_name),
         "--input-channels",
         str(int(input_channels)),
+        "--prompt-embedding-channels",
+        str(int(prompt_channels)),
         "--num-classes",
         "6",
         "--batch-size",

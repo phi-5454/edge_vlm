@@ -250,6 +250,7 @@ class TallyQACount(Dataset):
             image = self.transform(Image.fromarray(image_hwc))
         else:
             image = torch.from_numpy(image_chw.copy()).float().div(255.0)
+        prompt_vector = None
         if self.prompt_embedding_channels:
             prompt = str(record.get("student_prompt") or "people").strip().lower()
             if prompt not in self.prompt_embeddings_by_class:
@@ -257,8 +258,7 @@ class TallyQACount(Dataset):
                     f"Prompt {prompt!r} is not in prompt embeddings for {self.root_dir}."
                 )
             prompt_vector = self.prompt_embeddings_by_class[prompt].to(dtype=image.dtype)
-            prompt_planes = prompt_vector[:, None, None].expand(-1, FOLDED_SIZE, FOLDED_SIZE)
-            image = torch.cat((image, prompt_planes), dim=0)
+            image = (image, prompt_vector)
         if "teacher_probs" in record:
             teacher_probs = torch.tensor(record["teacher_probs"], dtype=torch.float32)
             if teacher_probs.numel() != len(COUNT_LABELS):
@@ -341,7 +341,7 @@ def get_tallyqa_count_dataset(data, load_train, load_test):
 
 
 def get_tallyqa_count_prompt_embed576_dataset(data, load_train, load_test):
-    """Load TallyQA count datasets with 576-d precomputed prompt embedding planes."""
+    """Load TallyQA count datasets with 576-d precomputed prompt vectors."""
     return _get_tallyqa_count_dataset(
         data,
         load_train,
@@ -359,11 +359,7 @@ datasets = [
     },
     {
         "name": "tallyqa_count_fold2_56_prompt_embed576",
-        "input": (
-            FOLDED_CHANNELS + PROMPT_EMBEDDING_CHANNELS,
-            FOLDED_SIZE,
-            FOLDED_SIZE,
-        ),
+        "input": (FOLDED_CHANNELS, FOLDED_SIZE, FOLDED_SIZE),
         "output": COUNT_LABELS,
         "loader": get_tallyqa_count_prompt_embed576_dataset,
     },

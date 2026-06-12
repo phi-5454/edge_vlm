@@ -64,6 +64,22 @@ def edge_vlm_distillation_loss(output, target, criterion):
     return total_loss
 
 
+def edge_vlm_inputs_to_device(inputs, device):
+    """Move tensor or nested model inputs to a device."""
+    if torch.is_tensor(inputs):
+        return inputs.to(device)
+    if isinstance(inputs, tuple):
+        return tuple(edge_vlm_inputs_to_device(item, device) for item in inputs)
+    if isinstance(inputs, list):
+        return [edge_vlm_inputs_to_device(item, device) for item in inputs]
+    if isinstance(inputs, dict):
+        return {
+            key: edge_vlm_inputs_to_device(value, device)
+            for key, value in inputs.items()
+        }
+    return inputs
+
+
 def edge_vlm_add_distillation_meters(losses):
     """Expose cached-teacher loss components through ai8x's normal meters."""
     for meter_name, stats_key in (
@@ -113,8 +129,40 @@ def main() -> None:
         text = text.replace('matplotlib.use("pgf")\n', 'matplotlib.use("pgf")\n\n' + HELPERS, 1)
     elif "edge_vlm_add_distillation_meters" not in text:
         text = text.replace("def main():\n", HELPERS + "\ndef main():\n", 1)
+    if "edge_vlm_inputs_to_device" not in text:
+        inputs_helper = '''
+
+def edge_vlm_inputs_to_device(inputs, device):
+    """Move tensor or nested model inputs to a device."""
+    if torch.is_tensor(inputs):
+        return inputs.to(device)
+    if isinstance(inputs, tuple):
+        return tuple(edge_vlm_inputs_to_device(item, device) for item in inputs)
+    if isinstance(inputs, list):
+        return [edge_vlm_inputs_to_device(item, device) for item in inputs]
+    if isinstance(inputs, dict):
+        return {
+            key: edge_vlm_inputs_to_device(value, device)
+            for key, value in inputs.items()
+        }
+    return inputs
+
+'''
+        text = text.replace("def main():\n", inputs_helper + "\ndef main():\n", 1)
 
     text = text.replace("loss = criterion(output, target)", "loss = edge_vlm_distillation_loss(output, target, criterion)")
+    text = text.replace(
+        "inputs = inputs.to(args.device)",
+        "inputs = edge_vlm_inputs_to_device(inputs, args.device)",
+    )
+    text = text.replace(
+        "inputs, target = inputs.to(args.device), target_temp.to(args.device)",
+        "inputs, target = edge_vlm_inputs_to_device(inputs, args.device), target_temp.to(args.device)",
+    )
+    text = text.replace(
+        "inputs, target = inputs.to(args.device), target.to(args.device)",
+        "inputs, target = edge_vlm_inputs_to_device(inputs, args.device), target.to(args.device)",
+    )
     if not had_meter_patch:
         text = re.sub(
             r"(?m)^(?P<indent>\s*)losses\[OBJECTIVE_LOSS_KEY\]\.add\(loss\.item\(\)\)$",

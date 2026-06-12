@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--round-avg", action="store_true")
     parser.add_argument("--input-channels", type=int, default=12)
+    parser.add_argument("--prompt-embedding-channels", type=int, default=0)
     parser.add_argument("--input-size", type=int, default=56)
     parser.add_argument("--num-classes", type=int, default=5)
     return parser.parse_args()
@@ -96,6 +97,14 @@ def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def shape_text(shape: Any) -> str:
+    if isinstance(shape, list) and shape and all(isinstance(item, list) for item in shape):
+        return " + ".join("x".join(str(value) for value in item) for item in shape)
+    if isinstance(shape, list):
+        return "x".join(str(value) for value in shape)
+    return str(shape)
+
+
 def write_parameter_chart(rows: list[dict[str, Any]], output_path: Path) -> None:
     if not rows:
         return
@@ -120,7 +129,7 @@ def write_parameter_chart(rows: list[dict[str, Any]], output_path: Path) -> None
     plt.close(fig)
 
 
-def tensor_shape_for(module: torch.nn.Module, sample: torch.Tensor) -> list[int] | None:
+def tensor_shape_for(module: torch.nn.Module, sample: torch.Tensor | tuple[torch.Tensor, ...]) -> list[int] | None:
     module.eval()
     with torch.no_grad():
         try:
@@ -152,7 +161,19 @@ def main() -> None:
         bias=True,
     )
     model.eval()
-    sample = torch.zeros((1, args.input_channels, args.input_size, args.input_size))
+    image_sample = torch.zeros((1, args.input_channels, args.input_size, args.input_size))
+    if args.prompt_embedding_channels > 0:
+        sample: torch.Tensor | tuple[torch.Tensor, torch.Tensor] = (
+            image_sample,
+            torch.zeros((1, args.prompt_embedding_channels)),
+        )
+        input_shape: list[Any] = [
+            [1, args.input_channels, args.input_size, args.input_size],
+            [1, args.prompt_embedding_channels],
+        ]
+    else:
+        sample = image_sample
+        input_shape = [1, args.input_channels, args.input_size, args.input_size]
     with torch.no_grad():
         output_shape = list(model(sample).shape)
         feature_shape = (
@@ -172,7 +193,13 @@ def main() -> None:
         "device": args.device,
         "simulate": bool(args.simulate),
         "round_avg": bool(args.round_avg),
-        "input_shape": [1, args.input_channels, args.input_size, args.input_size],
+        "input_shape": input_shape,
+        "image_input_shape": [1, args.input_channels, args.input_size, args.input_size],
+        "prompt_embedding_shape": (
+            [1, args.prompt_embedding_channels]
+            if args.prompt_embedding_channels > 0
+            else None
+        ),
         "feature_shape": feature_shape,
         "output_shape": output_shape,
         "parameter_counts": {
@@ -195,7 +222,7 @@ def main() -> None:
     write_parameter_chart(grouped_rows, chart_path)
 
     overview_rows = [
-        ["input", "x".join(str(value) for value in report["input_shape"])],
+        ["input", shape_text(report["input_shape"])],
         ["feature cut", "x".join(str(value) for value in feature_shape or [])],
         ["output", "x".join(str(value) for value in output_shape)],
         ["parameters", f"{format_count(total)} total / {format_count(trainable)} trainable"],

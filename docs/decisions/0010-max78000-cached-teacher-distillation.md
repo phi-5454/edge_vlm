@@ -45,7 +45,11 @@ plain float training, and QAT starts at epoch 10 via
 The W&B wrapper now performs a post-training checkpoint evaluation and saves the
 MAX analogue of the original training outputs: model report files, train log,
 run manifest, best checkpoint, validation/test metrics, confusion matrices, and
-unique-image examples with the `14x14` head map plus prediction bars.
+unique-image examples with the current head feature map plus prediction bars.
+The validation and test metric payloads explicitly include class-weighted
+absolute error as both `class_weighted_mae` and `class_weighted_error`, so W&B
+contains the same class-balance-sensitive error signal used in the Keras/TFLite
+comparison plots.
 
 The distillation patch also exposes `CE Loss`, `KL Loss`, and
 `Distillation Loss` as normal ai8x meters. The W&B stdout parser therefore logs
@@ -56,8 +60,15 @@ The wrapper promotes the static model report to W&B panels, uploads all
 available MAX checkpoint files as a checkpoint artifact, logs the selected best
 checkpoint separately with the post-evaluation outputs, and records
 best-checkpoint parameter histograms. It also saves/logs separate
-`prediction_examples.png` plots in addition to the `14x14` image-encoding
+`prediction_examples.png` plots in addition to the head-map image-encoding
 plots for validation and test.
+
+The prompt-conditioned MAX architecture now keeps folded image tensors and
+prompt embeddings separate. The dataset returns image tensors shaped
+`(12, 56, 56)` plus a separate 576-d prompt vector. The model applies
+zero-initialized vector FiLM at the 28x28x24, 14x14x40, pre-48, and pre-head
+stages, then emits a 14x14x6 per-class evidence map and sums over spatial
+dimensions to produce six logits for hard count-class cross-entropy.
 
 ## Evidence
 
@@ -94,9 +105,9 @@ bash -n scripts/run_max78000_tallyqa_colab.sh
 git diff --check
 ```
 
-Dataset probe confirmed that a distillation-enabled sample returns input shape
-`(588, 56, 56)` and a packed target shape `(7,)` whose teacher probabilities sum
-to one.
+Dataset probe confirmed that a distillation-enabled sample returns image input
+shape `(12, 56, 56)`, prompt vector shape `(576,)`, and a packed target shape
+`(7,)` whose teacher probabilities sum to one.
 
 ## Consequences
 

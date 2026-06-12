@@ -369,7 +369,7 @@ if [[ "${torch_reverse_enabled}" == "1" ]]; then
     DATASET_NAME="tallyqa_count_fold2_56_prompt_embed576"
   fi
   if [[ "${MODEL_INPUT_CHANNELS_SET}" == "0" ]]; then
-    MODEL_INPUT_CHANNELS=588
+    MODEL_INPUT_CHANNELS=12
   fi
   if [[ "${DATASET_OUTPUT_SET}" == "0" ]]; then
     DATASET_OUTPUT="data/max78000_tallyqa_tiers_fold2_56"
@@ -597,6 +597,10 @@ ai8x_abs="$(cd "${AI8X_TRAINING}" && pwd)"
 data_abs="$(cd "$(dirname "${selected_dataset_output}")" && pwd)/$(basename "${selected_dataset_output}")"
 report_abs="$(mkdir -p "${REPORT_DIR}/${RUN_NAME}" && cd "${REPORT_DIR}/${RUN_NAME}" && pwd)"
 distiller_pythonpath="${ai8x_abs}/distiller"
+MODEL_PROMPT_CHANNELS=0
+if [[ "${DATASET_NAME}" == *"prompt_embed576"* ]]; then
+  MODEL_PROMPT_CHANNELS=576
+fi
 
 if [[ "${MODEL_REPORT}" == "1" || "${MODEL_REPORT}" == "true" ]]; then
   model_report_args=(
@@ -605,6 +609,7 @@ if [[ "${MODEL_REPORT}" == "1" || "${MODEL_REPORT}" == "true" ]]; then
     --output-dir "${report_abs}/model"
     --factory "${MODEL_NAME}"
     --input-channels "${MODEL_INPUT_CHANNELS}"
+    --prompt-embedding-channels "${MODEL_PROMPT_CHANNELS}"
     --num-classes 6
   )
   echo "+ ${model_report_args[*]}"
@@ -726,6 +731,7 @@ python3 - "$manifest_path" \
   "$MODEL_NAME" \
   "$DATASET_NAME" \
   "$MODEL_INPUT_CHANNELS" \
+  "$MODEL_PROMPT_CHANNELS" \
   "$QAT_POLICY" \
   "$SCHEDULE" \
   "$EPOCHS" \
@@ -763,6 +769,7 @@ from pathlib import Path
     model_name,
     dataset_name,
     model_input_channels,
+    model_prompt_channels,
     qat_policy,
     schedule,
     epochs,
@@ -811,6 +818,7 @@ payload = {
     "model_name": model_name,
     "dataset_name": dataset_name,
     "model_input_channels": int(model_input_channels),
+    "model_prompt_channels": int(model_prompt_channels),
     "qat_policy": qat_policy,
     "schedule": schedule,
     "epochs": int(epochs),
@@ -856,7 +864,7 @@ if payload["torch_reverse_ablation_comparison"]:
             "tiered_prompt_class_filter": bool(dataset_tier),
             "input_source": (
                 "full letterbox TallyQA target tensors folded to 56x56x12, "
-                "plus 576-d precomputed prompt embedding planes"
+                "plus a separate 576-d precomputed prompt embedding vector"
             ),
             "precomputed_prompt_embeddings": (
                 "artifacts/models/tallyqa_smolvlm_prompt_embeddings_letterbox.pt"
@@ -864,7 +872,8 @@ if payload["torch_reverse_ablation_comparison"]:
             "model_family": model_name,
             "prompt_embedding_conditioning": dataset_name,
             "prompt_feature_conditioning": (
-                "trainable additive prompt-embedding bias after 28x28 and 14x14 reductions"
+                "zero-initialized vector FiLM gamma/beta after 28x28, 14x14, "
+                "pre-48, and pre-head stages"
             ),
             "epochs": int(epochs),
             "batch_size": int(batch_size),
@@ -887,7 +896,7 @@ if payload["torch_reverse_ablation_comparison"]:
             "post_training_checkpoint_eval": True,
             "validation_test_confusion_matrices": True,
             "unique_image_examples": True,
-            "head_map_visualization": "14x14x1 forward_features output",
+            "head_map_visualization": "current forward_features output",
         },
     }
 Path(manifest_path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
