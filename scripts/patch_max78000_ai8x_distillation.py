@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 
@@ -12,6 +13,9 @@ HELPER_MARKER = "# edge_vlm cached-teacher distillation helpers"
 
 HELPERS = f'''
 {HELPER_MARKER}
+EDGE_VLM_LAST_DISTILLATION_STATS = {{}}
+
+
 def edge_vlm_split_distillation_target(target):
     """Return hard labels and optional cached teacher probabilities."""
     if (
@@ -28,8 +32,14 @@ def edge_vlm_split_distillation_target(target):
 
 def edge_vlm_distillation_loss(output, target, criterion):
     """Cross-entropy plus optional cached-teacher KL distillation."""
+    global EDGE_VLM_LAST_DISTILLATION_STATS
     labels, teacher_probs = edge_vlm_split_distillation_target(target)
     ce_loss = criterion(output, labels)
+    EDGE_VLM_LAST_DISTILLATION_STATS = {{
+        "ce_loss": ce_loss.detach(),
+        "kl_loss": None,
+        "distillation_loss": ce_loss.detach(),
+    }}
     if teacher_probs is None:
         return ce_loss
     beta = float(os.environ.get("EDGE_VLM_DISTILLATION_BETA", "0.25"))
@@ -45,7 +55,30 @@ def edge_vlm_distillation_loss(output, target, criterion):
         teacher_probs,
         reduction="batchmean",
     ) * (temperature ** 2)
-    return alpha * ce_loss + beta * kl_loss
+    total_loss = alpha * ce_loss + beta * kl_loss
+    EDGE_VLM_LAST_DISTILLATION_STATS = {{
+        "ce_loss": ce_loss.detach(),
+        "kl_loss": kl_loss.detach(),
+        "distillation_loss": total_loss.detach(),
+    }}
+    return total_loss
+
+
+def edge_vlm_add_distillation_meters(losses):
+    """Expose cached-teacher loss components through ai8x's normal meters."""
+    for meter_name, stats_key in (
+        ("CE Loss", "ce_loss"),
+        ("KL Loss", "kl_loss"),
+        ("Distillation Loss", "distillation_loss"),
+    ):
+        value = EDGE_VLM_LAST_DISTILLATION_STATS.get(stats_key)
+        if value is None:
+            continue
+        if torch.is_tensor(value):
+            value = float(value.detach().item())
+        if meter_name not in losses:
+            losses[meter_name] = tnt.AverageValueMeter()
+        losses[meter_name].add(float(value))
 
 
 def edge_vlm_hard_labels(target):
@@ -74,11 +107,21 @@ def main() -> None:
     if not train_py.exists():
         raise FileNotFoundError(train_py)
     text = train_py.read_text(encoding="utf-8")
+    had_meter_patch = "edge_vlm_add_distillation_meters(losses)" in text
 
     if HELPER_MARKER not in text:
         text = text.replace('matplotlib.use("pgf")\n', 'matplotlib.use("pgf")\n\n' + HELPERS, 1)
+    elif "edge_vlm_add_distillation_meters" not in text:
+        text = text.replace("def main():\n", HELPERS + "\ndef main():\n", 1)
 
     text = text.replace("loss = criterion(output, target)", "loss = edge_vlm_distillation_loss(output, target, criterion)")
+    if not had_meter_patch:
+        text = re.sub(
+            r"(?m)^(?P<indent>\s*)losses\[OBJECTIVE_LOSS_KEY\]\.add\(loss\.item\(\)\)$",
+            "\\g<indent>losses[OBJECTIVE_LOSS_KEY].add(loss.item())\n"
+            "\\g<indent>edge_vlm_add_distillation_meters(losses)",
+            text,
+        )
     text = text.replace("classerr.add(output.data, target)", "classerr.add(output.data, edge_vlm_hard_labels(target))")
     text = text.replace(
         "target.flatten())",

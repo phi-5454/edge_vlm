@@ -155,20 +155,117 @@ def add_files_to_artifact(artifact: wandb.Artifact, files: list[Path], base_path
         artifact.add_file(str(path))
 
 
+def log_model_report_payload(model_report_dir: Path | None) -> None:
+    if model_report_dir is None or not model_report_dir.exists():
+        return
+    payload: dict[str, Any] = {}
+    readable = model_report_dir / "architecture_readable.md"
+    if readable.exists():
+        text = readable.read_text(encoding="utf-8")
+        payload["model/architecture"] = wandb.Html(
+            "<pre>" + text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") + "</pre>"
+        )
+    parameter_chart = model_report_dir / "architecture_parameters.png"
+    if parameter_chart.exists():
+        payload["model/layer_parameter_bars"] = wandb.Image(str(parameter_chart))
+    architecture_json = model_report_dir / "architecture.json"
+    if architecture_json.exists():
+        try:
+            architecture = json.loads(architecture_json.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            architecture = None
+        if isinstance(architecture, dict):
+            for key in ("factory", "input_shape", "output_shape", "total_parameters"):
+                if key in architecture:
+                    payload[f"model/{key}"] = architecture[key]
+    if payload:
+        wandb.log(payload)
+
+
 def find_best_checkpoint(root: Path | None, run_name: str | None) -> Path | None:
     if root is None or not root.exists():
         return None
     candidates: list[Path] = []
     if run_name:
         candidates.extend(root.rglob(f"{run_name}_best.pth.tar"))
-    candidates.extend(root.rglob("best.pth.tar"))
-    candidates.extend(root.rglob("*_best.pth.tar"))
+        candidates.extend(
+            path for path in root.rglob("*_best.pth.tar") if run_name in str(path.parent)
+        )
+    else:
+        candidates.extend(root.rglob("best.pth.tar"))
+        candidates.extend(root.rglob("*_best.pth.tar"))
     deduped = sorted(
         {path.resolve() for path in candidates if path.is_file()},
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
     return deduped[0] if deduped else None
+
+
+def find_checkpoints(root: Path | None, run_name: str | None) -> list[Path]:
+    if root is None or not root.exists():
+        return []
+    candidates: list[Path] = []
+    if run_name:
+        candidates.extend(root.rglob(f"{run_name}*.pth.tar"))
+        candidates.extend(
+            path for path in root.rglob("*.pth.tar") if run_name in str(path.parent)
+        )
+    else:
+        candidates.extend(root.rglob("*.pth.tar"))
+    deduped = sorted(
+        {path.resolve() for path in candidates if path.is_file()},
+        key=lambda path: (path.stat().st_mtime, str(path)),
+    )
+    return deduped
+
+
+def add_checkpoint_files_to_artifact(
+    artifact: wandb.Artifact,
+    checkpoints: list[Path],
+    root: Path | None,
+) -> None:
+    for checkpoint in checkpoints:
+        if root is not None:
+            try:
+                artifact.add_file(str(checkpoint), name=str(checkpoint.relative_to(root)))
+                continue
+            except ValueError:
+                pass
+        artifact.add_file(str(checkpoint))
+
+
+def log_checkpoint_histograms(checkpoint: Path, max_tensors: int = 96) -> None:
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - optional post-run diagnostics.
+        print(f"Warning: could not import torch for checkpoint histograms: {exc}")
+        return
+    try:
+        payload = torch.load(checkpoint, map_location="cpu")
+    except Exception as exc:  # pragma: no cover - best-effort logging.
+        print(f"Warning: could not load checkpoint histograms from {checkpoint}: {exc}")
+        return
+    state = payload.get("state_dict", payload) if isinstance(payload, dict) else payload
+    if not isinstance(state, dict):
+        return
+
+    histogram_payload: dict[str, Any] = {}
+    logged = 0
+    skipped = 0
+    for name, tensor in sorted(state.items()):
+        if logged >= max_tensors:
+            skipped += 1
+            continue
+        if not torch.is_tensor(tensor) or tensor.numel() == 0 or not tensor.is_floating_point():
+            continue
+        values = tensor.detach().cpu().float().flatten().numpy()
+        histogram_payload[f"max78000/weights/{clean_key(str(name))}"] = wandb.Histogram(values)
+        logged += 1
+    if histogram_payload:
+        histogram_payload["max78000/weights/histogram_tensors"] = logged
+        histogram_payload["max78000/weights/histogram_tensors_skipped"] = skipped
+        wandb.log(histogram_payload)
 
 
 def run_post_eval(
@@ -237,6 +334,9 @@ def log_post_eval_payload(results: dict[str, Any], output_dir: Path | None) -> N
             payload[f"{split}_plots/image_encoding_count"] = int(
                 split_result.get("unique_plot_samples") or 0
             )
+        prediction_examples = split_result.get("prediction_examples")
+        if prediction_examples:
+            payload[f"{split}_plots/example_predictions"] = wandb.Image(str(prediction_examples))
     if payload:
         wandb.log(payload)
     for path in iter_output_files(output_dir):
@@ -265,7 +365,9 @@ def main() -> None:
     wandb.define_metric("max78000/train/*", step_metric="max78000/global_step")
     wandb.define_metric("max78000/eval/*", step_metric="max78000/global_step")
     wandb.define_metric("max78000/val/*", step_metric="max78000/epoch")
+    wandb.define_metric("max78000/test/*", step_metric="max78000/epoch")
     wandb.define_metric("max78000/best/*", step_metric="max78000/epoch")
+    log_model_report_payload(args.model_report_dir)
 
     env = os.environ.copy()
     if args.distiller_pythonpath is not None:
@@ -307,9 +409,28 @@ def main() -> None:
     )
     run.log_artifact(artifact, aliases=["latest"])
 
-    checkpoint = find_best_checkpoint(args.checkpoint_root, args.checkpoint_run_name or args.run_name)
+    checkpoint_run_name = args.checkpoint_run_name or args.run_name
+    all_checkpoints = find_checkpoints(args.checkpoint_root, checkpoint_run_name)
+    if all_checkpoints:
+        checkpoints_artifact = wandb.Artifact(
+            f"{args.run_name}-max78000-checkpoints",
+            type="model-checkpoints",
+        )
+        add_checkpoint_files_to_artifact(checkpoints_artifact, all_checkpoints, args.checkpoint_root)
+        checkpoints_artifact.metadata.update(
+            {
+                "checkpoint_count": len(all_checkpoints),
+                "checkpoint_paths": [str(path) for path in all_checkpoints],
+            }
+        )
+        run.log_artifact(checkpoints_artifact, aliases=["latest"])
+        run.summary["max78000/checkpoint_count"] = len(all_checkpoints)
+
+    checkpoint = find_best_checkpoint(args.checkpoint_root, checkpoint_run_name)
     post_eval_results = None
     if checkpoint is not None:
+        run.summary["max78000/best_checkpoint"] = str(checkpoint)
+        log_checkpoint_histograms(checkpoint)
         post_eval_results = run_post_eval(args=args, manifest=manifest, checkpoint=checkpoint)
         if post_eval_results is not None:
             log_post_eval_payload(post_eval_results, args.post_eval_output_dir or (args.manifest.parent / "max78000_wandb_eval"))

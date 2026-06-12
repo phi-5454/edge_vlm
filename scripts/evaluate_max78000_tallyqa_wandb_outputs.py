@@ -252,7 +252,7 @@ def unique_example_indices(dataset, max_samples: int) -> list[int]:
 def save_examples(stage: str, model: torch.nn.Module, dataset, output: Path, max_samples: int, device: str):
     indices = unique_example_indices(dataset, max_samples)
     if not indices:
-        return None, None
+        return None, None, None
     rows = []
     images = []
     inputs = []
@@ -311,6 +311,34 @@ def save_examples(stage: str, model: torch.nn.Module, dataset, output: Path, max
     fig.savefig(output, dpi=160)
     plt.close(fig)
 
+    prediction_output = output.with_name("prediction_examples.png")
+    prediction_height = max(3.0, 2.0 * len(rows))
+    fig, axes = plt.subplots(len(rows), 2, figsize=(10.8, prediction_height), squeeze=False)
+    for row_index, row in enumerate(rows):
+        image_ax, prob_ax = axes[row_index]
+        image_ax.imshow(images[row_index])
+        title = (
+            f"{stage} idx={indices[row_index]} image={row.get('image_id')} "
+            f"true={labels[row_index]} pred={int(predictions[row_index])} "
+            f"prompt={prompts[row_index]}"
+        )
+        image_ax.set_title("\n".join(textwrap.wrap(title, width=42)), fontsize=9)
+        image_ax.axis("off")
+
+        colors = ["#8a8f98"] * len(CLASS_NAMES)
+        colors[labels[row_index]] = "#2b8a3e"
+        colors[int(predictions[row_index])] = (
+            "#2f6fdd" if int(predictions[row_index]) == labels[row_index] else "#c92a2a"
+        )
+        prob_ax.bar(CLASS_NAMES, probabilities[row_index], color=colors)
+        prob_ax.set_ylim(0, 1)
+        prob_ax.set_ylabel("p")
+        prob_ax.set_xlabel("count")
+        prob_ax.set_title("predicted count distribution", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(prediction_output, dpi=160)
+    plt.close(fig)
+
     metadata = {
         "stage": stage,
         "indices": indices,
@@ -322,7 +350,7 @@ def save_examples(stage: str, model: torch.nn.Module, dataset, output: Path, max
     }
     metadata_path = output.with_suffix(".json")
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    return output, metadata_path
+    return output, prediction_output, metadata_path
 
 
 def evaluate_split(
@@ -351,7 +379,7 @@ def evaluate_split(
             offset += int(labels.numel())
     split_dir = output_dir / f"{stage}_plots"
     confusion_path = save_confusion(stage, accumulator, split_dir / "confusion_matrix.png")
-    examples_path, examples_meta = save_examples(
+    examples_path, prediction_examples_path, examples_meta = save_examples(
         stage,
         model,
         dataset,
@@ -363,6 +391,7 @@ def evaluate_split(
         "metrics": accumulator.metrics(),
         "confusion_matrix": str(confusion_path),
         "image_encoding": str(examples_path) if examples_path else None,
+        "prediction_examples": str(prediction_examples_path) if prediction_examples_path else None,
         "image_encoding_metadata": str(examples_meta) if examples_meta else None,
         "samples": int(len(dataset)),
         "unique_plot_samples": int(samples),

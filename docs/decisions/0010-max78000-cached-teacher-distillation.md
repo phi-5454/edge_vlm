@@ -37,10 +37,27 @@ The Colab wrapper fails early when `distillation_beta > 0` but the selected
 manifest does not contain `teacher_probs`. This avoids accidentally training a
 plain CE run from a stale materialized dataset.
 
+The default MAX comparison preset runs 20 total epochs. Epochs 0 through 9 are
+plain float training, and QAT starts at epoch 10 via
+`qat_policy_tallyqa_count.yaml`. The 20-epoch LR schedule decays at epochs 10,
+16, and 19.
+
 The W&B wrapper now performs a post-training checkpoint evaluation and saves the
 MAX analogue of the original training outputs: model report files, train log,
 run manifest, best checkpoint, validation/test metrics, confusion matrices, and
 unique-image examples with the `14x14` head map plus prediction bars.
+
+The distillation patch also exposes `CE Loss`, `KL Loss`, and
+`Distillation Loss` as normal ai8x meters. The W&B stdout parser therefore logs
+the same loss decomposition used by the original TallyQA routes instead of only
+seeing the collapsed objective loss.
+
+The wrapper promotes the static model report to W&B panels, uploads all
+available MAX checkpoint files as a checkpoint artifact, logs the selected best
+checkpoint separately with the post-evaluation outputs, and records
+best-checkpoint parameter histograms. It also saves/logs separate
+`prediction_examples.png` plots in addition to the `14x14` image-encoding
+plots for validation and test.
 
 ## Evidence
 
@@ -87,4 +104,6 @@ The MAX route can consume surrogate teacher tensors without changing ADI's
 dataset/loader interface. Distillation remains opt-in through `beta`; a zero beta
 uses the hard-label path even if cached probabilities are present. Post-training
 plots are checkpoint-based rather than callback-based, so they cover the final
-chosen checkpoint and do not add per-epoch plotting overhead.
+chosen checkpoint and do not add per-epoch plotting overhead. Parameter
+histograms are checkpoint-based as well; live gradient histograms are not
+available through the unmodified ADI training loop.

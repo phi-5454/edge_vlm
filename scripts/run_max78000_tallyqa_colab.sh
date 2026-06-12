@@ -115,13 +115,13 @@ Common options:
   --torch-reverse-ablation-comparison
                                Apply MAX settings closest to the long-history PyTorch
                                reverse-ablation winner recipe (14pu / tier growth):
-                               tiered dataset, large-minimal MAX model, 30 epochs,
-                               batch 256, Adam lr 1e-3, wd 1e-2, QAT from epoch 0,
-                               30-epoch decay schedule, print every 25.
+                               tiered dataset, large-minimal MAX model, 20 epochs,
+                               batch 256, Adam lr 1e-3, wd 1e-2, QAT from epoch 10,
+                               20-epoch decay schedule, print every 25.
   --keras-tier0-qat-comparison
                                Apply MAX settings closest to the Keras tier0 MLP QAT run:
-                               30 epochs, batch 256, Adam lr 1e-3, wd 1e-2,
-                               QAT from epoch 0, 30-epoch decay schedule, print every 25.
+                               20 epochs, batch 256, Adam lr 1e-3, wd 1e-2,
+                               QAT from epoch 10, 20-epoch decay schedule, print every 25.
 
 Colab shape:
   cd /content/edge_vlm
@@ -381,13 +381,13 @@ if [[ "${torch_reverse_enabled}" == "1" ]]; then
     DATASET_TIER="tier_0_acc_ge_0p60_n_ge_1000"
   fi
   if [[ "${QAT_POLICY_SET}" == "0" ]]; then
-    QAT_POLICY="policies/qat_policy_tallyqa_count_from_start.yaml"
+    QAT_POLICY="policies/qat_policy_tallyqa_count.yaml"
   fi
   if [[ "${SCHEDULE_SET}" == "0" ]]; then
-    SCHEDULE="policies/schedule-tallyqa-count-30ep.yaml"
+    SCHEDULE="policies/schedule-tallyqa-count-20ep.yaml"
   fi
   if [[ "${EPOCHS_SET}" == "0" ]]; then
-    EPOCHS=30
+    EPOCHS=20
   fi
   if [[ "${BATCH_SIZE_SET}" == "0" ]]; then
     BATCH_SIZE=256
@@ -417,13 +417,13 @@ if [[ "${keras_comparison_enabled}" == "1" ]]; then
     RUN_NAME="max78000-tier0-keras-comparison-qat"
   fi
   if [[ "${QAT_POLICY_SET}" == "0" ]]; then
-    QAT_POLICY="policies/qat_policy_tallyqa_count_from_start.yaml"
+    QAT_POLICY="policies/qat_policy_tallyqa_count.yaml"
   fi
   if [[ "${SCHEDULE_SET}" == "0" ]]; then
-    SCHEDULE="policies/schedule-tallyqa-count-30ep.yaml"
+    SCHEDULE="policies/schedule-tallyqa-count-20ep.yaml"
   fi
   if [[ "${EPOCHS_SET}" == "0" ]]; then
-    EPOCHS=30
+    EPOCHS=20
   fi
   if [[ "${BATCH_SIZE_SET}" == "0" ]]; then
     BATCH_SIZE=256
@@ -835,8 +835,10 @@ payload = {
         "plots": [
             "val_plots/confusion_matrix",
             "val_plots/image_encoding",
+            "val_plots/example_predictions",
             "test_plots/confusion_matrix",
             "test_plots/image_encoding",
+            "test_plots/example_predictions",
         ],
     },
     "keras_tier0_qat_comparison": keras_tier0_qat_comparison in {"1", "true", "True"},
