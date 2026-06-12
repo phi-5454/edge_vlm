@@ -38,6 +38,10 @@ FILES = (
         Path("max78000/ai8x_training/policies/schedule-tallyqa-count-20ep.yaml"),
         Path("policies/schedule-tallyqa-count-20ep.yaml"),
     ),
+    (
+        Path("max78000/ai8x_training/policies/schedule-tallyqa-count-20ep-warmup.yaml"),
+        Path("policies/schedule-tallyqa-count-20ep-warmup.yaml"),
+    ),
 )
 
 

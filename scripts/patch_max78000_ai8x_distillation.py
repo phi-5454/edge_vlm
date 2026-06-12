@@ -73,10 +73,10 @@ def edge_vlm_inputs_to_device(inputs, device):
     if isinstance(inputs, list):
         return [edge_vlm_inputs_to_device(item, device) for item in inputs]
     if isinstance(inputs, dict):
-        return {
+        return {{
             key: edge_vlm_inputs_to_device(value, device)
             for key, value in inputs.items()
-        }
+        }}
     return inputs
 
 
