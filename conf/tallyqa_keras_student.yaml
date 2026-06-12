@@ -64,6 +64,17 @@ export:
     # cover either quantizable trainable layers or runtime layers that full-int8
     # TFLite will quantize, such as dynamic prompt embedding/pooling/LayerNorm.
     require_full_qat_coverage: true
+    smoke_compare:
+      # Quick post-export check: compare the Keras graph used for training
+      # against the exported TFLite graph on a few batches before full TFLite
+      # evaluation. In QAT mode this compares QAT-simulated Keras outputs
+      # against real quantized TFLite outputs.
+      enabled: true
+      split: test
+      batches: 1
+      fail_on_mismatch: false
+      max_abs_tolerance: null
+      min_prediction_agreement: null
 
 data:
   # mobilenet_v3_keras: raw 0..255 float images, with Keras preprocessing inside MobileNetV3.

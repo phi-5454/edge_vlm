@@ -3062,6 +3062,112 @@ def evaluate_tflite_split_metrics(
     return accumulator
 
 
+def compare_keras_tflite_outputs(
+    keras_model: tf.keras.Model,
+    tflite_path: Path,
+    dataset: tf.data.Dataset,
+    batches: int,
+    output: Path,
+    description: str,
+) -> dict[str, Any]:
+    interpreter = tf.lite.Interpreter(
+        model_path=str(tflite_path),
+        experimental_delegates=[],
+        experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES,
+    )
+    interpreter.allocate_tensors()
+    iterator = iter(dataset)
+    batch_reports: list[dict[str, Any]] = []
+    all_abs_diffs: list[np.ndarray] = []
+    prediction_matches = 0
+    sample_count = 0
+
+    for batch_index in range(max(0, int(batches))):
+        inputs, targets = next(iterator)
+        keras_logits = keras_model(inputs, training=False).numpy().astype(np.float32)
+
+        input_details = interpreter.get_input_details()
+        raw_inputs = map_tflite_inputs(input_details, inputs)
+        resized = False
+        for detail in input_details:
+            tensor = raw_inputs[int(detail["index"])]
+            if list(detail["shape"]) != list(tensor.shape):
+                interpreter.resize_tensor_input(
+                    int(detail["index"]),
+                    list(tensor.shape),
+                    strict=False,
+                )
+                resized = True
+        if resized:
+            interpreter.allocate_tensors()
+            input_details = interpreter.get_input_details()
+            raw_inputs = map_tflite_inputs(input_details, inputs)
+        for detail in input_details:
+            tensor = raw_inputs[int(detail["index"])]
+            interpreter.set_tensor(
+                int(detail["index"]),
+                quantize_tflite_input(tensor, detail),
+            )
+        interpreter.invoke()
+        output_detail = interpreter.get_output_details()[0]
+        tflite_logits = dequantize_tflite_output(
+            interpreter.get_tensor(int(output_detail["index"])),
+            output_detail,
+        )
+        if tflite_logits.ndim == 1:
+            tflite_logits = tflite_logits[np.newaxis, :]
+        tflite_logits = tflite_logits.astype(np.float32)
+
+        if keras_logits.shape != tflite_logits.shape:
+            raise ValueError(
+                f"Keras/TFLite output shape mismatch in {description}: "
+                f"{keras_logits.shape} vs {tflite_logits.shape}"
+            )
+        abs_diff = np.abs(keras_logits - tflite_logits)
+        all_abs_diffs.append(abs_diff.reshape(-1))
+        keras_pred = np.argmax(keras_logits, axis=-1)
+        tflite_pred = np.argmax(tflite_logits, axis=-1)
+        matches = int(np.sum(keras_pred == tflite_pred))
+        prediction_matches += matches
+        sample_count += int(keras_logits.shape[0])
+        batch_reports.append(
+            {
+                "batch_index": batch_index,
+                "dataset_indices": [
+                    int(value) for value in targets["dataset_index"].numpy().reshape(-1).tolist()
+                ],
+                "samples": int(keras_logits.shape[0]),
+                "max_abs_diff": float(np.max(abs_diff)),
+                "mean_abs_diff": float(np.mean(abs_diff)),
+                "prediction_agreement": float(matches / max(1, int(keras_logits.shape[0]))),
+                "keras_predictions": [int(value) for value in keras_pred.reshape(-1).tolist()],
+                "tflite_predictions": [int(value) for value in tflite_pred.reshape(-1).tolist()],
+            }
+        )
+
+    concatenated = (
+        np.concatenate(all_abs_diffs, axis=0)
+        if all_abs_diffs
+        else np.asarray([], dtype=np.float32)
+    )
+    report = {
+        "description": description,
+        "tflite_path": str(tflite_path),
+        "batches": int(batches),
+        "samples": int(sample_count),
+        "max_abs_diff": float(np.max(concatenated)) if concatenated.size else None,
+        "mean_abs_diff": float(np.mean(concatenated)) if concatenated.size else None,
+        "p95_abs_diff": float(np.percentile(concatenated, 95)) if concatenated.size else None,
+        "prediction_agreement": (
+            float(prediction_matches / sample_count) if sample_count else None
+        ),
+        "batch_reports": batch_reports,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
 def metric_comparison_plot(
     float_metrics: dict[str, float],
     quantized_metrics: dict[str, float],
@@ -3588,6 +3694,7 @@ def main(cfg: DictConfig) -> None:
         "qat_coverage": quantization_coverage,
         "tflite": {},
         "tflite_inspection": {},
+        "tflite_smoke_compare": None,
     }
     if checkpoint_callback.filepath.exists():
         save_wandb_file(Path(checkpoint_callback.filepath), policy="now")
@@ -3641,6 +3748,96 @@ def main(cfg: DictConfig) -> None:
                 quantized_tflite_path
             )
             save_wandb_file(Path(quantized_tflite_path), policy="now")
+            smoke_cfg = cfg.export.quantization.get("smoke_compare", {})
+            if bool(smoke_cfg.get("enabled", True)):
+                smoke_split = str(smoke_cfg.get("split", "test"))
+                smoke_dataset = {
+                    "train": train_ds,
+                    "val": val_ds,
+                    "test": test_ds,
+                }.get(smoke_split)
+                if smoke_dataset is None:
+                    raise ValueError(
+                        "export.quantization.smoke_compare.split must be one of "
+                        "{'train', 'val', 'test'}."
+                    )
+                smoke_batches = int(smoke_cfg.get("batches", 1))
+                smoke_report_path = (
+                    run_report_dir
+                    / "tflite_smoke_compare"
+                    / f"{quantization_mode}_simulated_vs_tflite.json"
+                )
+                smoke_report = compare_keras_tflite_outputs(
+                    student,
+                    quantized_tflite_path,
+                    smoke_dataset,
+                    smoke_batches,
+                    smoke_report_path,
+                    description=(
+                        "Keras QAT-simulated vs TFLite quantized"
+                        if quantization_mode == "qat"
+                        else "Keras float/PTQ-source vs TFLite quantized"
+                    ),
+                )
+                result["tflite_smoke_compare"] = smoke_report
+                wandb.log(
+                    {
+                        "trainer/global_step": int(model.optimizer.iterations.numpy()),
+                        "tflite_smoke_compare/max_abs_diff": (
+                            smoke_report["max_abs_diff"]
+                            if smoke_report["max_abs_diff"] is not None
+                            else np.nan
+                        ),
+                        "tflite_smoke_compare/mean_abs_diff": (
+                            smoke_report["mean_abs_diff"]
+                            if smoke_report["mean_abs_diff"] is not None
+                            else np.nan
+                        ),
+                        "tflite_smoke_compare/p95_abs_diff": (
+                            smoke_report["p95_abs_diff"]
+                            if smoke_report["p95_abs_diff"] is not None
+                            else np.nan
+                        ),
+                        "tflite_smoke_compare/prediction_agreement": (
+                            smoke_report["prediction_agreement"]
+                            if smoke_report["prediction_agreement"] is not None
+                            else np.nan
+                        ),
+                    }
+                )
+                save_wandb_file(smoke_report_path, policy="now")
+                max_abs_tolerance = smoke_cfg.get("max_abs_tolerance", None)
+                min_prediction_agreement = smoke_cfg.get("min_prediction_agreement", None)
+                failed_reasons: list[str] = []
+                if (
+                    max_abs_tolerance is not None
+                    and smoke_report["max_abs_diff"] is not None
+                    and float(smoke_report["max_abs_diff"]) > float(max_abs_tolerance)
+                ):
+                    failed_reasons.append(
+                        "max_abs_diff "
+                        f"{smoke_report['max_abs_diff']:.6g} > {float(max_abs_tolerance):.6g}"
+                    )
+                if (
+                    min_prediction_agreement is not None
+                    and smoke_report["prediction_agreement"] is not None
+                    and float(smoke_report["prediction_agreement"])
+                    < float(min_prediction_agreement)
+                ):
+                    failed_reasons.append(
+                        "prediction_agreement "
+                        f"{smoke_report['prediction_agreement']:.6g} < "
+                        f"{float(min_prediction_agreement):.6g}"
+                    )
+                if failed_reasons:
+                    message = (
+                        "TFLite smoke comparison failed: "
+                        + "; ".join(failed_reasons)
+                        + f". Report: {smoke_report_path}"
+                    )
+                    if bool(smoke_cfg.get("fail_on_mismatch", False)):
+                        raise RuntimeError(message)
+                    print(f"Warning: {message}")
             quantized_accumulator = evaluate_tflite_split_metrics(
                 quantized_tflite_path,
                 test_ds,

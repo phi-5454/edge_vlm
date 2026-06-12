@@ -3,6 +3,7 @@ set -euo pipefail
 
 CORALMICRO="../coralmicro"
 MODEL="artifacts/reports/coral/edgetpu_compiler/prompt_patch_mlp_static_prompt_minimalistic_large_compile_probe_docker/ptq/model_int8_edgetpu.tflite"
+PROMPT_LOOKUP_HEADER="artifacts/exports/coral/prompt_embedding_lookup/tallyqa_prompt_embedding_lookup.h"
 PROMPT_LOOKUP_MANIFEST="artifacts/exports/coral/prompt_embedding_lookup/prompt_embedding_lookup_manifest.json"
 DATASET="data/tallyqa_cauldron_target_mobilenet224_letterbox"
 RUN_NAME="coral_micro_tallyqa_untrained_prompt_patch_mlp_dummy"
@@ -42,6 +43,8 @@ Options:
   --model PATH            Compiled EdgeTPU .tflite to stage
   --prompt-lookup-manifest PATH
                           Prompt lookup manifest matching staged firmware header
+  --prompt-lookup-header PATH
+                          Prompt lookup header to stage into the firmware app
   --dataset PATH          TallyQA target dataset
   --run-name NAME         Artifact/run stem
   --port PATH             Serial device (default: /dev/ttyACM0)
@@ -80,6 +83,7 @@ while [[ $# -gt 0 ]]; do
     --coralmicro) CORALMICRO="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
     --prompt-lookup-manifest) PROMPT_LOOKUP_MANIFEST="$2"; shift 2 ;;
+    --prompt-lookup-header) PROMPT_LOOKUP_HEADER="$2"; shift 2 ;;
     --dataset) DATASET="$2"; shift 2 ;;
     --run-name) RUN_NAME="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
@@ -136,6 +140,7 @@ if [[ "${SKIP_STAGE}" == "0" ]]; then
     uv run python scripts/coral_micro_stage_tallyqa_benchmark_app.py
     --coralmicro "${CORALMICRO}"
     --model "${MODEL}"
+    --prompt-lookup-header "${PROMPT_LOOKUP_HEADER}"
   )
   if [[ "${FORCE}" == "1" ]]; then
     stage_cmd+=(--force)

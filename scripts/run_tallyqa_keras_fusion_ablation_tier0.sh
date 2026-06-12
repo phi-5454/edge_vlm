@@ -33,6 +33,7 @@ PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 INITIAL_WEIGHTS="${INITIAL_WEIGHTS:-}"
 INITIAL_WEIGHTS_LOAD_STAGE="${INITIAL_WEIGHTS_LOAD_STAGE:-after_quantization}"
 INITIAL_WEIGHTS_SKIP_MISMATCH="${INITIAL_WEIGHTS_SKIP_MISMATCH:-false}"
+EXTRA_OVERRIDES=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -186,6 +187,11 @@ while [[ $# -gt 0 ]]; do
       SKIP_COMPLETED=0
       shift
       ;;
+    --)
+      shift
+      EXTRA_OVERRIDES+=("$@")
+      break
+      ;;
     -*)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -314,7 +320,8 @@ run_one() {
     "export.export_tflite=true" \
     "export.quantization.mode=${QUANTIZATION_MODE}" \
     "${initial_weight_args[@]}" \
-    "$@"
+    "$@" \
+    "${EXTRA_OVERRIDES[@]}"
 }
 
 echo "Selected RUNS=${RUNS}"

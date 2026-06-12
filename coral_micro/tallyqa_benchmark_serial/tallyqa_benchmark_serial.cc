@@ -1,13 +1,8 @@
-// Host-driven TallyQA benchmark app for Coral Dev Board Micro.
+// Self-contained TallyQA benchmark app for Coral Dev Board Micro.
 //
-// The host sends one framed image at a time over the USB serial console:
-//   VLM_MICRO_INPUT {"dataset_index":123,"image_index":45,"prompt_id":7,"bytes":150528}\n
-//   <exactly bytes raw NHWC uint8 image bytes>
-//
-// The board copies the bytes into the model image input tensor. If the model has
-// a prompt-embedding input, the board fills it from the quantized on-board prompt
-// lookup table selected by prompt_id. It then invokes the model and prints one
-// newline-delimited JSON result with timing and output tensors.
+// The board loads the staged EdgeTPU model, fills model inputs with deterministic
+// seeded data on-device, invokes repeatedly, and emits newline-delimited JSON
+// timing/output records over the USB serial console.
 
 #include <cctype>
 #include <cstdint>
@@ -39,6 +34,10 @@ constexpr char kModelPath[] = "/models/tallyqa_prompt_patch_mlp_edgetpu.tflite";
 constexpr int kTensorArenaSize = 8 * 1024 * 1024;
 constexpr int kMaxLineBytes = 512;
 constexpr int kMaxOutputValuesPerTensor = 256;
+constexpr uint32_t kSelfTestSeed = 0x5EED1234;
+constexpr int kSelfTestWarmupIterations = 3;
+constexpr int kSelfTestMeasuredIterations = 32;
+constexpr int kSelfTestRepeatDelayMs = 5000;
 
 STATIC_TENSOR_ARENA_IN_SDRAM(tensor_arena, kTensorArenaSize);
 
@@ -52,6 +51,7 @@ struct InputHeader {
 
 void PrintReadyJson(tflite::MicroInterpreter* interpreter,
                     const tflite::RecordingMicroAllocator* allocator);
+int TensorElementCount(const TfLiteTensor* tensor);
 
 void PrintError(const char* error) {
   printf("VLM_MICRO_ERROR {\"error\":\"%s\"}\r\n", error);
@@ -76,6 +76,36 @@ void PrintTimedEvent(const char* event, const InputHeader& header,
          static_cast<unsigned long>(header.prompt_id),
          static_cast<unsigned long>(header.bytes),
          static_cast<unsigned long>(elapsed_us));
+}
+
+uint32_t NextRandom(uint32_t* state) {
+  *state = (*state * 1664525u) + 1013904223u;
+  return *state;
+}
+
+void FillTensorDeterministic(TfLiteTensor* tensor, uint32_t* state) {
+  if (tensor == nullptr) return;
+  if (tensor->type == kTfLiteUInt8) {
+    for (size_t i = 0; i < tensor->bytes; ++i) {
+      tensor->data.uint8[i] = static_cast<uint8_t>((NextRandom(state) >> 24) & 0xff);
+    }
+    return;
+  }
+  if (tensor->type == kTfLiteInt8) {
+    for (size_t i = 0; i < tensor->bytes; ++i) {
+      tensor->data.int8[i] = static_cast<int8_t>((NextRandom(state) >> 24) - 128);
+    }
+    return;
+  }
+  if (tensor->type == kTfLiteFloat32) {
+    const int count = TensorElementCount(tensor);
+    for (int i = 0; i < count; ++i) {
+      const int value = static_cast<int>((NextRandom(state) >> 24) & 0xff) - 128;
+      tensor->data.f[i] = static_cast<float>(value) / 128.0f;
+    }
+    return;
+  }
+  std::memset(tensor->data.raw, 0, tensor->bytes);
 }
 
 bool ReadExact(uint8_t* data, size_t bytes) {
@@ -349,6 +379,116 @@ void PrintResultJson(const InputHeader& header, uint64_t receive_us,
   printf("}\r\n");
 }
 
+void PrintSelfTestResultJson(uint32_t run_id, int iteration, bool warmup,
+                             uint32_t seed, uint32_t prompt_id,
+                             uint64_t fill_us, uint64_t prompt_copy_us,
+                             uint64_t invoke_us,
+                             tflite::MicroInterpreter* interpreter) {
+  printf(
+      "VLM_MICRO_SELFTEST_RESULT {\"run_id\":%lu,\"iteration\":%d,"
+      "\"warmup\":%s,\"seed\":%lu,\"prompt_id\":%lu,\"fill_us\":%lu,"
+      "\"prompt_copy_us\":%lu,\"copy_us\":%lu,\"invoke_us\":%lu,",
+      static_cast<unsigned long>(run_id), iteration, warmup ? "true" : "false",
+      static_cast<unsigned long>(seed), static_cast<unsigned long>(prompt_id),
+      static_cast<unsigned long>(fill_us),
+      static_cast<unsigned long>(prompt_copy_us),
+      static_cast<unsigned long>(fill_us + prompt_copy_us),
+      static_cast<unsigned long>(invoke_us));
+  PrintOutputsJson(interpreter);
+  printf("}\r\n");
+}
+
+void PrintSelfTestSummaryJson(uint32_t run_id, int measured_count,
+                              uint64_t min_invoke_us,
+                              uint64_t max_invoke_us,
+                              uint64_t total_invoke_us,
+                              uint64_t total_copy_us) {
+  const uint64_t avg_invoke_us =
+      measured_count > 0 ? total_invoke_us / measured_count : 0;
+  const uint64_t avg_copy_us = measured_count > 0 ? total_copy_us / measured_count : 0;
+  printf(
+      "VLM_MICRO_SELFTEST_SUMMARY {\"run_id\":%lu,\"seed\":%lu,"
+      "\"warmup_iterations\":%d,\"measured_iterations\":%d,"
+      "\"invoke_min_us\":%lu,\"invoke_avg_us\":%lu,\"invoke_max_us\":%lu,"
+      "\"copy_avg_us\":%lu}\r\n",
+      static_cast<unsigned long>(run_id),
+      static_cast<unsigned long>(kSelfTestSeed), kSelfTestWarmupIterations,
+      measured_count, static_cast<unsigned long>(min_invoke_us),
+      static_cast<unsigned long>(avg_invoke_us),
+      static_cast<unsigned long>(max_invoke_us),
+      static_cast<unsigned long>(avg_copy_us));
+}
+
+void RunSelfTestLoop(tflite::MicroInterpreter* interpreter,
+                     TfLiteTensor* image_input, TfLiteTensor* prompt_input) {
+  uint32_t run_id = 0;
+  while (true) {
+    const uint32_t run_seed = kSelfTestSeed + run_id * 7919u;
+    uint64_t min_invoke_us = UINT64_MAX;
+    uint64_t max_invoke_us = 0;
+    uint64_t total_invoke_us = 0;
+    uint64_t total_copy_us = 0;
+    int measured_count = 0;
+    printf(
+        "VLM_MICRO_SELFTEST_BEGIN {\"run_id\":%lu,\"seed\":%lu,"
+        "\"warmup_iterations\":%d,\"measured_iterations\":%d,"
+        "\"prompt_lookup_count\":%d}\r\n",
+        static_cast<unsigned long>(run_id), static_cast<unsigned long>(run_seed),
+        kSelfTestWarmupIterations, kSelfTestMeasuredIterations,
+        TALLYQA_PROMPT_EMBEDDING_COUNT);
+
+    const int total_iterations =
+        kSelfTestWarmupIterations + kSelfTestMeasuredIterations;
+    for (int iteration = 0; iteration < total_iterations; ++iteration) {
+      const bool warmup = iteration < kSelfTestWarmupIterations;
+      uint32_t state = run_seed + static_cast<uint32_t>(iteration) * 2654435761u;
+      const uint32_t prompt_id =
+          TALLYQA_PROMPT_EMBEDDING_COUNT > 0
+              ? (NextRandom(&state) % TALLYQA_PROMPT_EMBEDDING_COUNT)
+              : 0;
+
+      const uint64_t fill_start_us = TimerMicros();
+      FillTensorDeterministic(image_input, &state);
+      const uint64_t fill_us = TimerMicros() - fill_start_us;
+
+      uint64_t prompt_copy_us = 0;
+      if (prompt_input != nullptr) {
+        const uint64_t prompt_copy_start_us = TimerMicros();
+        std::memcpy(prompt_input->data.raw,
+                    kTallyQAPromptEmbeddingTable[prompt_id],
+                    TALLYQA_PROMPT_EMBEDDING_DIM);
+        prompt_copy_us = TimerMicros() - prompt_copy_start_us;
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(10));
+      const uint64_t invoke_start_us = TimerMicros();
+      if (interpreter->Invoke() != kTfLiteOk) {
+        printf(
+            "VLM_MICRO_ERROR {\"run_id\":%lu,\"iteration\":%d,"
+            "\"error\":\"invoke\"}\r\n",
+            static_cast<unsigned long>(run_id), iteration);
+        continue;
+      }
+      const uint64_t invoke_us = TimerMicros() - invoke_start_us;
+      PrintSelfTestResultJson(run_id, iteration, warmup, run_seed, prompt_id,
+                              fill_us, prompt_copy_us, invoke_us, interpreter);
+
+      if (!warmup) {
+        min_invoke_us = invoke_us < min_invoke_us ? invoke_us : min_invoke_us;
+        max_invoke_us = invoke_us > max_invoke_us ? invoke_us : max_invoke_us;
+        total_invoke_us += invoke_us;
+        total_copy_us += fill_us + prompt_copy_us;
+        ++measured_count;
+      }
+    }
+    PrintSelfTestSummaryJson(run_id, measured_count,
+                             measured_count > 0 ? min_invoke_us : 0,
+                             max_invoke_us, total_invoke_us, total_copy_us);
+    ++run_id;
+    vTaskDelay(pdMS_TO_TICKS(kSelfTestRepeatDelayMs));
+  }
+}
+
 [[noreturn]] void Main() {
   printf("VLM Micro TallyQA benchmark serial app starting.\r\n");
   LedSet(Led::kStatus, true);
@@ -414,81 +554,8 @@ void PrintResultJson(const InputHeader& header, uint64_t receive_us,
   TfLiteTensor* image_input = interpreter.input_tensor(image_input_index);
   TfLiteTensor* prompt_input =
       prompt_input_index >= 0 ? interpreter.input_tensor(prompt_input_index) : nullptr;
-  std::vector<uint8_t> image(image_input->bytes);
   PrintReadyJson(&interpreter, allocator);
-
-  char line[kMaxLineBytes];
-  while (true) {
-    if (!ReadLine(line, sizeof(line), &interpreter, allocator)) {
-      PrintError("line_too_long");
-      continue;
-    }
-    InputHeader header;
-    if (!ParseInputHeader(line, &header)) {
-      printf("VLM_MICRO_ERROR {\"error\":\"bad_header\",\"line\":\"%s\"}\r\n",
-             line);
-      continue;
-    }
-    if (prompt_input != nullptr && !header.has_prompt_id) {
-      printf(
-          "VLM_MICRO_ERROR {\"dataset_index\":%lu,\"error\":\"missing_prompt_id\"}\r\n",
-          static_cast<unsigned long>(header.dataset_index));
-      continue;
-    }
-    if (prompt_input != nullptr &&
-        header.prompt_id >= TALLYQA_PROMPT_EMBEDDING_COUNT) {
-      printf(
-          "VLM_MICRO_ERROR {\"dataset_index\":%lu,\"error\":\"prompt_id\","
-          "\"max\":%d,\"actual\":%lu}\r\n",
-          static_cast<unsigned long>(header.dataset_index),
-          TALLYQA_PROMPT_EMBEDDING_COUNT - 1,
-          static_cast<unsigned long>(header.prompt_id));
-      continue;
-    }
-    if (header.bytes != image_input->bytes) {
-      printf(
-          "VLM_MICRO_ERROR {\"dataset_index\":%lu,\"error\":\"input_bytes\","
-          "\"expected\":%u,\"actual\":%lu}\r\n",
-          static_cast<unsigned long>(header.dataset_index),
-          static_cast<unsigned int>(image_input->bytes),
-          static_cast<unsigned long>(header.bytes));
-      continue;
-    }
-
-    printf("VLM_MICRO_RX_READY {\"dataset_index\":%lu,\"bytes\":%lu}\r\n",
-           static_cast<unsigned long>(header.dataset_index),
-           static_cast<unsigned long>(header.bytes));
-    const uint64_t receive_start_us = TimerMicros();
-    ReadExact(image.data(), image.size());
-    const uint64_t receive_us = TimerMicros() - receive_start_us;
-    PrintEvent("payload_received", header);
-
-    PrintEvent("copy_start", header);
-    const uint64_t image_copy_start_us = TimerMicros();
-    std::memcpy(image_input->data.raw, image.data(), image.size());
-    const uint64_t image_copy_us = TimerMicros() - image_copy_start_us;
-    uint64_t prompt_copy_us = 0;
-    if (prompt_input != nullptr) {
-      const uint64_t prompt_copy_start_us = TimerMicros();
-      std::memcpy(
-          prompt_input->data.raw,
-          kTallyQAPromptEmbeddingTable[header.prompt_id],
-          TALLYQA_PROMPT_EMBEDDING_DIM);
-      prompt_copy_us = TimerMicros() - prompt_copy_start_us;
-    }
-    PrintTimedEvent("copy_done", header, image_copy_us + prompt_copy_us);
-
-    PrintEvent("invoke_start", header);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    const uint64_t invoke_start_us = TimerMicros();
-    if (interpreter.Invoke() != kTfLiteOk) {
-      printf("VLM_MICRO_ERROR {\"dataset_index\":%lu,\"error\":\"invoke\"}\r\n",
-             static_cast<unsigned long>(header.dataset_index));
-      continue;
-    }
-    const uint64_t invoke_us = TimerMicros() - invoke_start_us;
-    PrintResultJson(header, receive_us, image_copy_us, prompt_copy_us, invoke_us, &interpreter);
-  }
+  RunSelfTestLoop(&interpreter, image_input, prompt_input);
 }
 
 }  // namespace

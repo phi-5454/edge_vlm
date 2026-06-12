@@ -15,7 +15,7 @@ dataset: tallyqa_count_fold2_56_prompt_planes16
 layers:
   # stem: 28x56x56 -> 40x56x56
   - out_offset: 0x4000
-    processors: 0x000000ffffffffff
+    processors: 0x000000000fffffff
     operation: conv2d
     kernel_size: 3x3
     pad: 1
@@ -126,7 +126,8 @@ layers:
 
   # features.7: 40 -> 48 expansion block
   - out_offset: 0x0000
-    processors: 0x0000ffffffffffff
+    processors: 0x000000ffffffffff
+    output_processors: 0x0000ffffffffffff
     operation: conv2d
     kernel_size: 1x1
     pad: 0
@@ -187,7 +188,8 @@ layers:
 
   # classifier: 48 -> 6
   - out_offset: 0x4000
-    processors: 0x000000000000003f
+    processors: 0x0000ffffffffffff
+    output_processors: 0x000000000000003f
     operation: linear
     flatten: true
     output_width: 32
