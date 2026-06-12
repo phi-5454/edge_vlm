@@ -3,11 +3,15 @@ set -euo pipefail
 
 CORALMICRO="../coralmicro"
 MODEL="artifacts/reports/coral/edgetpu_compiler/prompt_patch_mlp_static_prompt_minimalistic_large_compile_probe_docker/ptq/model_int8_edgetpu.tflite"
+PROMPT_LOOKUP_MANIFEST="artifacts/exports/coral/prompt_embedding_lookup/prompt_embedding_lookup_manifest.json"
 DATASET="data/tallyqa_cauldron_target_mobilenet224_letterbox"
 RUN_NAME="coral_micro_tallyqa_untrained_prompt_patch_mlp_dummy"
 PORT="/dev/ttyACM0"
 BAUD="115200"
 SERIAL_TIMEOUT_S="120"
+READY_TIMEOUT_S=""
+RX_READY_TIMEOUT_S=""
+RESULT_TIMEOUT_S=""
 POST_FLASH_DELAY_S="8"
 PAYLOAD_CHUNK_SIZE="512"
 PAYLOAD_CHUNK_DELAY_S="0.0005"
@@ -24,6 +28,7 @@ SKIP_EDA=0
 FORCE=0
 DRY_RUN=0
 SUDO_FLASH=0
+DEBUG_PROTOCOL=0
 
 usage() {
   cat <<'EOF'
@@ -35,11 +40,17 @@ Defaults target the untrained, packed prompt_patch_mlp EdgeTPU probe.
 Options:
   --coralmicro PATH       Coral Micro SDK checkout (default: ../coralmicro)
   --model PATH            Compiled EdgeTPU .tflite to stage
+  --prompt-lookup-manifest PATH
+                          Prompt lookup manifest matching staged firmware header
   --dataset PATH          TallyQA target dataset
   --run-name NAME         Artifact/run stem
   --port PATH             Serial device (default: /dev/ttyACM0)
   --baud INT              Serial baud (default: 115200)
   --serial-timeout-s SEC  Seconds to wait for each serial protocol line (default: 120)
+  --ready-timeout-s SEC   Seconds to wait for board READY
+  --rx-ready-timeout-s SEC
+                          Seconds to wait for RX_READY after sending JSON header
+  --result-timeout-s SEC  Seconds to wait for RESULT after image payload
   --post-flash-delay-s SEC
                           Seconds to wait after flashing before serial cache (default: 8)
   --payload-chunk-size INT
@@ -57,6 +68,7 @@ Options:
   --skip-cache            Do not run serial dataset sweep
   --skip-eda              Do not run cache EDA
   --sudo-flash            Run only the Coral flashtool command through sudo
+  --debug-protocol        Print host-side protocol milestones during cache
   --force                 Overwrite staged files and cache output
   --dry-run               Print commands without executing them
   -h, --help              Show this help
@@ -67,11 +79,15 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --coralmicro) CORALMICRO="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
+    --prompt-lookup-manifest) PROMPT_LOOKUP_MANIFEST="$2"; shift 2 ;;
     --dataset) DATASET="$2"; shift 2 ;;
     --run-name) RUN_NAME="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --baud) BAUD="$2"; shift 2 ;;
     --serial-timeout-s) SERIAL_TIMEOUT_S="$2"; shift 2 ;;
+    --ready-timeout-s) READY_TIMEOUT_S="$2"; shift 2 ;;
+    --rx-ready-timeout-s) RX_READY_TIMEOUT_S="$2"; shift 2 ;;
+    --result-timeout-s) RESULT_TIMEOUT_S="$2"; shift 2 ;;
     --post-flash-delay-s) POST_FLASH_DELAY_S="$2"; shift 2 ;;
     --payload-chunk-size) PAYLOAD_CHUNK_SIZE="$2"; shift 2 ;;
     --payload-chunk-delay-s) PAYLOAD_CHUNK_DELAY_S="$2"; shift 2 ;;
@@ -86,6 +102,7 @@ while [[ $# -gt 0 ]]; do
     --skip-cache) SKIP_CACHE=1; shift ;;
     --skip-eda) SKIP_EDA=1; shift ;;
     --sudo-flash) SUDO_FLASH=1; shift ;;
+    --debug-protocol) DEBUG_PROTOCOL=1; shift ;;
     --force) FORCE=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -152,12 +169,25 @@ if [[ "${SKIP_CACHE}" == "0" ]]; then
     --dataset "${DATASET}"
     --output "${CACHE}"
     --model-name "${RUN_NAME}"
+    --prompt-lookup-manifest "${PROMPT_LOOKUP_MANIFEST}"
     --max-examples "${MAX_EXAMPLES}"
     --answer-min "${ANSWER_MIN}"
     --answer-max "${ANSWER_MAX}"
     --collapse-at "${COLLAPSE_AT}"
     --raw-log "${RAW_LOG}"
   )
+  if [[ -n "${READY_TIMEOUT_S}" ]]; then
+    cache_cmd+=(--ready-timeout-s "${READY_TIMEOUT_S}")
+  fi
+  if [[ -n "${RX_READY_TIMEOUT_S}" ]]; then
+    cache_cmd+=(--rx-ready-timeout-s "${RX_READY_TIMEOUT_S}")
+  fi
+  if [[ -n "${RESULT_TIMEOUT_S}" ]]; then
+    cache_cmd+=(--result-timeout-s "${RESULT_TIMEOUT_S}")
+  fi
+  if [[ "${DEBUG_PROTOCOL}" == "1" ]]; then
+    cache_cmd+=(--debug-protocol)
+  fi
   if [[ "${FORCE}" == "1" ]]; then
     cache_cmd+=(--force)
   else
