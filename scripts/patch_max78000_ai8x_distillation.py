@@ -210,6 +210,37 @@ def edge_vlm_inputs_to_device(inputs, device):
     data_loaders_py.write_text(data_loader_text, encoding="utf-8")
     print(f"Patched tuple-input image-size probe into {data_loaders_py}")
 
+    ai8x_py = args.ai8x_training / "ai8x.py"
+    if not ai8x_py.exists():
+        raise FileNotFoundError(ai8x_py)
+    ai8x_text = ai8x_py.read_text(encoding="utf-8")
+    if "edge_vlm_inputs_to_device" not in ai8x_text:
+        ai8x_helper = '''
+
+def edge_vlm_inputs_to_device(inputs, device):
+    """Move tensor or nested model inputs to a device."""
+    if torch.is_tensor(inputs):
+        return inputs.to(device)
+    if isinstance(inputs, tuple):
+        return tuple(edge_vlm_inputs_to_device(item, device) for item in inputs)
+    if isinstance(inputs, list):
+        return [edge_vlm_inputs_to_device(item, device) for item in inputs]
+    if isinstance(inputs, dict):
+        return {
+            key: edge_vlm_inputs_to_device(value, device)
+            for key, value in inputs.items()
+        }
+    return inputs
+'''
+        ai8x_text = ai8x_text.replace("\n@torch.no_grad()\ndef stat_collect", ai8x_helper + "\n\n@torch.no_grad()\ndef stat_collect", 1)
+    ai8x_text = ai8x_text.replace(
+        "        inputs = inputs.to(args.device)\n        model(inputs)\n",
+        "        inputs = edge_vlm_inputs_to_device(inputs, args.device)\n        model(inputs)\n",
+        1,
+    )
+    ai8x_py.write_text(ai8x_text, encoding="utf-8")
+    print(f"Patched tuple-input QAT stat collection into {ai8x_py}")
+
 
 if __name__ == "__main__":
     main()

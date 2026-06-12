@@ -182,6 +182,7 @@ class Accumulator:
         correct = int(np.trace(self.confusion))
         labels = np.arange(self.num_classes)
         row_totals = self.confusion.sum(axis=1)
+        present_labels = np.flatnonzero(row_totals > 0)
         class_acc = np.divide(
             np.diag(self.confusion),
             np.clip(row_totals, a_min=1, a_max=None),
@@ -192,14 +193,18 @@ class Accumulator:
                 if abs(row - col) <= 1:
                     within_1 += int(self.confusion[row, col])
         class_mae = []
-        for row in range(self.num_classes):
-            if row_totals[row] <= 0:
-                continue
+        class_within_1 = []
+        for row in present_labels:
             class_mae.append(
                 float(
                     sum(abs(row - col) * self.confusion[row, col] for col in labels)
                     / row_totals[row]
                 )
+            )
+            lower = max(0, row - 1)
+            upper = min(self.num_classes, row + 2)
+            class_within_1.append(
+                float(self.confusion[row, lower:upper].sum() / row_totals[row])
             )
         prompt_acc = [
             float(np.mean(values))
@@ -216,7 +221,12 @@ class Accumulator:
         return {
             "accuracy": correct / total if total else 0.0,
             "within_1_accuracy": within_1 / total if total else 0.0,
-            "class_weighted_accuracy": float(np.mean(class_acc)) if len(class_acc) else 0.0,
+            "class_weighted_accuracy": float(np.mean(class_acc[present_labels]))
+            if len(present_labels)
+            else 0.0,
+            "class_weighted_within_1_accuracy": float(np.mean(class_within_1))
+            if class_within_1
+            else 0.0,
             "mae": float(np.mean(self.absolute_errors)) if self.absolute_errors else 0.0,
             "class_weighted_mae": class_weighted_error,
             "class_weighted_error": class_weighted_error,

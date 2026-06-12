@@ -202,6 +202,16 @@ def find_best_checkpoint(root: Path | None, run_name: str | None) -> Path | None
     return deduped[0] if deduped else None
 
 
+def choose_eval_checkpoint(root: Path | None, run_name: str | None) -> tuple[Path | None, str | None]:
+    best = find_best_checkpoint(root, run_name)
+    if best is not None:
+        return best, "best"
+    checkpoints = find_checkpoints(root, run_name)
+    if checkpoints:
+        return checkpoints[-1], "latest"
+    return None, None
+
+
 def find_checkpoints(root: Path | None, run_name: str | None) -> list[Path]:
     if root is None or not root.exists():
         return []
@@ -432,10 +442,13 @@ def main() -> None:
         run.log_artifact(checkpoints_artifact, aliases=["latest"])
         run.summary["max78000/checkpoint_count"] = len(all_checkpoints)
 
-    checkpoint = find_best_checkpoint(args.checkpoint_root, checkpoint_run_name)
+    checkpoint, checkpoint_kind = choose_eval_checkpoint(args.checkpoint_root, checkpoint_run_name)
     post_eval_results = None
     if checkpoint is not None:
-        run.summary["max78000/best_checkpoint"] = str(checkpoint)
+        run.summary["max78000/eval_checkpoint"] = str(checkpoint)
+        run.summary["max78000/eval_checkpoint_kind"] = checkpoint_kind
+        if checkpoint_kind == "best":
+            run.summary["max78000/best_checkpoint"] = str(checkpoint)
         log_checkpoint_histograms(checkpoint)
         post_eval_results = run_post_eval(args=args, manifest=manifest, checkpoint=checkpoint)
         if post_eval_results is not None:

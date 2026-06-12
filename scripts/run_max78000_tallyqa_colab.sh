@@ -384,7 +384,7 @@ if [[ "${torch_reverse_enabled}" == "1" ]]; then
     QAT_POLICY="policies/qat_policy_tallyqa_count.yaml"
   fi
   if [[ "${SCHEDULE_SET}" == "0" ]]; then
-    SCHEDULE="policies/schedule-tallyqa-count-20ep.yaml"
+    SCHEDULE="policies/schedule-tallyqa-count-20ep-warmup.yaml"
   fi
   if [[ "${EPOCHS_SET}" == "0" ]]; then
     EPOCHS=20
@@ -420,7 +420,7 @@ if [[ "${keras_comparison_enabled}" == "1" ]]; then
     QAT_POLICY="policies/qat_policy_tallyqa_count.yaml"
   fi
   if [[ "${SCHEDULE_SET}" == "0" ]]; then
-    SCHEDULE="policies/schedule-tallyqa-count-20ep.yaml"
+    SCHEDULE="policies/schedule-tallyqa-count-20ep-warmup.yaml"
   fi
   if [[ "${EPOCHS_SET}" == "0" ]]; then
     EPOCHS=20
@@ -694,6 +694,40 @@ PY
   fi
 fi
 
+class_weights_json="$(
+  python3 - "${data_abs}/manifest.jsonl" <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+manifest = Path(sys.argv[1])
+num_classes = 6
+counts: Counter[int] = Counter()
+if manifest.exists():
+    with manifest.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("split") == "train":
+                counts[int(row["label"])] += 1
+
+total = sum(counts.values())
+present = [index for index in range(num_classes) if counts[index] > 0]
+if not total or not present:
+    weights = [1.0] * num_classes
+else:
+    weights = [
+        total / (len(present) * counts[index]) if counts[index] > 0 else 0.0
+        for index in range(num_classes)
+    ]
+print(json.dumps(weights, separators=(",", ":")))
+PY
+)"
+export EDGE_VLM_TALLYQA_CLASS_WEIGHTS="${class_weights_json}"
+echo "Using MAX78000 class weights from train split: ${EDGE_VLM_TALLYQA_CLASS_WEIGHTS}"
+
 train_args=(
   .venv/bin/python train.py
   --deterministic
@@ -710,6 +744,7 @@ train_args=(
   --qat-policy "${QAT_POLICY}"
   --compress "${SCHEDULE}"
   --validation-split 0
+  --confusion
   --print-freq "${PRINT_FREQ}"
   --workers "${WORKERS}"
   --name "${RUN_NAME}"
@@ -751,6 +786,7 @@ python3 - "$manifest_path" \
   "${PROMPT_CLASS_NAMES_FILE}" \
   "${TIERED_CURRICULUM_DIR}" \
   "${DATASET_TIER}" \
+  "${EDGE_VLM_TALLYQA_CLASS_WEIGHTS}" \
   "$TRAIN" \
   "${train_args[@]}" <<'PY'
 import json
@@ -789,6 +825,7 @@ from pathlib import Path
     prompt_class_names_file,
     tiered_curriculum_dir,
     dataset_tier,
+    class_weights_json,
     train_enabled,
     *train_command,
 ) = sys.argv[1:]
@@ -815,6 +852,8 @@ payload = {
     "prompt_class_names_file": prompt_class_names_file or None,
     "tiered_curriculum_dir": tiered_curriculum_dir or None,
     "dataset_tier": dataset_tier or None,
+    "class_weights": json.loads(class_weights_json),
+    "class_weight_source": "balanced inverse-frequency weights from materialized train split",
     "model_name": model_name,
     "dataset_name": dataset_name,
     "model_input_channels": int(model_input_channels),

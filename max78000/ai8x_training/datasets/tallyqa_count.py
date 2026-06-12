@@ -78,6 +78,19 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _class_weights_from_env(num_classes: int) -> dict[str, list[float]]:
+    raw = os.environ.get("EDGE_VLM_TALLYQA_CLASS_WEIGHTS")
+    if not raw:
+        return {}
+    weights = [float(value) for value in json.loads(raw)]
+    if len(weights) != num_classes:
+        raise ValueError(
+            f"EDGE_VLM_TALLYQA_CLASS_WEIGHTS has {len(weights)} values; "
+            f"expected {num_classes}."
+        )
+    return {"weight": weights}
+
+
 def _count_to_label(answer: int) -> int | None:
     count = int(answer)
     if count <= 0:
@@ -356,11 +369,13 @@ datasets = [
         "input": (FOLDED_CHANNELS, FOLDED_SIZE, FOLDED_SIZE),
         "output": COUNT_LABELS,
         "loader": get_tallyqa_count_dataset,
+        **_class_weights_from_env(len(COUNT_LABELS)),
     },
     {
         "name": "tallyqa_count_fold2_56_prompt_embed576",
         "input": (FOLDED_CHANNELS, FOLDED_SIZE, FOLDED_SIZE),
         "output": COUNT_LABELS,
         "loader": get_tallyqa_count_prompt_embed576_dataset,
+        **_class_weights_from_env(len(COUNT_LABELS)),
     },
 ]
