@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,8 @@ DEFAULT_MANIFEST_SUBDIR = "max78000_tallyqa_count_fold2_56"
 RESIZE_SIZE = 112
 FOLDED_SIZE = 56
 FOLDED_CHANNELS = 12
+PROMPT_EMBEDDING_CHANNELS = 576
+DEFAULT_PROMPT_EMBEDDINGS = "artifacts/models/tallyqa_smolvlm_prompt_embeddings_letterbox.pt"
 
 
 def _split_for_image(image_id: str, seed: int) -> str:
@@ -106,6 +109,7 @@ def _load_records(root: Path, split: str, seed: int) -> list[dict[str, Any]]:
                 "answer": int(row["answer"]),
                 "label": label,
                 "split": split,
+                "student_prompt": "people",
             }
         )
     return records
@@ -118,6 +122,65 @@ def _resolve_tensor_file(root: Path, metadata: dict[str, Any]) -> Path:
     return root / tensor_file
 
 
+def _resolve_prompt_embeddings_file(root: Path, metadata: dict[str, Any]) -> Path:
+    configured = metadata.get("prompt_embeddings")
+    candidates: list[Path] = []
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_absolute():
+            candidates.append(configured_path)
+        else:
+            candidates.append(root / configured_path)
+    env_path = Path(value) if (value := os.environ.get("EDGE_VLM_PROMPT_EMBEDDINGS")) else None
+    if env_path is not None:
+        candidates.append(env_path)
+    for parent in (root, *root.parents):
+        candidates.append(parent / DEFAULT_PROMPT_EMBEDDINGS)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "Could not find prompt embeddings artifact. Set EDGE_VLM_PROMPT_EMBEDDINGS "
+        f"or place {DEFAULT_PROMPT_EMBEDDINGS} under the edge_vlm repo. Checked: "
+        + ", ".join(str(path) for path in candidates)
+    )
+
+
+def _load_prompt_embeddings_by_class(
+    root: Path,
+    metadata: dict[str, Any],
+) -> dict[str, torch.Tensor]:
+    path = _resolve_prompt_embeddings_file(root, metadata)
+    payload = torch.load(path, map_location="cpu")
+    required = ("prompt_token_ids", "prompt_attention_mask", "embedding_rows", "prompt_classes")
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise KeyError(f"Prompt embedding artifact {path} is missing keys: {missing}")
+
+    token_ids = payload["prompt_token_ids"].long()
+    attention_mask = payload["prompt_attention_mask"].bool()
+    embedding_rows = payload["embedding_rows"].float()
+    prompt_classes = [
+        str(item.get("item", item) if isinstance(item, dict) else item).strip().lower()
+        for item in payload["prompt_classes"]
+    ]
+    if embedding_rows.shape[1] != PROMPT_EMBEDDING_CHANNELS:
+        raise ValueError(
+            f"Expected {PROMPT_EMBEDDING_CHANNELS}-d prompt embeddings, "
+            f"got {embedding_rows.shape[1]} from {path}."
+        )
+
+    pad_row = torch.zeros((1, embedding_rows.shape[1]), dtype=embedding_rows.dtype)
+    embedding_table = torch.cat((pad_row, embedding_rows), dim=0)
+    token_vectors = embedding_table[token_ids]
+    mask = attention_mask.unsqueeze(-1).to(token_vectors.dtype)
+    prompt_vectors = (token_vectors * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+    return {
+        prompt_class: prompt_vectors[index].contiguous()
+        for index, prompt_class in enumerate(prompt_classes)
+    }
+
+
 class TallyQACount(Dataset):
     """TallyQA count classification dataset from a materialized manifest."""
 
@@ -127,17 +190,42 @@ class TallyQACount(Dataset):
         d_type: str,
         transform=None,
         seed: int = 0,
+        prompt_embedding_channels: int = 0,
     ):
         if d_type not in {"train", "val", "test"}:
             raise ValueError(f"Unsupported split {d_type!r}; expected train, val, or test.")
         self.root_dir = _resolve_dataset_root(root_dir)
         self.d_type = d_type
         self.transform = transform
+        self.prompt_embedding_channels = int(prompt_embedding_channels)
         self.records = _load_records(self.root_dir, d_type, seed)
         if not self.records:
             raise RuntimeError(f"No TallyQA count records found for split {d_type!r}.")
 
         self.metadata = json.loads((self.root_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.prompt_classes = [
+            str(item).strip().lower() for item in self.metadata.get("prompt_classes") or ["people"]
+        ]
+        if self.prompt_embedding_channels:
+            if self.prompt_embedding_channels != PROMPT_EMBEDDING_CHANNELS:
+                raise ValueError(
+                    f"Prompt embedding channels must be {PROMPT_EMBEDDING_CHANNELS}, "
+                    f"got {self.prompt_embedding_channels}."
+                )
+            self.prompt_embeddings_by_class = _load_prompt_embeddings_by_class(
+                self.root_dir,
+                self.metadata,
+            )
+            missing_prompts = [
+                prompt for prompt in self.prompt_classes if prompt not in self.prompt_embeddings_by_class
+            ]
+            if missing_prompts:
+                raise KeyError(
+                    "Prompt embedding artifact is missing dataset prompt classes: "
+                    + ", ".join(missing_prompts[:10])
+                )
+        else:
+            self.prompt_embeddings_by_class = {}
         image_meta = self.metadata["image"]
         shape = tuple(int(v) for v in image_meta["shape"])
         if len(shape) != 4 or shape[1:] != (3, 224, 224):
@@ -156,11 +244,35 @@ class TallyQACount(Dataset):
         record = self.records[index]
         image_chw = np.asarray(self.images[int(record["image_index"])])
         image_hwc = np.transpose(image_chw, (1, 2, 0)).copy()
-        label = torch.tensor(int(record["label"]), dtype=torch.int64)
+        label_value = int(record["label"])
+        label = torch.tensor(label_value, dtype=torch.int64)
         if self.transform:
             image = self.transform(Image.fromarray(image_hwc))
         else:
             image = torch.from_numpy(image_chw.copy()).float().div(255.0)
+        if self.prompt_embedding_channels:
+            prompt = str(record.get("student_prompt") or "people").strip().lower()
+            if prompt not in self.prompt_embeddings_by_class:
+                raise KeyError(
+                    f"Prompt {prompt!r} is not in prompt embeddings for {self.root_dir}."
+                )
+            prompt_vector = self.prompt_embeddings_by_class[prompt].to(dtype=image.dtype)
+            prompt_planes = prompt_vector[:, None, None].expand(-1, FOLDED_SIZE, FOLDED_SIZE)
+            image = torch.cat((image, prompt_planes), dim=0)
+        if "teacher_probs" in record:
+            teacher_probs = torch.tensor(record["teacher_probs"], dtype=torch.float32)
+            if teacher_probs.numel() != len(COUNT_LABELS):
+                raise ValueError(
+                    f"Expected {len(COUNT_LABELS)} teacher probabilities, got "
+                    f"{teacher_probs.numel()} for example {record.get('example_id')}."
+                )
+            target = torch.cat(
+                (
+                    torch.tensor([float(label_value)], dtype=torch.float32),
+                    teacher_probs,
+                )
+            )
+            return image, target
         return image, label
 
 
@@ -180,7 +292,7 @@ class Fold2x2:
         return folded.reshape(channels * 4, height // 2, width // 2)
 
 
-def get_tallyqa_count_dataset(data, load_train, load_test):
+def _get_tallyqa_count_dataset(data, load_train, load_test, prompt_embedding_channels: int):
     """Load TallyQA count train/test datasets."""
     data_dir, args = data
     seed = int(getattr(args, "seed", 0) or 0)
@@ -195,12 +307,24 @@ def get_tallyqa_count_dataset(data, load_train, load_test):
     )
 
     train_dataset = (
-        TallyQACount(root_dir=data_dir, d_type="train", transform=transform, seed=seed)
+        TallyQACount(
+            root_dir=data_dir,
+            d_type="train",
+            transform=transform,
+            seed=seed,
+            prompt_embedding_channels=prompt_embedding_channels,
+        )
         if load_train
         else None
     )
     test_dataset = (
-        TallyQACount(root_dir=data_dir, d_type="test", transform=transform, seed=seed)
+        TallyQACount(
+            root_dir=data_dir,
+            d_type="test",
+            transform=transform,
+            seed=seed,
+            prompt_embedding_channels=prompt_embedding_channels,
+        )
         if load_test
         else None
     )
@@ -211,11 +335,36 @@ def get_tallyqa_count_dataset(data, load_train, load_test):
     return train_dataset, test_dataset
 
 
+def get_tallyqa_count_dataset(data, load_train, load_test):
+    """Load TallyQA count datasets without prompt conditioning channels."""
+    return _get_tallyqa_count_dataset(data, load_train, load_test, prompt_embedding_channels=0)
+
+
+def get_tallyqa_count_prompt_embed576_dataset(data, load_train, load_test):
+    """Load TallyQA count datasets with 576-d precomputed prompt embedding planes."""
+    return _get_tallyqa_count_dataset(
+        data,
+        load_train,
+        load_test,
+        prompt_embedding_channels=PROMPT_EMBEDDING_CHANNELS,
+    )
+
+
 datasets = [
     {
         "name": "tallyqa_count_fold2_56",
         "input": (FOLDED_CHANNELS, FOLDED_SIZE, FOLDED_SIZE),
         "output": COUNT_LABELS,
         "loader": get_tallyqa_count_dataset,
+    },
+    {
+        "name": "tallyqa_count_fold2_56_prompt_embed576",
+        "input": (
+            FOLDED_CHANNELS + PROMPT_EMBEDDING_CHANNELS,
+            FOLDED_SIZE,
+            FOLDED_SIZE,
+        ),
+        "output": COUNT_LABELS,
+        "loader": get_tallyqa_count_prompt_embed576_dataset,
     },
 ]

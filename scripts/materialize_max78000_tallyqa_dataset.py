@@ -16,7 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from vlm_micro.student.data import collapse_count, load_tallyqa_rows, split_for_image
+from vlm_micro.student.data import (
+    collapse_count,
+    load_tallyqa_rows,
+    load_tallyqa_teacher_targets,
+    split_for_image,
+)
 
 
 DEFAULT_SOURCE = Path("data/tallyqa_cauldron_target_mobilenet224_letterbox")
@@ -44,6 +49,24 @@ def parse_args() -> argparse.Namespace:
             "as a root and one dataset is written per tier subdirectory."
         ),
     )
+    parser.add_argument(
+        "--teacher-cache",
+        type=Path,
+        default=None,
+        help="Optional TallyQA teacher cache JSONL. Adds teacher_probs surrogate targets.",
+    )
+    parser.add_argument(
+        "--teacher-probability-temperature",
+        type=float,
+        default=1.0,
+        help="Temperature applied to cached teacher probabilities before materialization.",
+    )
+    parser.add_argument(
+        "--missing-teacher-policy",
+        choices=("keep", "filter"),
+        default="filter",
+        help="How to handle selected examples missing from --teacher-cache.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
@@ -69,8 +92,11 @@ def discover_tier_prompt_files(tiered_curriculum_dir: Path) -> list[tuple[str, P
 
 def record_for_row(
     row: dict[str, Any],
+    dataset_index: int,
     seed: int,
     prompt_classes: set[str] | None,
+    teacher_targets: dict[int, Any] | None,
+    missing_teacher_policy: str,
 ) -> dict[str, Any] | None:
     item = str(row.get("item") or row.get("student_prompt") or "").strip().lower()
     answer = int(row["answer"])
@@ -87,8 +113,9 @@ def record_for_row(
         label = count
         count_class = COUNT_LABELS[label]
     image_id = str(row["image_id"])
-    return {
+    record = {
         "example_id": int(row["example_id"]),
+        "dataset_index": int(dataset_index),
         "image_id": image_id,
         "image_index": int(row["image_index"]),
         "student_prompt": item,
@@ -97,6 +124,14 @@ def record_for_row(
         "label": label,
         "split": split_for_image(image_id, seed),
     }
+    if teacher_targets is not None:
+        teacher_probs = teacher_targets.get(dataset_index)
+        if teacher_probs is None:
+            if missing_teacher_policy == "filter":
+                return None
+        else:
+            record["teacher_probs"] = [float(value) for value in teacher_probs.tolist()]
+    return record
 
 
 def command_payload(
@@ -120,6 +155,12 @@ def command_payload(
         command.extend(["--prompt-class-names-file", str(prompt_classes_file)])
     if args.tiered_curriculum_dir is not None:
         command.extend(["--tiered-curriculum-dir", str(args.tiered_curriculum_dir)])
+    if args.teacher_cache is not None:
+        command.extend(["--teacher-cache", str(args.teacher_cache)])
+        command.extend(
+            ["--teacher-probability-temperature", str(args.teacher_probability_temperature)]
+        )
+        command.extend(["--missing-teacher-policy", str(args.missing_teacher_policy)])
     if args.force:
         command.append("--force")
     return command
@@ -140,15 +181,37 @@ def materialize_dataset(
     output.mkdir(parents=True, exist_ok=True)
 
     prompt_classes = load_prompt_classes(prompt_classes_file)
+    labels = COUNT_LABELS if prompt_classes is not None else PEOPLE_LABELS
+    if args.teacher_cache is not None and prompt_classes is None:
+        raise ValueError("--teacher-cache currently requires 0/1/2/3/4/5+ prompt-class mode.")
+    teacher_targets = (
+        load_tallyqa_teacher_targets(
+            args.teacher_cache,
+            num_classes=len(COUNT_LABELS),
+            collapse_at=len(COUNT_LABELS) - 1,
+            probability_temperature=args.teacher_probability_temperature,
+        )
+        if args.teacher_cache is not None
+        else None
+    )
     records = [
         record
-        for row in rows
-        if (record := record_for_row(row, args.seed, prompt_classes)) is not None
+        for dataset_index, row in enumerate(rows)
+        if (
+            record := record_for_row(
+                row,
+                dataset_index,
+                args.seed,
+                prompt_classes,
+                teacher_targets,
+                args.missing_teacher_policy,
+            )
+        )
+        is not None
     ]
     if not records:
         raise RuntimeError("No MAX78000 TallyQA records were found for the requested filter.")
 
-    labels = COUNT_LABELS if prompt_classes is not None else PEOPLE_LABELS
     task = (
         f"TallyQA prompt-class subset count, {len(prompt_classes)} prompt classes, labels 0/1/2/3/4/5+"
         if prompt_classes is not None
@@ -178,6 +241,14 @@ def materialize_dataset(
             "A direct lossless 224x224 -> 56x56 fold would produce 48 channels, not 12."
         ),
         "seed": args.seed,
+        "teacher_cache": str(args.teacher_cache) if args.teacher_cache is not None else None,
+        "teacher_probability_temperature": args.teacher_probability_temperature
+        if args.teacher_cache is not None
+        else None,
+        "missing_teacher_policy": args.missing_teacher_policy
+        if args.teacher_cache is not None
+        else None,
+        "teacher_target_records": sum("teacher_probs" in record for record in records),
         "labels": list(labels),
         "classes": {str(index): label for index, label in enumerate(labels)},
         "split_counts": dict(Counter(record["split"] for record in records)),
@@ -186,6 +257,7 @@ def materialize_dataset(
         "records": len(records),
         "dropped": {
             "not_selected": len(rows) - len(records),
+            "missing_teacher_or_not_selected": len(rows) - len(records),
         },
         "image": {
             **source_metadata["image"],

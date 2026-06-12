@@ -29,7 +29,11 @@ import tensorflow as tf
 from scripts.train_tallyqa_keras_student import (
     KerasTallyQAData,
     absolute_path,
+    build_keras_mobilenet,
     build_keras_student_model,
+    maybe_apply_qat,
+    prompt_query_tensors,
+    tallyqa_fusion_head_logits,
 )
 
 
@@ -37,6 +41,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-name", default="tallyqa_keras_student")
     parser.add_argument("--weights", type=Path, required=True)
+    parser.add_argument(
+        "--weights-graph",
+        choices=("auto", "float", "qat"),
+        default="auto",
+        help=(
+            "Graph layout expected by --weights. Use qat for checkpoints saved from "
+            "a QAT-wrapped model; auto tries float first and falls back to QAT."
+        ),
+    )
     parser.add_argument("--skip-mismatch", action="store_true")
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--run-name", default=None)
@@ -106,6 +119,23 @@ def static_prompt_model(
     return tf.keras.Model(images, logits, name=f"{student.name}_static_prompt")
 
 
+def layer_by_name(model: tf.keras.Model, *names: str) -> tf.keras.layers.Layer:
+    for name in names:
+        try:
+            return model.get_layer(name)
+        except ValueError:
+            continue
+    raise ValueError(f"None of the expected layers exist: {', '.join(names)}")
+
+
+def unwrap_quantize_layer(layer: tf.keras.layers.Layer) -> tf.keras.layers.Layer:
+    return getattr(layer, "layer", layer)
+
+
+def layer_weights(model: tf.keras.Model, *names: str) -> list[np.ndarray]:
+    return unwrap_quantize_layer(layer_by_name(model, *names)).get_weights()
+
+
 def folded_prompt_patch_mlp_model(
     student: tf.keras.Model,
     cfg: DictConfig,
@@ -121,23 +151,25 @@ def folded_prompt_patch_mlp_model(
     )
     query = query_model(token_ids, training=False).numpy().reshape(-1).astype(np.float32)
 
-    backbone = next(
-        layer
-        for layer in student.layers
-        if layer.name.startswith("mobilenet_v3_") and layer.name.endswith("_cutoff")
+    concat = layer_by_name(student, "prompt_patch_concat", "quant_prompt_patch_concat")
+    image_features_tensor = concat.input[0] if isinstance(concat.input, list) else concat.input
+    image_backbone = tf.keras.Model(
+        student.get_layer("images").input,
+        image_features_tensor,
+        name=f"{student.name}_image_backbone_for_static_prompt",
     )
-    conv1 = student.get_layer("prompt_patch_conv1x1")
-    conv3 = student.get_layer("prompt_patch_conv3x3")
-    logits = student.get_layer("logits")
 
-    conv1_weights = conv1.get_weights()
+    conv1_weights = layer_weights(student, "prompt_patch_conv1x1", "quant_prompt_patch_conv1x1")
     if len(conv1_weights) == 2:
         conv1_kernel, conv1_bias = conv1_weights
     else:
         conv1_kernel = conv1_weights[0]
         conv1_bias = np.zeros((conv1_kernel.shape[-1],), dtype=np.float32)
 
-    image_channels = int(backbone.output_shape[-1])
+    conv3_weights = layer_weights(student, "prompt_patch_conv3x3", "quant_prompt_patch_conv3x3")
+    logits_weights = layer_weights(student, "logits", "quant_logits")
+
+    image_channels = int(image_features_tensor.shape[-1])
     if conv1_kernel.shape[2] <= image_channels:
         raise ValueError(
             "prompt_patch_conv1x1 kernel does not include prompt channels: "
@@ -155,7 +187,7 @@ def folded_prompt_patch_mlp_model(
         dtype=tf.float32,
         name="images",
     )
-    image_features = backbone(images)
+    image_features = image_backbone(images)
     x = tf.keras.layers.Conv2D(
         int(conv1_kernel.shape[-1]),
         kernel_size=1,
@@ -164,7 +196,7 @@ def folded_prompt_patch_mlp_model(
         name="prompt_folded_patch_conv1x1",
     )(image_features)
     x = tf.keras.layers.Conv2D(
-        int(conv3.get_weights()[0].shape[-1]),
+        int(conv3_weights[0].shape[-1]),
         kernel_size=3,
         padding="same",
         activation=str(cfg.keras_model.get("activation", "relu")),
@@ -175,9 +207,98 @@ def folded_prompt_patch_mlp_model(
     model = tf.keras.Model(images, output, name=f"{student.name}_folded_static_prompt")
 
     model.get_layer("prompt_folded_patch_conv1x1").set_weights([image_kernel, folded_bias])
-    model.get_layer("prompt_patch_conv3x3").set_weights(conv3.get_weights())
-    model.get_layer("logits").set_weights(logits.get_weights())
+    model.get_layer("prompt_patch_conv3x3").set_weights(conv3_weights)
+    model.get_layer("logits").set_weights(logits_weights)
     return model
+
+
+def build_student_for_weights(
+    cfg: DictConfig,
+    data: KerasTallyQAData,
+    prompt_length: int,
+    weights: Path,
+    weights_graph: str,
+    skip_mismatch: bool,
+) -> tuple[tf.keras.Model, str]:
+    def build_float() -> tf.keras.Model:
+        return build_keras_student_model(cfg, data.embedding_rows, prompt_length)
+
+    def build_legacy_nested_float() -> tf.keras.Model:
+        num_classes = int(cfg.model.num_outputs)
+        fusion_dim = int(cfg.keras_model.get("fusion_dim", cfg.model.fusion_dim))
+        heads = int(cfg.keras_model.get("fusion_heads", cfg.model.fusion_heads))
+        if fusion_dim % heads != 0:
+            raise ValueError("fusion_dim must be divisible by fusion_heads.")
+        fusion_mode = str(cfg.keras_model.get("fusion_mode", "normformer"))
+        batch_size = cfg.keras_model.get("batch_size", None)
+        batch_size = None if batch_size is None else int(batch_size)
+        token_ids = tf.keras.Input(
+            shape=(prompt_length,),
+            batch_size=batch_size,
+            dtype=tf.int32,
+            name="token_ids",
+        )
+        images = tf.keras.Input(
+            shape=(int(cfg.keras_model.image_size), int(cfg.keras_model.image_size), 3),
+            batch_size=batch_size,
+            dtype=tf.float32,
+            name="images",
+        )
+        query, query_token = prompt_query_tensors(token_ids, cfg, data.embedding_rows)
+        backbone = build_keras_mobilenet(cfg, images)
+        backbone.trainable = not bool(cfg.model.freeze_image_features)
+        image_features = backbone(images)
+        logits = tallyqa_fusion_head_logits(
+            image_features,
+            query,
+            query_token,
+            cfg,
+            num_classes,
+        )
+        return tf.keras.Model(
+            inputs={"token_ids": token_ids, "images": images},
+            outputs=logits,
+            name=f"tallyqa_keras_{fusion_mode}_student",
+        )
+
+    def build_qat() -> tf.keras.Model:
+        original_mode = cfg.export.quantization.mode
+        cfg.export.quantization.mode = "qat"
+        try:
+            return maybe_apply_qat(build_float(), cfg)
+        finally:
+            cfg.export.quantization.mode = original_mode
+
+    if weights_graph == "float":
+        model = build_float()
+        try:
+            model.load_weights(weights, skip_mismatch=skip_mismatch)
+            return model, "float"
+        except ValueError as exc:
+            print(f"Current float graph weight load failed; retrying legacy nested graph: {exc}")
+        model = build_legacy_nested_float()
+        model.load_weights(weights, skip_mismatch=skip_mismatch)
+        return model, "float_legacy_nested_backbone"
+    if weights_graph == "qat":
+        model = build_qat()
+        model.load_weights(weights, skip_mismatch=skip_mismatch)
+        return model, "qat"
+
+    model = build_float()
+    try:
+        model.load_weights(weights, skip_mismatch=skip_mismatch)
+        return model, "float"
+    except ValueError as exc:
+        print(f"Current float graph weight load failed; retrying legacy nested graph: {exc}")
+    model = build_legacy_nested_float()
+    try:
+        model.load_weights(weights, skip_mismatch=skip_mismatch)
+        return model, "float_legacy_nested_backbone"
+    except ValueError as exc:
+        print(f"Legacy nested float graph weight load failed; retrying as QAT graph: {exc}")
+    model = build_qat()
+    model.load_weights(weights, skip_mismatch=skip_mismatch)
+    return model, "qat"
 
 
 def representative_images(
@@ -353,11 +474,17 @@ def main() -> None:
     prompt_tokens = prompt_token_ids(data, args.prompt)
     prompt_length = int(data.prompt_token_ids.shape[1])
 
-    student = build_keras_student_model(cfg, data.embedding_rows, prompt_length)
     weights = absolute_path(args.weights)
     if not weights.exists():
         raise FileNotFoundError(weights)
-    student.load_weights(weights, skip_mismatch=args.skip_mismatch)
+    student, loaded_graph = build_student_for_weights(
+        cfg,
+        data,
+        prompt_length,
+        weights,
+        args.weights_graph,
+        args.skip_mismatch,
+    )
     if str(cfg.keras_model.get("fusion_mode", "normformer")) == "prompt_patch_mlp":
         wrapped = folded_prompt_patch_mlp_model(student, cfg, prompt_tokens)
     else:
@@ -380,6 +507,7 @@ def main() -> None:
         "prompt": args.prompt,
         "prompt_token_ids": prompt_tokens.reshape(-1).astype(int).tolist(),
         "weights": str(weights),
+        "weights_graph": loaded_graph,
         "skip_mismatch": bool(args.skip_mismatch),
         "config_name": args.config_name,
         "overrides": overrides,

@@ -89,6 +89,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--debug-protocol",
+        action="store_true",
+        help="Print host-side serial protocol milestones for each example.",
+    )
+    parser.add_argument(
         "--raw-log",
         type=Path,
         default=Path("artifacts/profiles/coral/tallyqa_benchmark_serial_raw.log"),
@@ -322,6 +327,12 @@ def send_payload(ser: Any, payload: bytes, chunk_size: int, chunk_delay_s: float
     ser.flush()
 
 
+def debug_protocol(args: argparse.Namespace, message: str, **fields: Any) -> None:
+    if not args.debug_protocol:
+        return
+    print(json.dumps({"event": f"host_{message}", **fields}, sort_keys=True), flush=True)
+
+
 def result_logits(result: dict[str, Any], output_tensor_index: int) -> np.ndarray:
     outputs = result.get("outputs", [])
     if output_tensor_index < 0 or output_tensor_index >= len(outputs):
@@ -518,6 +529,13 @@ def main() -> None:
             image, image_identity = image_store.get(int(row["image_index"]))
             payload = quantize_for_board_input(image, board_ready)
             roundtrip_start = perf_counter()
+            debug_protocol(
+                args,
+                "send_header",
+                dataset_index=int(dataset_index),
+                image_index=int(row["image_index"]),
+                payload_bytes=len(payload),
+            )
             send_header(ser, dataset_index, int(row["image_index"]), len(payload))
             while True:
                 try:
@@ -542,8 +560,18 @@ def main() -> None:
                     continue
                 if event == "rx_ready" and int(result["dataset_index"]) == int(dataset_index):
                     break
+            debug_protocol(
+                args,
+                "send_payload_start",
+                dataset_index=int(dataset_index),
+                payload_bytes=len(payload),
+                chunk_size=int(args.payload_chunk_size),
+                chunk_delay_s=float(args.payload_chunk_delay_s),
+            )
             send_payload(ser, payload, args.payload_chunk_size, args.payload_chunk_delay_s)
+            debug_protocol(args, "send_payload_done", dataset_index=int(dataset_index))
             while True:
+                debug_protocol(args, "wait_result", dataset_index=int(dataset_index))
                 try:
                     event, result = read_prefixed(
                         ser,

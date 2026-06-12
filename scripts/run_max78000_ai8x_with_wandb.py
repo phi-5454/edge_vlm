@@ -44,6 +44,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--distiller-pythonpath", type=Path, default=None)
     parser.add_argument("--checkpoint-root", type=Path, default=None)
     parser.add_argument("--checkpoint-run-name", default=None)
+    parser.add_argument("--post-eval-output-dir", type=Path, default=None)
+    parser.add_argument("--post-eval-samples", type=int, default=4)
+    parser.add_argument("--post-eval-batch-size", type=int, default=256)
+    parser.add_argument("--skip-post-eval", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command and args.command[0] == "--":
@@ -132,6 +136,25 @@ def iter_artifact_files(manifest: Path, log_file: Path, model_report_dir: Path |
     return [path for path in files if path.exists()]
 
 
+def iter_output_files(path: Path | None) -> list[Path]:
+    if path is None or not path.exists():
+        return []
+    if path.is_file():
+        return [path]
+    return sorted(item for item in path.rglob("*") if item.is_file())
+
+
+def add_files_to_artifact(artifact: wandb.Artifact, files: list[Path], base_path: Path | None = None) -> None:
+    for path in files:
+        if base_path is not None:
+            try:
+                artifact.add_file(str(path), name=str(path.relative_to(base_path)))
+                continue
+            except ValueError:
+                pass
+        artifact.add_file(str(path))
+
+
 def find_best_checkpoint(root: Path | None, run_name: str | None) -> Path | None:
     if root is None or not root.exists():
         return None
@@ -146,6 +169,78 @@ def find_best_checkpoint(root: Path | None, run_name: str | None) -> Path | None
         reverse=True,
     )
     return deduped[0] if deduped else None
+
+
+def run_post_eval(
+    *,
+    args: argparse.Namespace,
+    manifest: dict[str, Any],
+    checkpoint: Path,
+) -> dict[str, Any] | None:
+    if args.skip_post_eval:
+        return None
+    data_dir = manifest.get("data_dir")
+    model_name = manifest.get("model_name")
+    input_channels = manifest.get("model_input_channels")
+    if not data_dir or not model_name or not input_channels:
+        print("Warning: manifest is missing data_dir/model_name/model_input_channels; skipping post-eval plots.")
+        return None
+    output_dir = args.post_eval_output_dir or (
+        args.manifest.parent / "max78000_wandb_eval"
+    )
+    command = [
+        sys.executable,
+        str(Path(__file__).with_name("evaluate_max78000_tallyqa_wandb_outputs.py")),
+        "--ai8x-training",
+        str(args.cwd),
+        "--checkpoint",
+        str(checkpoint),
+        "--data-dir",
+        str(data_dir),
+        "--output-dir",
+        str(output_dir),
+        "--factory",
+        str(model_name),
+        "--input-channels",
+        str(int(input_channels)),
+        "--num-classes",
+        "6",
+        "--batch-size",
+        str(args.post_eval_batch_size),
+        "--samples",
+        str(args.post_eval_samples),
+    ]
+    print("+ " + " ".join(command))
+    try:
+        subprocess.run(command, check=True)
+    except Exception as exc:  # pragma: no cover - this is best-effort logging glue.
+        print(f"Warning: MAX78000 post-eval plots failed: {exc}")
+        return None
+    result_path = output_dir / "max78000_eval_results.json"
+    if not result_path.exists():
+        print(f"Warning: MAX78000 post-eval did not write {result_path}")
+        return None
+    return json.loads(result_path.read_text(encoding="utf-8"))
+
+
+def log_post_eval_payload(results: dict[str, Any], output_dir: Path | None) -> None:
+    payload: dict[str, Any] = {}
+    for split, split_result in (results.get("splits") or {}).items():
+        for key, value in (split_result.get("metrics") or {}).items():
+            payload[f"max78000/{split}/{key}"] = float(value)
+        confusion = split_result.get("confusion_matrix")
+        if confusion:
+            payload[f"{split}_plots/confusion_matrix"] = wandb.Image(str(confusion))
+        image_encoding = split_result.get("image_encoding")
+        if image_encoding:
+            payload[f"{split}_plots/image_encoding"] = wandb.Image(str(image_encoding))
+            payload[f"{split}_plots/image_encoding_count"] = int(
+                split_result.get("unique_plot_samples") or 0
+            )
+    if payload:
+        wandb.log(payload)
+    for path in iter_output_files(output_dir):
+        wandb.save(str(path), policy="now")
 
 
 def main() -> None:
@@ -205,12 +300,19 @@ def main() -> None:
         wandb.save(str(path), policy="now")
 
     artifact = wandb.Artifact(f"{args.run_name}-max78000-training-report", type="training-report")
-    for path in iter_artifact_files(args.manifest, args.log_file, args.model_report_dir):
-        artifact.add_file(str(path))
+    add_files_to_artifact(
+        artifact,
+        iter_artifact_files(args.manifest, args.log_file, args.model_report_dir),
+        base_path=args.manifest.parent,
+    )
     run.log_artifact(artifact, aliases=["latest"])
 
     checkpoint = find_best_checkpoint(args.checkpoint_root, args.checkpoint_run_name or args.run_name)
+    post_eval_results = None
     if checkpoint is not None:
+        post_eval_results = run_post_eval(args=args, manifest=manifest, checkpoint=checkpoint)
+        if post_eval_results is not None:
+            log_post_eval_payload(post_eval_results, args.post_eval_output_dir or (args.manifest.parent / "max78000_wandb_eval"))
         checkpoint_artifact = wandb.Artifact(
             f"{args.run_name}-chosen-test-checkpoint",
             type="model-checkpoint",
@@ -218,8 +320,34 @@ def main() -> None:
         checkpoint_artifact.add_file(str(checkpoint))
         checkpoint_artifact.add_file(str(args.manifest))
         checkpoint_artifact.add_file(str(args.log_file))
+        eval_output_dir = args.post_eval_output_dir or (args.manifest.parent / "max78000_wandb_eval")
+        add_files_to_artifact(
+            checkpoint_artifact,
+            iter_output_files(eval_output_dir),
+            base_path=eval_output_dir,
+        )
         run.log_artifact(checkpoint_artifact, aliases=["best", "test-evaluated"])
         wandb.save(str(checkpoint), policy="now")
+    elif returncode == 0:
+        print("Warning: no MAX78000 checkpoint found; skipping post-eval plots.")
+
+    output_artifact = wandb.Artifact(f"{args.run_name}-outputs", type="training-output")
+    add_files_to_artifact(
+        output_artifact,
+        iter_artifact_files(args.manifest, args.log_file, args.model_report_dir),
+        base_path=args.manifest.parent,
+    )
+    if checkpoint is not None:
+        output_artifact.add_file(str(checkpoint))
+    eval_output_dir = args.post_eval_output_dir or (args.manifest.parent / "max78000_wandb_eval")
+    add_files_to_artifact(
+        output_artifact,
+        iter_output_files(eval_output_dir),
+        base_path=eval_output_dir,
+    )
+    if post_eval_results is not None:
+        output_artifact.metadata.update({"post_eval": post_eval_results})
+    run.log_artifact(output_artifact, aliases=["latest"])
     run.finish(exit_code=returncode)
     sys.exit(returncode)
 
