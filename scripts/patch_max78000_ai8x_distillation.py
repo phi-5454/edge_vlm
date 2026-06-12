@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch ADI ai8x-training train.py for edge_vlm cached teacher distillation."""
+"""Patch ADI ai8x-training for edge_vlm cached teacher distillation."""
 
 from __future__ import annotations
 
@@ -189,6 +189,26 @@ def edge_vlm_inputs_to_device(inputs, device):
 
     train_py.write_text(text, encoding="utf-8")
     print(f"Patched cached-teacher distillation support into {train_py}")
+
+    data_loaders_py = args.ai8x_training / "distiller" / "distiller" / "apputils" / "data_loaders.py"
+    if not data_loaders_py.exists():
+        raise FileNotFoundError(data_loaders_py)
+    data_loader_text = data_loaders_py.read_text(encoding="utf-8")
+    old_image_size = '''def __image_size(dataset):
+    # un-squeeze is used here to add the batch dimension (value=1), which is missing
+    return dataset[0][0].unsqueeze(0).size()
+'''
+    new_image_size = '''def __image_size(dataset):
+    # un-squeeze is used here to add the batch dimension (value=1), which is missing
+    model_input = dataset[0][0]
+    if isinstance(model_input, (tuple, list)):
+        model_input = model_input[0]
+    return model_input.unsqueeze(0).size()
+'''
+    if old_image_size in data_loader_text:
+        data_loader_text = data_loader_text.replace(old_image_size, new_image_size, 1)
+    data_loaders_py.write_text(data_loader_text, encoding="utf-8")
+    print(f"Patched tuple-input image-size probe into {data_loaders_py}")
 
 
 if __name__ == "__main__":
